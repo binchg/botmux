@@ -225,6 +225,7 @@ export function codexAppProgressCardTitle(lastQuestion: string | undefined, maxC
   const normalized = (lastQuestion ?? '')
     .replace(/<user_message>\s*([\s\S]*?)\s*<\/user_message>/i, '$1')
     .replace(/\\([\[\]])/g, '$1')
+    .replace(/\[(?:图片|文件)\s*\d+\]/gi, ' ')
     .replace(/\s+/g, ' ')
     .trim();
   if (!normalized) return '进度更新';

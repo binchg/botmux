@@ -196,7 +196,8 @@ describe('Codex App progress throttling', () => {
   });
 
   it('uses the latest question as a stable single-line title capped at 20 characters', () => {
-    expect(codexAppProgressCardTitle('可以了，再试试 \\[图片 1\\]')).toBe('可以了，再试试 [图片 1]');
+    expect(codexAppProgressCardTitle('可以了，再试试 \\[图片 1\\]')).toBe('可以了，再试试');
+    expect(codexAppProgressCardTitle('[图片 1]\n还是有 badcase，标题不对')).toBe('还是有 badcase，标题不对');
     const title = codexAppProgressCardTitle('这是一个需要持续排查并修复所有仓库问题的很长提问');
     expect(Array.from(title)).toHaveLength(20);
     expect(title.endsWith('…')).toBe(true);
