@@ -101,12 +101,20 @@ export interface FetchOpts {
   fetchImpl?: typeof fetch;
 }
 
+export interface LatestPackageInfo {
+  version: string;
+  gitHead?: string;
+}
+
 /**
  * The npm `latest` dist-tag version — the authoritative target of
- * `npm install -g botmux@latest`. null on any failure (offline, non-200,
- * malformed body, or a version string we can't parse).
+ * `npm install -g botmux@latest`. The optional `gitHead` lets a source
+ * checkout decide whether it already contains the published package commit,
+ * even when its local package.json still says the development-only `0.0.0`.
+ * null on any failure (offline, non-200, malformed body, or a version string
+ * we can't parse).
  */
-export async function fetchLatestVersion(opts?: FetchOpts): Promise<string | null> {
+export async function fetchLatestPackageInfo(opts?: FetchOpts): Promise<LatestPackageInfo | null> {
   const fetchImpl = opts?.fetchImpl ?? fetch;
   try {
     const res = await fetchImpl(REGISTRY_LATEST_URL, {
@@ -114,11 +122,21 @@ export async function fetchLatestVersion(opts?: FetchOpts): Promise<string | nul
       signal: AbortSignal.timeout(opts?.timeoutMs ?? 8_000),
     });
     if (!res.ok) return null;
-    const body = await res.json() as { version?: unknown };
-    return typeof body?.version === 'string' && parseVersion(body.version) ? body.version : null;
+    const body = await res.json() as { version?: unknown; gitHead?: unknown };
+    if (typeof body?.version !== 'string' || !parseVersion(body.version)) return null;
+    const info: LatestPackageInfo = { version: body.version };
+    if (typeof body.gitHead === 'string' && /^[0-9a-f]{40}$/i.test(body.gitHead)) {
+      info.gitHead = body.gitHead;
+    }
+    return info;
   } catch {
     return null;
   }
+}
+
+export async function fetchLatestVersion(opts?: FetchOpts): Promise<string | null> {
+  const info = await fetchLatestPackageInfo(opts);
+  return info?.version ?? null;
 }
 
 export interface ChangelogResult {

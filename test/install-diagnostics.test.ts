@@ -18,10 +18,26 @@ const SHIM = '/root/.botmux/bin/botmux';
 const SHIM_BODY = '#!/bin/sh\nexec node "/root/iserver/botmux/dist/cli.js" "$@"\n';
 const NPM_BIN = '/root/.local/share/fnm/node-versions/v22/installation/bin/botmux';
 const NPM_CLI = '/root/.local/share/fnm/node-versions/v22/installation/lib/node_modules/botmux/dist/cli.js';
+const DEVBOX_SHIM = '/root/.ai-devbox/bin/botmux';
+const DEVBOX_SHIM_BODY = `#!/usr/bin/env bash
+set -euo pipefail
+case "\${1:-}" in
+  start|restart|setup|start-if-ready|setup-if-needed|preflight)
+    exec "$HOME/.ai-devbox/bin/devbox-ai" botmux "$@"
+    ;;
+  *)
+    exec "${NPM_BIN}" "$@"
+    ;;
+esac
+`;
 
 function deps(over: Partial<InstallProbeDeps> = {}): InstallProbeDeps {
   return {
-    readFile: (p) => (p === SHIM ? SHIM_BODY : null),       // npm bin reads as the real (large) cli.js → null here
+    readFile: (p) => {
+      if (p === SHIM) return SHIM_BODY;
+      if (p === DEVBOX_SHIM) return DEVBOX_SHIM_BODY;
+      return null; // npm bin reads as the real (large) cli.js → null here
+    },
     realpath: (p) => (p === NPM_BIN ? NPM_CLI : p),
     isSourceCheckout: (root) => root === '/root/iserver/botmux',
     ...over,
@@ -60,6 +76,16 @@ describe('analyzeInstalls', () => {
     }));
     expect(out.entries).toHaveLength(1);
     expect(out.multiple).toBe(false);
+  });
+
+  it('dedups a devbox-ai smart shim that delegates ordinary commands to npm botmux', () => {
+    const out = analyzeInstalls([DEVBOX_SHIM, NPM_BIN], deps());
+    expect(out.multiple).toBe(false);
+    expect(out.entries).toEqual([{
+      binPath: DEVBOX_SHIM,
+      root: '/root/.local/share/fnm/node-versions/v22/installation/lib/node_modules/botmux',
+      kind: 'npm-global',
+    }]);
   });
 
   it('ignores blanks and unresolvable bins gracefully', () => {

@@ -5,6 +5,7 @@ import {
   compareVersions,
   isNewerVersion,
   selectReleasesSince,
+  fetchLatestPackageInfo,
   fetchLatestVersion,
   fetchReleasesSince,
 } from '../src/core/update-check.js';
@@ -111,6 +112,32 @@ describe('selectReleasesSince', () => {
 function jsonResponse(status: number, body: unknown): Response {
   return { ok: status >= 200 && status < 300, status, json: async () => body } as unknown as Response;
 }
+
+describe('fetchLatestPackageInfo', () => {
+  it('returns version and gitHead from registry metadata', async () => {
+    const info = await fetchLatestPackageInfo({
+      fetchImpl: async () => jsonResponse(200, {
+        version: '2.85.1',
+        gitHead: '0123456789abcdef0123456789abcdef01234567',
+      }),
+    });
+    expect(info).toEqual({
+      version: '2.85.1',
+      gitHead: '0123456789abcdef0123456789abcdef01234567',
+    });
+  });
+  it('keeps version when gitHead is absent or malformed', async () => {
+    expect(await fetchLatestPackageInfo({
+      fetchImpl: async () => jsonResponse(200, { version: '2.85.1', gitHead: 'not-a-sha' }),
+    })).toEqual({ version: '2.85.1' });
+  });
+  it('null on non-200 / malformed / unparseable / throw', async () => {
+    expect(await fetchLatestPackageInfo({ fetchImpl: async () => jsonResponse(503, {}) })).toBeNull();
+    expect(await fetchLatestPackageInfo({ fetchImpl: async () => jsonResponse(200, {}) })).toBeNull();
+    expect(await fetchLatestPackageInfo({ fetchImpl: async () => jsonResponse(200, { version: 'latest' }) })).toBeNull();
+    expect(await fetchLatestPackageInfo({ fetchImpl: async () => { throw new Error('offline'); } })).toBeNull();
+  });
+});
 
 describe('fetchLatestVersion', () => {
   it('returns the registry version', async () => {

@@ -15,7 +15,7 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { isLocalDevInstallAt, botmuxVersion, botmuxInstallRoot } from './install-info.js';
+import { isLocalDevInstallAt, botmuxVersion, botmuxCliEntry, botmuxInstallRoot } from './install-info.js';
 import { parseVersion } from '../core/update-check.js';
 
 /** Minimum Node major (mirrors package.json `engines.node`). */
@@ -94,9 +94,10 @@ const MAX_SHIM_BYTES = 4096;
 
 /** Resolve a `botmux` bin on PATH to the install root that runs it.
  *  - a `~/.botmux/bin/botmux` shim → the cli.js path it `exec`s
+ *  - a devbox-ai smart shim → the target `botmux` bin it delegates to
  *  - an npm-global symlink → the real `<pkg>/dist/cli.js` it points at
  *  Returns null when neither yields a cli.js path. */
-function resolveBin(binPath: string, deps: InstallProbeDeps): { cliJs: string; root: string } | null {
+function resolveBin(binPath: string, deps: InstallProbeDeps, depth = 0): { cliJs: string; root: string } | null {
   let cliJs: string | null = null;
 
   const content = deps.readFile(binPath);
@@ -105,6 +106,15 @@ function resolveBin(binPath: string, deps: InstallProbeDeps): { cliJs: string; r
     // compiled code (if a binary slips through the size guard) can't match.
     const m = content.match(/"([^"]*[/\\]cli\.js)"/);
     if (m) cliJs = m[1];
+    // devbox-ai installs a smart shim at ~/.ai-devbox/bin/botmux that handles
+    // lifecycle commands itself but delegates ordinary commands to the real
+    // botmux binary. Treat it as an alias of that target, not a separate
+    // install. Bound recursion so a bad shim cannot loop forever.
+    const target = content.match(/\bexec\s+"([^"]*[/\\]botmux)"\s+"\$@"/);
+    if (!cliJs && target && target[1] !== binPath && depth < 3) {
+      const nested = resolveBin(target[1], deps, depth + 1);
+      if (nested) return nested;
+    }
   }
   if (!cliJs) {
     const real = deps.realpath(binPath);
@@ -179,5 +189,12 @@ function listBotmuxBins(): string[] {
 
 /** Production wiring: probe PATH for botmux installs. */
 export function detectBotmuxInstalls(): InstallDiagnostics {
+  const currentRoot = botmuxInstallRoot();
+  if (isLocalDevInstallAt(currentRoot)) {
+    return {
+      entries: [{ binPath: botmuxCliEntry(), root: currentRoot, kind: 'source-checkout' }],
+      multiple: false,
+    };
+  }
   return analyzeInstalls(listBotmuxBins(), PROD_PROBE_DEPS);
 }
