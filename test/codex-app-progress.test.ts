@@ -195,12 +195,14 @@ describe('Codex App progress throttling', () => {
     expect(forwarder.next('turn-1', '正在检查原因。')?.content).toBe('我正在检查原因。');
   });
 
-  it('uses the latest question as a stable single-line title capped at 20 characters', () => {
+  it('uses the latest question with a 25-Chinese-character visual budget', () => {
     expect(codexAppProgressCardTitle('可以了，再试试 \\[图片 1\\]')).toBe('可以了，再试试');
     expect(codexAppProgressCardTitle('[图片 1]\n还是有 badcase，标题不对')).toBe('还是有 badcase，标题不对');
-    const title = codexAppProgressCardTitle('这是一个需要持续排查并修复所有仓库问题的很长提问');
-    expect(Array.from(title)).toHaveLength(20);
+    const title = codexAppProgressCardTitle('这是一个需要持续排查并修复所有仓库问题的很长提问补充内容');
+    expect(Array.from(title).filter(ch => /\p{Script=Han}/u.test(ch))).toHaveLength(24);
     expect(title.endsWith('…')).toBe(true);
+    expect(codexAppProgressCardTitle('a'.repeat(60))).toBe(`${'a'.repeat(49)}…`);
+    expect(codexAppProgressCardTitle('标题' + 'a'.repeat(46) + '额外')).toBe(`标题${'a'.repeat(45)}…`);
     expect(codexAppProgressCardTitle('第一行\n第二行')).toBe('第一行 第二行');
     expect(codexAppProgressCardTitle(undefined)).toBe('进度更新');
   });

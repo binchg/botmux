@@ -221,7 +221,15 @@ export class CodexAppProgressForwarder {
   }
 }
 
-export function codexAppProgressCardTitle(lastQuestion: string | undefined, maxChars = 20): string {
+function progressTitleWidth(value: string): number {
+  let width = 0;
+  for (const ch of Array.from(value)) {
+    width += /\p{Script=Han}/u.test(ch) ? 1 : 0.5;
+  }
+  return width;
+}
+
+export function codexAppProgressCardTitle(lastQuestion: string | undefined, maxWidth = 25): string {
   const normalized = (lastQuestion ?? '')
     .replace(/<user_message>\s*([\s\S]*?)\s*<\/user_message>/i, '$1')
     .replace(/\\([\[\]])/g, '$1')
@@ -230,10 +238,20 @@ export function codexAppProgressCardTitle(lastQuestion: string | undefined, maxC
     .trim();
   if (!normalized) return '进度更新';
 
-  const chars = Array.from(normalized);
-  const limit = Math.max(2, Math.floor(maxChars));
-  if (chars.length <= limit) return normalized;
-  // The ellipsis is part of the 20-character budget. Keeping the latest user
+  const limit = Math.max(1, maxWidth);
+  if (progressTitleWidth(normalized) <= limit) return normalized;
+
+  const ellipsis = '…';
+  const contentLimit = limit - progressTitleWidth(ellipsis);
+  let width = 0;
+  const kept: string[] = [];
+  for (const ch of Array.from(normalized)) {
+    const next = /\p{Script=Han}/u.test(ch) ? 1 : 0.5;
+    if (width + next > contentLimit) break;
+    kept.push(ch);
+    width += next;
+  }
+  // The ellipsis is part of the 25-Chinese-character visual budget. Keeping the latest user
   // question makes every progress card meaningful and stable within a turn.
-  return chars.slice(0, limit - 1).join('') + '…';
+  return kept.join('') + ellipsis;
 }
