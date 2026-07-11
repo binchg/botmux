@@ -257,6 +257,7 @@ describe('hasMarkdown', () => {
 describe('brandFooterSegment', () => {
   it('undefined (unset) → default botmux brand', () => {
     expect(brandFooterSegment(undefined)).toBe(DEFAULT_BRAND_LABEL);
+    expect(DEFAULT_BRAND_LABEL).toBe('[botmux](https://github.com/binchg/botmux/tree/dev)');
   });
   it('empty / whitespace → null (brand off)', () => {
     expect(brandFooterSegment('')).toBeNull();

@@ -520,7 +520,7 @@ function extractTextContent(msgType: string, rawContent: string, mentions?: RawE
 /**
  * botmux-generated card footer signature. Every card `botmux send` /
  * buildMarkdownCard emits ends with a small grey note linking back to the repo
- * (`[botmux](https://github.com/deepcoldy/botmux)`, optionally `· 发送给：@owner`).
+ * (`[botmux](https://github.com/binchg/botmux/tree/dev)`, optionally `· 发送给：@owner`).
  * That footer is human-facing chrome — when another bot receives the card it
  * must NOT leak into the receiving bot's prompt (it surfaces as a stray
  * `<font color='grey'>botmux</font>` block and duplicates mention info). Both
@@ -531,10 +531,15 @@ function extractTextContent(msgType: string, rawContent: string, mentions?: RawE
  * card whose own body puts this exact repo URL on a line would lose that line
  * too — vanishingly rare versus the value of a simple format-agnostic anchor.
  */
-const BOTMUX_FOOTER_MARKER = 'github.com/deepcoldy/botmux';
+const BOTMUX_FOOTER_MARKERS = [
+  'github.com/binchg/botmux/tree/dev',
+  // Backward compatibility: old cards in history still carry the upstream
+  // footer and must remain filtered from prompts after this branding change.
+  'github.com/deepcoldy/botmux',
+] as const;
 
 function isBotmuxFooterLine(line: string): boolean {
-  return line.includes(BOTMUX_FOOTER_MARKER);
+  return BOTMUX_FOOTER_MARKERS.some(marker => line.includes(marker));
 }
 
 /**

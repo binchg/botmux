@@ -288,6 +288,22 @@ describe('Interactive card parsing: botmux footer is stripped from prompt', () =
     expect(result.content).not.toContain('botmux');
   });
 
+  it('drops the new personal dev-branch footer line', () => {
+    const card = {
+      elements: [
+        [{ tag: 'text', text: '正文内容' }],
+        [
+          { tag: 'a', text: 'botmux', href: 'https://github.com/binchg/botmux/tree/dev' },
+          { tag: 'text', text: ' · 发送给：' },
+          { tag: 'at', user_name: 'Owner' },
+        ],
+      ],
+    };
+    const result = parseApiMessage(makeMsg('interactive', card));
+    expect(result.content).toContain('正文内容');
+    expect(result.content).not.toContain('botmux');
+  });
+
   it('round-trips a real buildMarkdownCard output without footer leakage', () => {
     const raw = buildMarkdownCard('帮我看下这个 bug', 'ou_owner');
     const result = parseApiMessage(makeMsg('interactive', JSON.parse(raw)));

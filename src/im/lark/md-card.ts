@@ -26,7 +26,7 @@ import { t, type Locale } from '../../i18n/index.js';
 const md = new MarkdownIt({ html: false, linkify: false, breaks: false });
 
 /** Default footer brand when a bot has no custom `brandLabel` configured. */
-export const DEFAULT_BRAND_LABEL = '[botmux](https://github.com/deepcoldy/botmux)';
+export const DEFAULT_BRAND_LABEL = '[botmux](https://github.com/binchg/botmux/tree/dev)';
 
 /**
  * Resolve the brand segment to render in a card footer from a bot's configured
