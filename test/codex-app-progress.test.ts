@@ -195,8 +195,12 @@ describe('Codex App progress throttling', () => {
     expect(forwarder.next('turn-1', '正在检查原因。')?.content).toBe('我正在检查原因。');
   });
 
-  it('uses a fixed short single-line node title', () => {
-    expect(codexAppProgressCardTitle(1)).toBe('进度节点 1');
-    expect(codexAppProgressCardTitle(9999).length).toBeLessThanOrEqual(10);
+  it('uses the latest question as a stable single-line title capped at 20 characters', () => {
+    expect(codexAppProgressCardTitle('可以了，再试试 \\[图片 1\\]')).toBe('可以了，再试试 [图片 1]');
+    const title = codexAppProgressCardTitle('这是一个需要持续排查并修复所有仓库问题的很长提问');
+    expect(Array.from(title)).toHaveLength(20);
+    expect(title.endsWith('…')).toBe(true);
+    expect(codexAppProgressCardTitle('第一行\n第二行')).toBe('第一行 第二行');
+    expect(codexAppProgressCardTitle(undefined)).toBe('进度更新');
   });
 });

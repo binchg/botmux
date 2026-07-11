@@ -2484,7 +2484,9 @@ function setupWorkerHandlers(ds: DaemonSession, worker: ChildProcess): void {
         }
         try {
           const cardJson = buildTitledMarkdownCard({
-            title: codexAppProgressCardTitle(progress.sequence),
+            title: codexAppProgressCardTitle(
+              ds.currentTurnTitle || ds.session.currentTurnTitle || ds.lastUserPrompt || ds.session.title,
+            ),
             md: content,
             brand: '',
             locale: localeForBot(ds.larkAppId),

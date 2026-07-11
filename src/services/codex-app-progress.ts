@@ -221,9 +221,18 @@ export class CodexAppProgressForwarder {
   }
 }
 
-export function codexAppProgressCardTitle(sequence: number | undefined): string {
-  const node = Number.isFinite(sequence) && (sequence ?? 0) > 0 ? Math.floor(sequence!) : 1;
-  // Fixed short title: unlike the user prompt, this cannot wrap to a second
-  // line on either the desktop or mobile Lark card header.
-  return `进度节点 ${node}`;
+export function codexAppProgressCardTitle(lastQuestion: string | undefined, maxChars = 20): string {
+  const normalized = (lastQuestion ?? '')
+    .replace(/<user_message>\s*([\s\S]*?)\s*<\/user_message>/i, '$1')
+    .replace(/\\([\[\]])/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!normalized) return '进度更新';
+
+  const chars = Array.from(normalized);
+  const limit = Math.max(2, Math.floor(maxChars));
+  if (chars.length <= limit) return normalized;
+  // The ellipsis is part of the 20-character budget. Keeping the latest user
+  // question makes every progress card meaningful and stable within a turn.
+  return chars.slice(0, limit - 1).join('') + '…';
 }
