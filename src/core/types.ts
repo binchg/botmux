@@ -23,6 +23,14 @@ export function frozenDisplayMode(fc: FrozenCard): DisplayMode {
   return fc.expanded ? 'screenshot' : 'hidden';
 }
 
+export interface SessionLiveEvent {
+  id: string;
+  kind: 'user' | 'assistant_progress' | 'assistant_final';
+  turnId?: string;
+  content: string;
+  at: number;
+}
+
 /** Core session state — IM-agnostic.
  *  IM-specific rendering state (ImRenderState) is stored separately
  *  in the ImAdapter implementation (e.g. Map<string, ImRenderState>
@@ -102,6 +110,9 @@ export interface DaemonSession {
   lastScreenStatus?: StreamStatus;  // last screen_update status
   usageLimit?: CliUsageLimitState;
   usageLimitRetryTimer?: NodeJS.Timeout;
+  /** Dashboard-only live transcript snippets. In-memory by design so they never
+   *  expand persisted prompt context or get replayed back into an agent turn. */
+  liveEvents?: SessionLiveEvent[];
   lastUserPrompt?: string;
   lastCliInput?: string;
   replyThreadAliases?: { [rootMessageId: string]: { createdAt: string; lastUsedAt: string } };

@@ -26,7 +26,8 @@ import { createCliAdapterSync } from '../adapters/cli/registry.js';
 import { botLocale, localeForBot, t as tr } from '../i18n/index.js';
 import { claudeJsonlPathForSession } from '../adapters/cli/claude-code.js';
 import { findUniqueClaudeSessionByCwd } from './session-discovery.js';
-import { buildMarkdownCard, buildContextualReplyCard } from '../im/lark/md-card.js';
+import { buildMarkdownCard, buildContextualReplyCard, buildTitledMarkdownCard } from '../im/lark/md-card.js';
+import { CodexAppProgressForwarder } from '../services/codex-app-progress.js';
 import { replyToDocComment, chunkCommentText, unsubscribeDocFile } from '../im/lark/doc-comment.js';
 import { listDocSubscriptionsForSession, removeDocSubscription } from '../services/doc-subs-store.js';
 import { TmuxBackend } from '../adapters/backend/tmux-backend.js';
@@ -36,6 +37,7 @@ import { getBot, getAllBots, resolveBrandLabel } from '../bot-registry.js';
 import { normalizeBrand } from '../im/lark/lark-hosts.js';
 import { dashboardEventBus } from './dashboard-events.js';
 import { composeRowFromActive, composeRowFromClosed } from './dashboard-rows.js';
+import { appendSessionLiveEvent, sessionLivePatch } from './session-live-events.js';
 import { publishAttentionPatch } from './session-activity.js';
 import { knownBotOpenIdsFromCrossRef, type BotMentionEntry } from '../utils/bot-routing.js';
 import { emitSessionLifecycleHook, emitSessionStateTransitionHook } from '../services/session-lifecycle-hooks.js';
@@ -48,6 +50,12 @@ import { sessionKey, sessionAnchorId, type DaemonSession } from './types.js';
 import { DONE_REACTION_EMOJI_TYPE } from './pending-response.js';
 import { buildTerminalUrl } from './terminal-url.js';
 import { prependBotmuxBin } from './botmux-wrapper.js';
+import {
+  configuredFileShareRoots,
+  localFileShareEnabled,
+  resolveLocalFileShareBaseUrl,
+  rewriteLocalFileLinks,
+} from '../services/local-file-share.js';
 import { usageLimitStateKey, type CliUsageLimitState } from '../utils/cli-usage-limit.js';
 
 type WindowsForkOptions = ForkOptions & { windowsHide?: boolean };
@@ -56,6 +64,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const WORKER_SIGTERM_BACKSTOP_MS = 2_000;
 const WORKER_SIGKILL_BACKSTOP_MS = 7_000;
+const codexAppProgressForwarders = new WeakMap<DaemonSession, CodexAppProgressForwarder>();
 
 // ─── Callbacks set by daemon at startup ─────────────────────────────────────
 
@@ -79,6 +88,15 @@ export function initWorkerPool(cb: WorkerPoolCallbacks): void {
 function requireCallbacks(): WorkerPoolCallbacks {
   if (!callbacks) throw new Error('WorkerPool not initialised — call initWorkerPool() first');
   return callbacks;
+}
+
+function codexAppProgressForwarderFor(ds: DaemonSession): CodexAppProgressForwarder {
+  let forwarder = codexAppProgressForwarders.get(ds);
+  if (!forwarder) {
+    forwarder = new CodexAppProgressForwarder();
+    codexAppProgressForwarders.set(ds, forwarder);
+  }
+  return forwarder;
 }
 
 // ─── Active session registry (daemon-owned, accessor for IPC) ───────────────
@@ -2435,6 +2453,52 @@ function setupWorkerHandlers(ds: DaemonSession, worker: ChildProcess): void {
         break;
       }
 
+      case 'progress_output': {
+        const progress = codexAppProgressForwarderFor(ds).next(msg.turnId, msg.content);
+        if (!progress) {
+          logger.info(`[${t}] Codex App progress skipped as duplicate or partial (turn ${msg.turnId.substring(0, 8)})`);
+          break;
+        }
+        const content = progress.content.trim();
+        if (!content) break;
+        appendSessionLiveEvent(ds, {
+          kind: 'assistant_progress',
+          turnId: msg.turnId,
+          content,
+          at: Date.now(),
+        });
+        dashboardEventBus.publish({
+          type: 'session.update',
+          body: {
+            sessionId: ds.session.sessionId,
+            patch: sessionLivePatch(ds),
+          },
+        });
+        if (ds.pendingWaitPromises?.has(msg.turnId) || ds.asyncTriggerResults?.has(msg.turnId)) {
+          logger.info(`[${t}] Codex App progress captured but not posted for HTTP turn ${msg.turnId.substring(0, 8)}`);
+          break;
+        }
+        if (ds.session.status === 'closed') {
+          logger.info(`[${t}] Codex App progress abandoned — session closed (turn ${msg.turnId.substring(0, 8)})`);
+          break;
+        }
+        try {
+          const title = ds.currentTurnTitle || ds.session.currentTurnTitle || ds.session.title || getCliDisplayName(effectiveCliId);
+          const cardJson = buildTitledMarkdownCard({
+            title,
+            md: content,
+            brand: '',
+            locale: localeForBot(ds.larkAppId),
+            template: 'turquoise',
+          });
+          await scopedReply(cardJson, 'interactive', msg.turnId);
+          logger.info(`[${t}] Codex App progress card forwarded (turn ${msg.turnId.substring(0, 8)}, ${content.length} chars)`);
+        } catch (err: any) {
+          logger.error(`[${t}] Failed to deliver Codex App progress to Lark: ${err.message}`);
+        }
+        break;
+      }
+
       case 'final_output': {
         // Adopt-bridge: worker harvested the assistant turn from Claude Code's
         // transcript JSONL and forwarded it to us. Dedup by lastUuid so a
@@ -2447,6 +2511,19 @@ function setupWorkerHandlers(ds: DaemonSession, worker: ChildProcess): void {
         // Worker pops the turn off its queue right after emit, so it will
         // NOT re-send this payload on its own. Daemon owns retry on
         // transient Lark failures.
+        appendSessionLiveEvent(ds, {
+          kind: 'assistant_final',
+          turnId: msg.turnId,
+          content: msg.content,
+          at: Date.now(),
+        });
+        dashboardEventBus.publish({
+          type: 'session.update',
+          body: {
+            sessionId: ds.session.sessionId,
+            patch: sessionLivePatch(ds),
+          },
+        });
         deliverFinalOutput(ds, msg, t, 0);
         break;
       }
@@ -2621,6 +2698,19 @@ function deliverFinalOutput(
       // they use the contextual card so the user prompt sits in a
       // blockquote and only the assistant body goes through full markdown
       // rendering.
+      let outwardContent = msg.content;
+      if (localFileShareEnabled()) {
+        const sharedLinks = rewriteLocalFileLinks(msg.content, {
+          dataDir: config.session.dataDir,
+          roots: configuredFileShareRoots(requireCallbacks().getSessionWorkingDir(ds)),
+          baseUrl: resolveLocalFileShareBaseUrl(),
+          enabled: true,
+        });
+        outwardContent = sharedLinks.content;
+        if (sharedLinks.shared.length > 0) {
+          logger.info(`[${t}] Rewrote ${sharedLinks.shared.length} local file link(s) into expiring capability URLs`);
+        }
+      }
       const recipientOpenId = daemonCardFooterRecipientOpenId(ds, effectiveCliId);
       const cardJson = msg.kind === 'local-turn' || msg.kind === 'local-turn-headless'
         ? buildContextualReplyCard({
@@ -2628,13 +2718,13 @@ function deliverFinalOutput(
               ? tr('card.local_turn_resumed', undefined, localeForBot(ds.larkAppId))
               : tr('card.local_turn', undefined, localeForBot(ds.larkAppId)),
             userText: msg.kind === 'local-turn' ? msg.userText ?? '' : undefined,
-            assistantText: msg.content,
+            assistantText: outwardContent,
             assistantLabel: getCliDisplayName(effectiveCliId),
             recipientOpenId,
             brand: resolveBrandLabel(ds.larkAppId),
             locale: localeForBot(ds.larkAppId),
           })
-        : buildMarkdownCard(msg.content, recipientOpenId, resolveBrandLabel(ds.larkAppId), localeForBot(ds.larkAppId));
+        : buildMarkdownCard(outwardContent, recipientOpenId, resolveBrandLabel(ds.larkAppId), localeForBot(ds.larkAppId));
 
       // Always deliver the answer as a fresh message — never PATCH a card in
       // place. message.patch is silent (no Feishu notification / unread), which

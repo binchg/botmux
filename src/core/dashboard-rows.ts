@@ -5,7 +5,7 @@
 // `session.spawned` / `session.update` lifecycle events).  Lives in its own
 // module so worker-pool can import the composer without pulling in the IPC
 // server (which itself imports worker-pool — that would be a cycle).
-import type { DaemonSession } from './types.js';
+import type { DaemonSession, SessionLiveEvent } from './types.js';
 import type { Session, StreamStatus } from '../types.js';
 import type { CliId } from '../adapters/cli/types.js';
 import { getTerminalAdvertisedPort } from './terminal-url.js';
@@ -66,6 +66,10 @@ export interface SessionRow {
   agentAttention?: { kind: string; reason: string; at: number };
   /** Native Agent CLI token usage for this session. Null means unavailable. */
   tokenUsage?: SessionTokenUsage | null;
+  /** Recent dashboard-only user/progress/final snippets for the detail drawer. */
+  liveEvents?: SessionLiveEvent[];
+  lastUserPrompt?: string;
+  currentTurnTitle?: string;
 }
 
 export function feishuChatLink(chatId: string, brand: Brand = 'feishu'): string {
@@ -138,6 +142,9 @@ export function composeRowFromActive(ds: DaemonSession): SessionRow {
       ? { kind: ds.agentAttention.kind, reason: ds.agentAttention.reason, at: ds.agentAttention.at }
       : undefined,
     tokenUsage: sessionTokenUsage(ds.session, ds.workingDir),
+    liveEvents: ds.liveEvents ?? [],
+    lastUserPrompt: ds.lastUserPrompt ?? ds.session.lastUserPrompt,
+    currentTurnTitle: ds.currentTurnTitle ?? ds.session.currentTurnTitle,
   };
 }
 
@@ -164,5 +171,7 @@ export function composeRowFromClosed(s: Session): SessionRow {
     webPort: s.webPort ?? null,
     feishuChatLink: feishuChatLink(s.chatId, getBotBrand(s.larkAppId ?? '')),
     tokenUsage: sessionTokenUsage(s),
+    lastUserPrompt: s.lastUserPrompt,
+    currentTurnTitle: s.currentTurnTitle,
   };
 }

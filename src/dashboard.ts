@@ -44,14 +44,15 @@ import { invalidWorkingDirs } from './utils/working-dir.js';
 import { invalidateGlobalConfigCache, mergeGlobalConfig, readGlobalConfig, type MaintenanceConfig, type RepoPickerMode, type WhiteboardConfig } from './global-config.js';
 import { buildDashboardUrl } from './core/dashboard-url.js';
 import { deleteWhiteboard, listWhiteboards, readWhiteboard, whiteboardEnabled } from './services/whiteboard-store.js';
-import { isLocalDevInstall, botmuxVersion } from './utils/install-info.js';
+import { isLocalDevInstall, botmuxVersion, botmuxInstallRoot } from './utils/install-info.js';
 import { checkNode, detectBotmuxInstalls, resolveCurrentVersion } from './utils/install-diagnostics.js';
-import { fetchLatestVersion, fetchReleasesSince, isNewerVersion, type ChangelogResult } from './core/update-check.js';
+import { fetchLatestPackageInfo, fetchReleasesSince, isNewerVersion, type ChangelogResult, type LatestPackageInfo } from './core/update-check.js';
 import { GITHUB_REPO } from './core/restart-report.js';
 import { spawnDetachedRestart, npmGlobalUpdateLockTarget } from './core/maintenance.js';
 import { writeRestartIntent } from './services/restart-intent-store.js';
+import { handleLocalFileShareRequest } from './services/local-file-share.js';
 import { withFileLock } from './utils/file-lock.js';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import {
   applySettingsWrite,
   defaultSettingsWriteApplierDeps,
@@ -336,15 +337,58 @@ let updateInFlight = false;
 const LATEST_TTL_MS = 30 * 60_000;
 const CHANGELOG_TTL_MS = 15 * 60_000;
 const FAILURE_TTL_MS = 60_000;
-let latestVersionCache: { value: string | null; at: number } | null = null;
+let latestPackageInfoCache: { value: LatestPackageInfo | null; at: number } | null = null;
 let changelogCache: { key: string; value: ChangelogResult; at: number } | null = null;
 
-async function cachedLatestVersion(now = Date.now()): Promise<string | null> {
-  const ttl = latestVersionCache?.value ? LATEST_TTL_MS : FAILURE_TTL_MS;
-  if (latestVersionCache && now - latestVersionCache.at < ttl) return latestVersionCache.value;
-  const value = await fetchLatestVersion();
-  latestVersionCache = { value, at: now };
+async function cachedLatestPackageInfo(now = Date.now()): Promise<LatestPackageInfo | null> {
+  const ttl = latestPackageInfoCache?.value ? LATEST_TTL_MS : FAILURE_TTL_MS;
+  if (latestPackageInfoCache && now - latestPackageInfoCache.at < ttl) return latestPackageInfoCache.value;
+  const value = await fetchLatestPackageInfo();
+  latestPackageInfoCache = { value, at: now };
   return value;
+}
+
+function sourceContainsGitHead(gitHead: string | undefined): boolean {
+  if (!gitHead) return false;
+  try {
+    execFileSync('git', ['merge-base', '--is-ancestor', gitHead, 'HEAD'], {
+      cwd: botmuxInstallRoot(),
+      timeout: 3_000,
+      stdio: ['ignore', 'ignore', 'ignore'],
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function resolveUpdateVersionState(): Promise<{
+  current: string;
+  detectedCurrent: string;
+  latest: string | null;
+  latestGitHead: string | null;
+  behind: boolean;
+  localDevInstall: boolean;
+  sourceContainsLatestGitHead: boolean;
+}> {
+  const detectedCurrent = resolveCurrentVersion();
+  const latestInfo = await cachedLatestPackageInfo();
+  const latest = latestInfo?.version ?? null;
+  const localDevInstall = isLocalDevInstall();
+  const sourceContainsLatestGitHead = localDevInstall && sourceContainsGitHead(latestInfo?.gitHead);
+  // Source checkouts keep package.json at 0.0.0. If the checkout already
+  // contains the commit that produced npm latest, present that stable release as
+  // the effective version for update UI and changelog calculations.
+  const current = sourceContainsLatestGitHead && latest ? latest : detectedCurrent;
+  return {
+    current,
+    detectedCurrent,
+    latest,
+    latestGitHead: latestInfo?.gitHead ?? null,
+    behind: !!latest && isNewerVersion(latest, current),
+    localDevInstall,
+    sourceContainsLatestGitHead,
+  };
 }
 
 async function cachedChangelog(current: string, now = Date.now()): Promise<ChangelogResult> {
@@ -981,6 +1025,12 @@ const server = createServer(async (req, res) => {
       return res.end(DASHBOARD_SELF_NONCE);
     }
 
+    // Capability-token file links are self-authenticating and intentionally
+    // mounted before the dashboard login gate. The route never accepts a
+    // filesystem path: only a 256-bit token created when botmux actually sends
+    // a local-file markdown link can resolve a single allow-root-contained file.
+    if (handleLocalFileShareRequest(req, res, url, { dataDir: config.session.dataDir })) return;
+
     // Web terminal reverse-proxy: `/s/<sessionId>/*` → the owning bot daemon's
     // terminal proxy. The central platform only tunnels the dashboard port, so
     // terminal links served under the machine subdomain
@@ -1287,27 +1337,29 @@ const server = createServer(async (req, res) => {
     // unauthenticated caller (in both normal and public-read mode). The explicit
     // `authed` guards on the two mutations are defense-in-depth for host actions.
     if (req.method === 'GET' && url.pathname === '/api/update/status') {
-      const current = resolveCurrentVersion();
       // Compare against the npm `latest` dist-tag (always stable; the update
       // button installs `@latest`). isNewerVersion uses semver precedence, so a
       // canary running AHEAD of the latest stable (e.g. 2.87.0-canary.0 vs
       // 2.86.0) is NOT flagged behind — exactly the canary case we want.
-      const latest = await cachedLatestVersion();
+      const updateState = await resolveUpdateVersionState();
       return jsonRes(res, 200, {
-        current,
-        latest,
-        behind: !!latest && isNewerVersion(latest, current),
-        localDevInstall: isLocalDevInstall(),
+        current: updateState.current,
+        detectedCurrent: updateState.detectedCurrent,
+        latest: updateState.latest,
+        latestGitHead: updateState.latestGitHead,
+        behind: updateState.behind,
+        localDevInstall: updateState.localDevInstall,
+        sourceContainsLatestGitHead: updateState.sourceContainsLatestGitHead,
         node: checkNode(),
         installs: detectBotmuxInstalls(),
       });
     }
 
     if (req.method === 'GET' && url.pathname === '/api/update/changelog') {
-      const current = resolveCurrentVersion();
-      const result = await cachedChangelog(current);
+      const updateState = await resolveUpdateVersionState();
+      const result = await cachedChangelog(updateState.current);
       return jsonRes(res, 200, {
-        current,
+        current: updateState.current,
         ok: result.ok,
         rateLimited: result.rateLimited === true,
         releases: result.releases,

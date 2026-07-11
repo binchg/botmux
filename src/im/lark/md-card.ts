@@ -42,6 +42,12 @@ export function brandFooterSegment(brand: string | undefined): string | null {
   return brand.trim() ? brand : null;
 }
 
+function compactPlainText(s: string, max = 72): string {
+  const oneLine = s.replace(/\s+/g, ' ').trim();
+  if (oneLine.length <= max) return oneLine;
+  return oneLine.slice(0, Math.max(1, max - 1)) + '…';
+}
+
 /** Build a Feishu native `table` element from a `table_open … table_close` token slice. */
 function buildTableFromTokens(tokens: Token[]): any | null {
   const headerCells: string[] = [];
@@ -444,6 +450,40 @@ export function buildMarkdownCard(md: string, recipientOpenId?: string, brand?: 
   return JSON.stringify({
     schema: '2.0',
     config: { update_multi: true },
+    body: { direction: 'vertical', elements },
+  });
+}
+
+export function buildTitledMarkdownCard(opts: {
+  title: string;
+  md: string;
+  recipientOpenId?: string;
+  brand?: string;
+  locale?: Locale;
+  template?: string;
+  maxTitleChars?: number;
+}): string {
+  const elements = opts.md ? buildCardBodyElements(opts.md) : [];
+  const footerParts: string[] = [];
+  const brandSeg = brandFooterSegment(opts.brand);
+  if (brandSeg) footerParts.push(brandSeg);
+  if (opts.recipientOpenId) footerParts.push(`${t('card.sent_to', undefined, opts.locale)}<at id=${opts.recipientOpenId}></at>`);
+  if (footerParts.length > 0) {
+    elements.push({ tag: 'hr' });
+    elements.push({
+      tag: 'markdown',
+      text_size: 'notation_small_v2',
+      content: `<font color='grey'>${footerParts.join(' · ')}</font>`,
+    });
+  }
+
+  return JSON.stringify({
+    schema: '2.0',
+    config: { update_multi: true },
+    header: {
+      template: opts.template ?? 'blue',
+      title: { tag: 'plain_text', content: compactPlainText(opts.title, opts.maxTitleChars ?? 56) },
+    },
     body: { direction: 'vertical', elements },
   });
 }

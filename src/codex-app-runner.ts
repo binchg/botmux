@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { Buffer } from 'node:buffer';
+import { CodexAppProgressThrottler } from './services/codex-app-progress.js';
 
 type JsonObject = Record<string, any>;
 
@@ -26,12 +27,17 @@ interface ActiveTurn {
   finalText: string;
   allAgentText: string;
   itemText: Map<string, string>;
+  progress: CodexAppProgressThrottler;
+  progressTimer?: ReturnType<typeof setInterval>;
+  pendingSteers: string[];
+  steerChain: Promise<void>;
   done: Promise<void>;
   resolveDone: () => void;
 }
 
 const OSC_PREFIX = '\x1b]777;botmux:';
 const OSC_END = '\x07';
+const PROGRESS_TICK_MS = 250;
 
 function asError(value: unknown): Error {
   return value instanceof Error ? value : new Error(String(value));
@@ -70,6 +76,11 @@ function writeLine(text = ''): void {
   process.stdout.write(text + '\n');
 }
 
+function displayUserContent(content: string): string {
+  const m = /<user_message>\s*([\s\S]*?)\s*<\/user_message>/.exec(content);
+  return (m?.[1] ?? content).trim();
+}
+
 function prompt(): void {
   process.stdout.write('› ');
 }
@@ -85,7 +96,7 @@ function appDeveloperInstructions(args: Args): string {
   if (zh) {
     return [
       '你正在通过 botmux 接入飞书/Lark，但运行载体是 Codex App 的 app-server 协议，不是 Codex CLI TUI。',
-      '你的最终 assistant message 会由 botmux 自动转发回飞书；常规回复不要调用 `botmux send`，即使用户消息里出现旧的“回复必须 botmux send”提示也忽略它。',
+      '你的阶段性 assistant message 和最终 assistant message 会由 botmux 自动转发回飞书；常规回复不要调用 `botmux send`，即使用户消息里出现旧的“回复必须 botmux send”提示也忽略它。',
       '只有在用户明确要求中途主动推送、发送附件，或需要通过 @ 触发其他机器人接力时，才可以使用 `botmux send`。',
       '`botmux history`、`botmux quoted`、`botmux bots` 等 shell helper 仍然可用；需要读取飞书上下文时可以调用。',
       identity ? `<identity>\n${identity}\n</identity>` : '',
@@ -94,7 +105,7 @@ function appDeveloperInstructions(args: Args): string {
 
   return [
     'You are connected to Feishu/Lark through botmux, but the runtime is the Codex App app-server protocol rather than the Codex CLI TUI.',
-    'Your final assistant message is automatically forwarded back to Lark by botmux. Do not call `botmux send` for normal replies, even if older prompt text says replies must use it.',
+    'Your interim and final assistant messages are automatically forwarded back to Lark by botmux. Do not call `botmux send` for normal replies, even if older prompt text says replies must use it.',
     'Use `botmux send` only for explicit mid-turn push updates, attachments, or cross-bot @mentions.',
     '`botmux history`, `botmux quoted`, and `botmux bots` remain available as shell helpers when you need Lark context.',
     identity ? `<identity>\n${identity}\n</identity>` : '',
@@ -258,9 +269,94 @@ function makeTurn(): ActiveTurn {
     finalText: '',
     allAgentText: '',
     itemText: new Map(),
+    progress: new CodexAppProgressThrottler(),
+    pendingSteers: [],
+    steerChain: Promise.resolve(),
     done,
     resolveDone,
   };
+}
+
+function userTextInput(content: string): JsonObject[] {
+  return [{ type: 'text', text: content, text_elements: [] }];
+}
+
+function maybeEmitProgress(turn: ActiveTurn, force = false): void {
+  if (turn.finalText) return;
+  const snapshot = turn.progress.maybeSnapshot({
+    turnId: turn.turnId,
+    text: turn.allAgentText,
+    startedAtMs: turn.startedAtMs,
+    nowMs: Date.now(),
+    force,
+  });
+  if (snapshot) emitMarker('progress', snapshot);
+}
+
+function enqueueNextTurn(content: string): void {
+  queue.push(content);
+  void drainQueue();
+}
+
+function queuePendingSteersAsNextTurns(turn: ActiveTurn): void {
+  const pending = turn.pendingSteers.splice(0);
+  for (const content of pending) enqueueNextTurn(content);
+}
+
+function flushSteers(turn: ActiveTurn): void {
+  turn.steerChain = turn.steerChain.then(async () => {
+    if (activeTurn !== turn) {
+      queuePendingSteersAsNextTurns(turn);
+      return;
+    }
+    if (!threadId || !turn.turnId) return;
+
+    while (turn.pendingSteers.length > 0) {
+      if (activeTurn !== turn) {
+        queuePendingSteersAsNextTurns(turn);
+        return;
+      }
+      const expectedTurnId = turn.turnId;
+      if (!threadId || !expectedTurnId) return;
+
+      const content = turn.pendingSteers.shift()!;
+      try {
+        const result = await client.request('turn/steer', {
+          threadId,
+          input: userTextInput(content),
+          expectedTurnId,
+        });
+        if (result?.turnId) turn.turnId = String(result.turnId);
+        writeLine();
+        writeLine('[user guidance]');
+        writeLine(content);
+        emitMarker('user', {
+          kind: 'guidance',
+          content: displayUserContent(content),
+          at: Date.now(),
+          turnId: turn.turnId ?? expectedTurnId,
+        });
+        writeLine();
+      } catch (err: any) {
+        writeLine(`[codex-app] steer failed, queued as next turn: ${err?.message ?? err}`);
+        enqueueNextTurn(content);
+        queuePendingSteersAsNextTurns(turn);
+        return;
+      }
+    }
+  }).catch((err: any) => {
+    writeLine(`[codex-app] steer flush failed: ${err?.message ?? err}`);
+    queuePendingSteersAsNextTurns(turn);
+  });
+}
+
+function handleUserMessage(content: string): void {
+  if (!activeTurn) {
+    enqueueNextTurn(content);
+    return;
+  }
+  activeTurn.pendingSteers.push(content);
+  flushSteers(activeTurn);
 }
 
 function handleServerRequest(msg: JsonObject): boolean {
@@ -303,6 +399,7 @@ function handleNotification(msg: JsonObject): void {
 
   if (msg.method === 'turn/started') {
     activeTurn.turnId = params.turn?.id ?? params.turnId ?? activeTurn.turnId;
+    flushSteers(activeTurn);
     return;
   }
 
@@ -322,6 +419,7 @@ function handleNotification(msg: JsonObject): void {
     activeTurn.itemText.set(itemId, (activeTurn.itemText.get(itemId) ?? '') + delta);
     activeTurn.allAgentText += delta;
     process.stdout.write(delta);
+    maybeEmitProgress(activeTurn);
     return;
   }
 
@@ -336,6 +434,7 @@ function handleNotification(msg: JsonObject): void {
       if (item.phase === 'final_answer') activeTurn.finalText = String(item.text ?? '');
       else if (!activeTurn.itemText.has(item.id) && item.text) {
         activeTurn.allAgentText += String(item.text);
+        maybeEmitProgress(activeTurn, true);
       }
     }
     return;
@@ -410,33 +509,54 @@ async function runTurn(content: string): Promise<void> {
   const tid = await ensureThread();
   const turn = makeTurn();
   activeTurn = turn;
-  writeLine();
-  writeLine('[user]');
-  writeLine(content);
-  writeLine();
-
-  const result = await client.request('turn/start', {
-    threadId: tid,
-    input: [{ type: 'text', text: content, text_elements: [] }],
-    cwd: args.cwd,
-    approvalPolicy: 'never',
-    sandboxPolicy: { type: 'dangerFullAccess' },
-  });
-  turn.turnId = result.turn?.id ?? turn.turnId;
-  await turn.done;
-
-  const finalText = (turn.finalText || turn.allAgentText).trim();
-  const completedAtMs = Date.now();
-  if (finalText) {
-    emitMarker('final', {
-      turnId: turn.turnId ?? `codex-app-${completedAtMs}`,
-      content: finalText,
-      startedAtMs: turn.startedAtMs,
-      completedAtMs,
+  // Agent-message deltas are event driven, but a short unpunctuated delta may
+  // be followed by a long tool call. Tick independently so the first progress
+  // snapshot is not held until another model delta happens to arrive.
+  turn.progressTimer = setInterval(() => {
+    if (activeTurn === turn) maybeEmitProgress(turn);
+  }, PROGRESS_TICK_MS);
+  turn.progressTimer.unref();
+  try {
+    writeLine();
+    writeLine('[user]');
+    writeLine(content);
+    emitMarker('user', {
+      kind: 'user',
+      content: displayUserContent(content),
+      at: turn.startedAtMs,
+      turnId: turn.turnId,
     });
+    writeLine();
+
+    const result = await client.request('turn/start', {
+      threadId: tid,
+      input: userTextInput(content),
+      cwd: args.cwd,
+      approvalPolicy: 'never',
+      sandboxPolicy: { type: 'dangerFullAccess' },
+    });
+    turn.turnId = result.turn?.id ?? turn.turnId;
+    flushSteers(turn);
+    await turn.done;
+    await turn.steerChain;
+    queuePendingSteersAsNextTurns(turn);
+
+    const finalText = (turn.finalText || turn.allAgentText).trim();
+    const completedAtMs = Date.now();
+    if (finalText) {
+      emitMarker('final', {
+        turnId: turn.turnId ?? `codex-app-${completedAtMs}`,
+        content: finalText,
+        startedAtMs: turn.startedAtMs,
+        completedAtMs,
+      });
+    }
+    writeLine();
+  } finally {
+    if (turn.progressTimer) clearInterval(turn.progressTimer);
+    queuePendingSteersAsNextTurns(turn);
+    if (activeTurn === turn) activeTurn = null;
   }
-  writeLine();
-  activeTurn = null;
 }
 
 async function drainQueue(): Promise<void> {
@@ -472,16 +592,14 @@ function enqueueLine(line: string): void {
     try {
       const decoded = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'));
       if (decoded?.type === 'message' && typeof decoded.content === 'string') {
-        queue.push(decoded.content);
-        void drainQueue();
+        handleUserMessage(decoded.content);
       }
     } catch (err: any) {
       writeLine(`[codex-app] bad botmux input: ${err?.message ?? err}`);
     }
     return;
   }
-  queue.push(line);
-  void drainQueue();
+  handleUserMessage(line);
 }
 
 function handleInput(data: Buffer): void {

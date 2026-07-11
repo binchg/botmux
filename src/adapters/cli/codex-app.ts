@@ -74,6 +74,10 @@ export function createCodexAppAdapter(pathOverride?: string): CliAdapter {
     systemHints: [],
     injectsSessionContext: true,
     altScreen: false,
+    // Busy follow-ups are handed to codex-app-runner, which converts them to
+    // app-server turn/steer requests and falls back to next-turn queueing if the
+    // current turn cannot accept same-turn guidance.
+    supportsTypeAhead: true,
   };
 }
 

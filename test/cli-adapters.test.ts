@@ -397,6 +397,10 @@ describe('codex-app buildArgs', () => {
     expect(args).toContain('--thread-id');
     expect(args).toContain('thread-123');
   });
+
+  it('allows busy follow-ups so the runner can steer the active turn', () => {
+    expect(adapter.supportsTypeAhead).toBe(true);
+  });
 });
 
 describe('mira buildArgs', () => {

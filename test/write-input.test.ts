@@ -41,6 +41,7 @@ import { createClaudeCodeAdapter } from '../src/adapters/cli/claude-code.js';
 import { createAidenAdapter } from '../src/adapters/cli/aiden.js';
 import { createCocoAdapter } from '../src/adapters/cli/coco.js';
 import { createCodexAdapter } from '../src/adapters/cli/codex.js';
+import { createCodexAppAdapter } from '../src/adapters/cli/codex-app.js';
 import { createGeminiAdapter } from '../src/adapters/cli/gemini.js';
 import { createGeniusAdapter } from '../src/adapters/cli/genius.js';
 import { createOpenCodeAdapter } from '../src/adapters/cli/opencode.js';
@@ -493,6 +494,10 @@ describe('supportsTypeAhead flag', () => {
 
   it('codex: true (0.134.0+ parks submit-while-busy, writes rollout user event at dequeue time)', () => {
     expect(createCodexAdapter('/bin/codex').supportsTypeAhead).toBe(true);
+  });
+
+  it('codex-app: true (runner turns busy follow-ups into app-server turn/steer)', () => {
+    expect(createCodexAppAdapter('/bin/codex').supportsTypeAhead).toBe(true);
   });
 
   it('genius: true (Claude-family queue accepts follow-up input after startup)', () => {

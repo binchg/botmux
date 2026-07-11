@@ -20,6 +20,7 @@ import { getBot, getAllBots, getOwnerOpenId, findOncallChat, effectiveDefaultWor
 import type { CliId } from '../adapters/cli/types.js';
 import { dashboardEventBus } from './dashboard-events.js';
 import { composeRowFromActive } from './dashboard-rows.js';
+import { appendSessionLiveEvent, sessionLivePatch } from './session-live-events.js';
 import {
   composeSpawnUserContent,
   deriveSessionTitleFromContent,
@@ -708,6 +709,19 @@ export function rememberLastCliInput(ds: DaemonSession, userPrompt: string, cliI
   ds.session.replyThreadAliases = ds.replyThreadAliases;
   ds.session.currentReplyTarget = ds.currentReplyTarget;
   sessionStore.updateSession(ds.session);
+  appendSessionLiveEvent(ds, {
+    kind: 'user',
+    turnId: ds.currentReplyTarget?.turnId,
+    content: userPrompt,
+    at: Date.now(),
+  });
+  dashboardEventBus.publish({
+    type: 'session.update',
+    body: {
+      sessionId: ds.session.sessionId,
+      patch: sessionLivePatch(ds),
+    },
+  });
 }
 
 // ─── Session restore ─────────────────────────────────────────────────────────

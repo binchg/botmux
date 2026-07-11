@@ -2889,6 +2889,7 @@ let trustHandled = false;
 // not pollute the visible terminal. Strip them before xterm rendering and
 // translate them back into worker IPC.
 const CODEX_APP_OSC_PREFIX = '\x1b]777;botmux:';
+const TERMINAL_UI_OSC_PREFIX = '\x1b]778;botmux-ui:';
 const APP_RUNNER_OSC_CLI_IDS = new Set(['codex-app', 'mira', 'mir']);
 let codexAppOscPending = '';
 
@@ -2897,6 +2898,15 @@ function decodeCodexAppPayload(payload: string): any | undefined {
     return JSON.parse(Buffer.from(payload, 'base64').toString('utf8'));
   } catch {
     return undefined;
+  }
+}
+
+function emitTerminalUiEvent(payload: Record<string, unknown>): void {
+  if (!wsClients.size) return;
+  const encoded = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64');
+  const seq = `${TERMINAL_UI_OSC_PREFIX}${encoded}\x07`;
+  for (const ws of wsClients) {
+    if (ws.readyState === WebSocket.OPEN) ws.send(seq);
   }
 }
 
@@ -2909,6 +2919,33 @@ function handleCodexAppMarker(body: string): void {
 
   if (kind === 'thread' && typeof payload.threadId === 'string') {
     persistCliSessionId(payload.threadId);
+    return;
+  }
+
+  if (kind === 'user' && typeof payload.content === 'string') {
+    emitTerminalUiEvent({
+      type: 'user',
+      kind: payload.kind === 'guidance' ? 'guidance' : 'user',
+      content: payload.content,
+      at: typeof payload.at === 'number' ? payload.at : Date.now(),
+      turnId: typeof payload.turnId === 'string' ? payload.turnId : currentBotmuxTurnId,
+    });
+    return;
+  }
+
+  if (kind === 'progress' && typeof payload.content === 'string') {
+    const turnId = typeof payload.turnId === 'string' ? payload.turnId : (currentBotmuxTurnId ?? `${lastInitConfig?.cliId ?? 'app'}-${Date.now()}`);
+    emitTerminalUiEvent({
+      type: 'progress',
+      content: payload.content,
+      at: typeof payload.updatedAtMs === 'number' ? payload.updatedAtMs : Date.now(),
+      turnId,
+    });
+    send({
+      type: 'progress_output',
+      content: payload.content,
+      turnId,
+    });
     return;
   }
 
@@ -2928,12 +2965,19 @@ function handleCodexAppMarker(body: string): void {
       }
     }
     const turnId = typeof payload.turnId === 'string' ? payload.turnId : (currentBotmuxTurnId ?? `${lastInitConfig?.cliId ?? 'app'}-${Date.now()}`);
+    emitTerminalUiEvent({
+      type: 'final',
+      content: payload.content,
+      at: completedAtMs,
+      turnId,
+    });
     send({
       type: 'final_output',
       content: payload.content,
       lastUuid: turnId,
       turnId,
     });
+    return;
   }
 }
 
@@ -5078,8 +5122,8 @@ function getTerminalHtml(hasWrite: boolean, platformReadonly = false, loginUrl =
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5/css/xterm.min.css">
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-html,body{height:100%;background:#1a1b26;overflow:hidden;overscroll-behavior:none}
-body{display:flex;flex-direction:column}
+html,body{width:100%;height:100%;min-height:100dvh;background:#1a1b26;overflow:hidden;overscroll-behavior:none}
+body{display:flex;flex-direction:column;min-height:100dvh}
 #toolbar{display:none;position:fixed;bottom:0;left:0;right:0;z-index:100;
   padding:6px 8px calc(6px + env(safe-area-inset-bottom,0px));
   background:rgba(21,22,30,0.92);border-top:1px solid #33467c;
@@ -5091,8 +5135,16 @@ body{display:flex;flex-direction:column}
   white-space:nowrap;cursor:pointer;min-width:44px;min-height:36px;text-align:center;
   touch-action:manipulation;-webkit-tap-highlight-color:transparent;user-select:none}
 #toolbar button:active{background:#7aa2f7;color:#1a1b26}
-#terminal{flex:1;min-height:0}
-#terminal .xterm{height:100%}
+#zoom-controls{position:fixed;top:8px;left:8px;z-index:80;display:flex;gap:4px;align-items:center;
+  padding:4px;background:rgba(21,22,30,0.88);border:1px solid #33467c;border-radius:6px;
+  backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
+#zoom-controls button{background:#24283b;color:#c0caf5;border:1px solid #33467c;border-radius:5px;
+  padding:6px 9px;font:13px monospace;min-width:38px;min-height:32px;cursor:pointer;
+  touch-action:manipulation;-webkit-tap-highlight-color:transparent;user-select:none}
+#zoom-controls button:active{background:#7aa2f7;color:#1a1b26}
+#zoom-label{min-width:42px;text-align:center;color:#a9b1d6;font:12px monospace;cursor:pointer;user-select:none}
+#terminal{flex:1;min-height:0;width:100vw;max-width:100vw}
+#terminal .xterm{height:100%;width:100%}
 /* Real scroll container is xterm's own viewport — kill iOS rubber-band bounce
    and momentum here (not just on body), and reserve gestures for pinch-zoom so
    single-finger drag is driven manually by the touch handler below. */
@@ -5119,10 +5171,54 @@ body.touch #terminal .xterm-screen *{
   background:rgba(224,175,104,0.12);border:1px solid rgba(224,175,104,0.35);border-radius:4px;
   backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px)}
 #login-banner.show{display:inline-block}
+#search-controls{position:fixed;top:8px;left:50%;transform:translateX(-50%);z-index:75;
+  display:flex;align-items:center;gap:4px;padding:4px;
+  background:rgba(21,22,30,0.88);border:1px solid #33467c;border-radius:6px;
+  backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
+#search-controls input{width:min(260px,38vw);min-width:140px;margin:0;padding:6px 8px;
+  background:#15161e;color:#c0caf5;border:1px solid #33467c;border-radius:5px;font:12px monospace}
+#search-controls button{background:#24283b;color:#c0caf5;border:1px solid #33467c;border-radius:5px;
+  padding:6px 9px;font:12px monospace;min-height:32px;cursor:pointer}
+#search-state{min-width:54px;text-align:center;color:#a9b1d6;font:11px monospace}
+#session-events{display:none;position:fixed;top:52px;left:50%;transform:translateX(-50%);z-index:70;
+  width:min(760px,calc(100vw - 24px));max-height:28vh;overflow:auto;padding:8px;
+  background:rgba(21,22,30,0.9);border:1px solid #33467c;border-radius:8px;
+  box-shadow:0 12px 28px rgba(0,0,0,0.28);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
+#session-events.show{display:grid;gap:6px}
+.session-event{padding:7px 9px;border:1px solid rgba(125,207,255,0.24);border-radius:7px;
+  background:rgba(36,40,59,0.92);color:#c0caf5;font:12px/1.45 monospace;white-space:pre-wrap;overflow-wrap:anywhere}
+.session-event.user{margin-left:auto;max-width:86%;border-color:rgba(122,162,247,0.52);background:rgba(122,162,247,0.16)}
+.session-event.progress{max-width:92%;border-color:rgba(158,206,106,0.32)}
+.session-event.final{max-width:92%;border-color:rgba(224,175,104,0.35)}
+.session-event-meta{display:flex;gap:8px;margin-bottom:3px;color:#a9b1d6;font-size:11px}
+.session-event.user .session-event-meta{justify-content:flex-end;color:#c0caf5}
+.session-event a{color:#7dcfff;text-decoration:underline;text-underline-offset:2px}
+@media (max-width:640px){
+  #zoom-controls{top:calc(10px + env(safe-area-inset-top,0px));left:10px;gap:6px;padding:6px}
+  #zoom-controls button{min-width:52px;min-height:46px;padding:8px 12px;font-size:18px;border-radius:7px}
+  #zoom-label{min-width:58px;font-size:16px}
+  #status{top:auto;right:8px;bottom:8px;font-size:12px}
+  #readonly-banner,#login-banner{top:calc(68px + env(safe-area-inset-top,0px));max-width:calc(100vw - 16px);white-space:normal;text-align:center;line-height:1.35}
+  #search-controls{top:calc(70px + env(safe-area-inset-top,0px));width:calc(100vw - 20px)}
+  #search-controls input{flex:1;width:auto;min-width:0}
+  #session-events{top:calc(120px + env(safe-area-inset-top,0px));max-height:24vh}
+}
 </style>
 </head>
 <body>
 <div id="terminal"></div>
+<div id="search-controls" aria-label="terminal search">
+  <input id="term-search" type="search" placeholder="Search session" autocomplete="off">
+  <button id="term-search-prev" type="button" title="Previous match">Prev</button>
+  <button id="term-search-next" type="button" title="Next match">Next</button>
+  <span id="search-state"></span>
+</div>
+<div id="session-events" aria-live="polite"></div>
+<div id="zoom-controls" aria-label="terminal font size controls">
+  <button id="font-smaller" type="button" title="减小字号">A-</button>
+  <span id="zoom-label" title="点击恢复默认字号">100%</span>
+  <button id="font-larger" type="button" title="增大字号">A+</button>
+</div>
 <div id="readonly-banner">只读模式 · 无写入权限</div>
 ${loginUrl ? `<a id="login-banner" href="${loginUrl}" target="_top" rel="noopener">owner 登录后可操作 →</a>` : '<div id="login-banner">owner 登录后可操作</div>'}
 <div id="toolbar">
@@ -5139,30 +5235,60 @@ ${loginUrl ? `<a id="login-banner" href="${loginUrl}" target="_top" rel="noopene
 <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5/lib/xterm.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0/lib/addon-fit.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-web-links@0/lib/addon-web-links.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-search@0/lib/addon-search.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-unicode11@0/lib/addon-unicode11.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-webgl@0/lib/addon-webgl.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-canvas@0/lib/addon-canvas.min.js"></script>
 <script>
 var isTouch='ontouchstart'in window||navigator.maxTouchPoints>0;
-if(isTouch){document.getElementById('vp').content='width=1100,viewport-fit=cover';document.body.classList.add('touch');}
+if(isTouch){document.body.classList.add('touch');}
 var hasToken=${hasWrite};
 var platformReadonly=${platformReadonly};
 if(!hasToken){
   if(platformReadonly){var _lb=document.getElementById('login-banner');_lb.classList.add('show');}
   else{var _rb=document.getElementById('readonly-banner');_rb.classList.add('show');_rb.addEventListener('click',function(){_rb.classList.remove('show')});}
 }
+var FONT_BASE=14,FONT_MIN=12,FONT_MAX=72,FONT_STEP=4,FONT_KEY='botmux.webTerminal.fontSize';
+function _defaultFontSize(){return isTouch?56:14}
+function _clampFontSize(v){
+  v=parseInt(v,10);
+  if(!isFinite(v))v=_defaultFontSize();
+  return Math.max(FONT_MIN,Math.min(FONT_MAX,v));
+}
+function _loadFontSize(){
+  try{
+    var stored=parseInt(localStorage.getItem(FONT_KEY)||'',10);
+    if(isFinite(stored))return _clampFontSize(stored);
+  }catch(_e){}
+  return _defaultFontSize();
+}
+var currentFontSize=_clampFontSize(_loadFontSize());
 
 var term=new Terminal({
   theme:{background:'#1a1b26',foreground:'#a9b1d6',cursor:'#c0caf5',
     selectionBackground:'#33467c',black:'#15161e',red:'#f7768e',
     green:'#9ece6a',yellow:'#e0af68',blue:'#7aa2f7',magenta:'#bb9af7',
     cyan:'#7dcfff',white:'#a9b1d6'},
-  fontSize:14,fontFamily:"'JetBrains Mono','Fira Code',monospace",
+  fontSize:currentFontSize,fontFamily:"'JetBrains Mono','Fira Code',monospace",
   cursorBlink:!isTouch,scrollback:50000,allowProposedApi:true
 });
 var fit=new FitAddon.FitAddon();
 term.loadAddon(fit);
-term.loadAddon(new WebLinksAddon.WebLinksAddon());
+try{
+  term.loadAddon(new WebLinksAddon.WebLinksAddon(function(ev,uri){
+    if(ev&&ev.preventDefault)ev.preventDefault();
+    window.open(uri,'_blank','noopener');
+  }));
+}catch(_wl){
+  term.loadAddon(new WebLinksAddon.WebLinksAddon());
+}
+var searchAddon=null;
+try{
+  if(window.SearchAddon&&SearchAddon.SearchAddon){
+    searchAddon=new SearchAddon.SearchAddon();
+    term.loadAddon(searchAddon);
+  }
+}catch(_se){}
 term.loadAddon(new Unicode11Addon.Unicode11Addon());
 term.unicode.activeVersion='11';
 term.open(document.getElementById('terminal'));
@@ -5209,6 +5335,144 @@ function _showReadonlyToast(){
 }
 document.getElementById('terminal').addEventListener('contextmenu',function(e){e.preventDefault()});
 
+// ── Search + session event strip ──
+function _htmlEscape(s){
+  return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]});
+}
+function _trimUrl(raw){
+  var url=raw,suffix='';
+  while(url&&/[.,!?;:)\\]}，。！？；：、]$/.test(url)){suffix=url.slice(-1)+suffix;url=url.slice(0,-1)}
+  return {url:url,suffix:suffix};
+}
+function _linkifyText(text){
+  var source=String(text||''),re=/https?:\\/\\/[^\\s<>"']+/g,out='',last=0,m;
+  while((m=re.exec(source))){
+    out+=_htmlEscape(source.slice(last,m.index));
+    var p=_trimUrl(m[0]);
+    if(p.url)out+='<a href="'+_htmlEscape(p.url)+'" target="_blank" rel="noopener noreferrer">'+_htmlEscape(p.url)+'</a>';
+    out+=_htmlEscape(p.suffix);
+    last=m.index+m[0].length;
+  }
+  return out+_htmlEscape(source.slice(last));
+}
+function _decodeB64Json(payload){
+  try{
+    return JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(payload),function(c){return c.charCodeAt(0)})));
+  }catch(_e){return null}
+}
+var _sessionEvents=[],_sessionEventSeen=Object.create(null);
+function _eventLabel(ev){
+  if(ev.type==='user')return ev.kind==='guidance'?'你追加':'你';
+  if(ev.type==='final')return '最终回复';
+  return '阶段回复';
+}
+function _pushSessionEvent(ev){
+  if(!ev||typeof ev.content!=='string')return;
+  var content=ev.content.trim();
+  if(!content)return;
+  if(content.length>1200)content=content.slice(0,1200).replace(/\\s+$/,'')+'\\n...';
+  var key=String(ev.type||'event')+':'+String(ev.turnId||'')+':'+content.slice(0,220);
+  if(_sessionEventSeen[key])return;
+  _sessionEventSeen[key]=1;
+  _sessionEvents.push({type:ev.type||'progress',kind:ev.kind||'',content:content,at:ev.at||Date.now(),turnId:ev.turnId||''});
+  if(_sessionEvents.length>18)_sessionEvents=_sessionEvents.slice(-18);
+  _renderSessionEvents();
+}
+function _renderSessionEvents(){
+  var box=document.getElementById('session-events');
+  if(!box)return;
+  if(!_sessionEvents.length){box.classList.remove('show');box.innerHTML='';return;}
+  var html='',items=_sessionEvents.slice(-8);
+  for(var i=0;i<items.length;i++){
+    var ev=items[i],cls=ev.type==='user'?'user':(ev.type==='final'?'final':'progress');
+    var tm='';
+    if(ev.at){try{tm=new Date(ev.at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'})}catch(_e){}}
+    html+='<div class="session-event '+cls+'"><div class="session-event-meta"><span>'+_htmlEscape(_eventLabel(ev))+'</span>'+(tm?'<time>'+_htmlEscape(tm)+'</time>':'')+'</div><div>'+_linkifyText(ev.content)+'</div></div>';
+  }
+  box.innerHTML=html;
+  box.classList.add('show');
+  box.scrollTop=box.scrollHeight;
+}
+var _uiOscCarry='';
+var _UI_OSC_PREFIX='\\x1b]778;botmux-ui:';
+var _RUNNER_OSC_PREFIX='\\x1b]777;botmux:';
+function _consumeBotmuxUiOsc(chunk){
+  var input=_uiOscCarry+chunk;
+  _uiOscCarry='';
+  var out='',cursor=0;
+  while(cursor<input.length){
+    var ui=input.indexOf(_UI_OSC_PREFIX,cursor);
+    var runner=input.indexOf(_RUNNER_OSC_PREFIX,cursor);
+    var start=-1,prefix='';
+    if(ui>=0&&(runner<0||ui<runner)){start=ui;prefix=_UI_OSC_PREFIX}
+    else if(runner>=0){start=runner;prefix=_RUNNER_OSC_PREFIX}
+    if(start<0){
+      out+=input.slice(cursor);
+      break;
+    }
+    out+=input.slice(cursor,start);
+    var bodyStart=start+prefix.length;
+    var end=input.indexOf('\\x07',bodyStart);
+    if(end<0){
+      _uiOscCarry=input.slice(start);
+      break;
+    }
+    var body=input.slice(bodyStart,end);
+    if(prefix===_UI_OSC_PREFIX){
+      _pushSessionEvent(_decodeB64Json(body));
+    }else{
+      var sep=body.indexOf(':');
+      if(sep>0){
+        var kind=body.slice(0,sep);
+        var payload=_decodeB64Json(body.slice(sep+1));
+        if(payload&&typeof payload.content==='string'&&(kind==='user'||kind==='progress'||kind==='final')){
+          _pushSessionEvent({
+            type:kind==='user'?'user':(kind==='final'?'final':'progress'),
+            kind:payload.kind,
+            content:payload.content,
+            at:payload.at||payload.updatedAtMs||payload.completedAtMs||Date.now(),
+            turnId:payload.turnId
+          });
+        }
+      }
+    }
+    cursor=end+1;
+  }
+  return out;
+}
+(function setupTerminalSearch(){
+  var input=document.getElementById('term-search');
+  var prev=document.getElementById('term-search-prev');
+  var next=document.getElementById('term-search-next');
+  var state=document.getElementById('search-state');
+  var timer=0;
+  function setState(text){if(state)state.textContent=text||''}
+  function run(dir,incremental){
+    if(!input)return;
+    var q=input.value;
+    if(!q){setState('');return}
+    if(!searchAddon){setState('unavailable');return}
+    var ok=false;
+    try{ok=dir<0?searchAddon.findPrevious(q):searchAddon.findNext(q,{incremental:!!incremental})}catch(_e){ok=false}
+    setState(ok?'match':'no match');
+  }
+  if(input){
+    input.addEventListener('input',function(){clearTimeout(timer);timer=setTimeout(function(){run(1,true)},90)});
+    input.addEventListener('keydown',function(e){
+      if(e.key==='Enter'){e.preventDefault();run(e.shiftKey?-1:1,false)}
+      else if(e.key==='Escape'){input.value='';setState('');term.focus()}
+    });
+  }
+  if(prev)prev.addEventListener('click',function(){run(-1,false)});
+  if(next)next.addEventListener('click',function(){run(1,false)});
+  window.addEventListener('keydown',function(e){
+    if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='f'){
+      e.preventDefault();
+      if(input){input.focus();input.select()}
+    }
+  });
+})();
+
 // ── WebSocket ──
 var ws_=null,el=document.getElementById('status');
 term.onData(function(d){
@@ -5228,6 +5492,29 @@ function sendResize(){
   _lastC=term.cols;_lastR=term.rows;
   ws_.send(JSON.stringify({type:'resize',cols:term.cols,rows:term.rows}));
 }
+function _updateZoomLabel(){
+  var label=document.getElementById('zoom-label');
+  if(label)label.textContent=Math.round(currentFontSize/FONT_BASE*100)+'%';
+}
+function _setFontSize(px,persist){
+  currentFontSize=_clampFontSize(px);
+  term.options.fontSize=currentFontSize;
+  if(persist){
+    try{localStorage.setItem(FONT_KEY,String(currentFontSize))}catch(_e){}
+  }
+  _updateZoomLabel();
+  if(!fixedSize){try{fit.fit()}catch(_e){}}
+  sendResize();
+}
+(function setupZoomControls(){
+  var smaller=document.getElementById('font-smaller');
+  var larger=document.getElementById('font-larger');
+  var label=document.getElementById('zoom-label');
+  if(smaller)smaller.addEventListener('click',function(){_setFontSize(currentFontSize-FONT_STEP,true)});
+  if(larger)larger.addEventListener('click',function(){_setFontSize(currentFontSize+FONT_STEP,true)});
+  if(label)label.addEventListener('click',function(){_setFontSize(_defaultFontSize(),true)});
+  _updateZoomLabel();
+})();
 // Debounce viewport resize: mobile fires a burst of window.resize as the address
 // bar / on-screen keyboard show & hide, and an un-debounced fit→resize on each
 // reflows the (shared) zellij pane every frame — the status bar toggles and the
@@ -5256,6 +5543,8 @@ window.addEventListener('resize',onViewportResize);
   ws.onopen=function(){el.textContent='connected';el.className='ok';_lastC=_lastR=0;sendResize()};
   ws.onmessage=function(e){
     var data=typeof e.data==='string'?e.data:new TextDecoder().decode(e.data);
+    data=_consumeBotmuxUiOsc(data);
+    if(!data)return;
     // botmux OSC 1989: pin the xterm to the adopted pane's fixed size (the pane
     // can't be resized, so FitAddon-to-browser would wrap the snapshot lines).
     var _fs=data.match(/\\x1b\\]1989;(\\d+);(\\d+)\\x07/);

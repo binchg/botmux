@@ -1,4 +1,5 @@
 node_modules
+.browser-profile/
 .pnpm-store/
 dist/
 data/

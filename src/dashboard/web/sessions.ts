@@ -268,6 +268,168 @@ export function canRestartSession(s: any): boolean {
   return s.status !== 'closed' && !s.adopt && !s.pendingRepo;
 }
 
+interface DashboardSessionLiveEvent {
+  id: string;
+  kind: 'user' | 'assistant_progress' | 'assistant_final';
+  turnId?: string;
+  content: string;
+  at?: number;
+}
+
+interface SessionLiveRenderResult {
+  html: string;
+  matchCount: number;
+  activeMatchIndex: number;
+  activeEventId?: string;
+}
+
+const URL_PATTERN = /https?:\/\/[^\s<>"']+/gi;
+const URL_TRAILING_PUNCT = /[.,!?;:)\]}，。！？；：、]$/;
+
+function trimUrlPunctuation(raw: string): { url: string; suffix: string } {
+  let url = raw;
+  let suffix = '';
+  while (url && URL_TRAILING_PUNCT.test(url)) {
+    suffix = url.slice(-1) + suffix;
+    url = url.slice(0, -1);
+  }
+  return { url, suffix };
+}
+
+function renderHighlightedText(text: string, query = ''): string {
+  const q = query.trim().toLocaleLowerCase();
+  if (!q) return escapeHtml(text);
+  const lower = text.toLocaleLowerCase();
+  let pos = 0;
+  let out = '';
+  while (pos < text.length) {
+    const idx = lower.indexOf(q, pos);
+    if (idx < 0) break;
+    out += escapeHtml(text.slice(pos, idx));
+    out += `<mark>${escapeHtml(text.slice(idx, idx + q.length))}</mark>`;
+    pos = idx + q.length;
+  }
+  out += escapeHtml(text.slice(pos));
+  return out;
+}
+
+export function renderLinkedSessionText(text: string, query = ''): string {
+  const source = String(text ?? '');
+  let out = '';
+  let cursor = 0;
+  URL_PATTERN.lastIndex = 0;
+  for (const match of source.matchAll(URL_PATTERN)) {
+    const raw = match[0];
+    const start = match.index ?? 0;
+    out += renderHighlightedText(source.slice(cursor, start), query);
+    const { url, suffix } = trimUrlPunctuation(raw);
+    if (url) {
+      out += `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${renderHighlightedText(url, query)}</a>`;
+    }
+    out += renderHighlightedText(suffix, query);
+    cursor = start + raw.length;
+  }
+  out += renderHighlightedText(source.slice(cursor), query);
+  return out;
+}
+
+function liveEventLabel(kind: DashboardSessionLiveEvent['kind']): string {
+  if (kind === 'user') return t('sessions.live.user');
+  if (kind === 'assistant_final') return t('sessions.live.assistantFinal');
+  return t('sessions.live.assistantProgress');
+}
+
+function liveEventTime(at: unknown): string {
+  const n = Number(at);
+  if (!Number.isFinite(n) || n <= 0) return '';
+  return new Date(n).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+function normalizeSessionLiveEvents(s: any): DashboardSessionLiveEvent[] {
+  const events = Array.isArray(s?.liveEvents)
+    ? s.liveEvents.filter((item: any) => item && typeof item.content === 'string' && item.content.trim())
+    : [];
+  if (events.length) {
+    return events.map((item: any, index: number) => ({
+      id: String(item.id ?? `${item.kind ?? 'event'}-${index}`),
+      kind: item.kind === 'user' || item.kind === 'assistant_final' ? item.kind : 'assistant_progress',
+      turnId: typeof item.turnId === 'string' ? item.turnId : undefined,
+      content: String(item.content),
+      at: typeof item.at === 'number' ? item.at : undefined,
+    }));
+  }
+  const prompt = String(s?.lastUserPrompt ?? '').trim();
+  if (!prompt) return [];
+  return [{
+    id: `last-user-${String(s?.sessionId ?? 'session')}`,
+    kind: 'user',
+    content: prompt,
+    at: typeof s?.lastMessageAt === 'number' ? s.lastMessageAt : undefined,
+  }];
+}
+
+function liveEventMatches(event: DashboardSessionLiveEvent, query: string): boolean {
+  const q = query.trim().toLocaleLowerCase();
+  if (!q) return false;
+  return event.content.toLocaleLowerCase().includes(q)
+    || liveEventLabel(event.kind).toLocaleLowerCase().includes(q)
+    || String(event.turnId ?? '').toLocaleLowerCase().includes(q);
+}
+
+function liveEventClass(kind: DashboardSessionLiveEvent['kind']): string {
+  if (kind === 'user') return 'from-user';
+  return kind === 'assistant_final' ? 'from-assistant is-final' : 'from-assistant is-progress';
+}
+
+function renderLiveEventHtml(event: DashboardSessionLiveEvent, query: string, matched: boolean, active: boolean): string {
+  const time = liveEventTime(event.at);
+  const classes = [
+    'session-live-event',
+    liveEventClass(event.kind),
+    matched ? 'is-match' : '',
+    active ? 'active-match' : '',
+  ].filter(Boolean).join(' ');
+  return `<article class="${classes}" data-live-event-id="${escapeHtml(event.id)}">
+    <div class="session-live-meta">
+      <span>${escapeHtml(liveEventLabel(event.kind))}</span>
+      ${time ? `<time>${escapeHtml(time)}</time>` : ''}
+    </div>
+    <div class="session-live-bubble">${renderLinkedSessionText(event.content, query)}</div>
+  </article>`;
+}
+
+export function renderSessionLiveListHtml(s: any, query = '', activeMatchIndex = 0): SessionLiveRenderResult {
+  const events = normalizeSessionLiveEvents(s);
+  if (!events.length) {
+    return {
+      html: `<div class="session-live-empty">${escapeHtml(t('sessions.live.empty'))}</div>`,
+      matchCount: 0,
+      activeMatchIndex: 0,
+    };
+  }
+  const q = query.trim();
+  const matchedIndexes = q
+    ? events.map((event, index) => liveEventMatches(event, q) ? index : -1).filter(index => index >= 0)
+    : [];
+  const matchCount = matchedIndexes.length;
+  const normalizedActive = matchCount
+    ? ((activeMatchIndex % matchCount) + matchCount) % matchCount
+    : 0;
+  const activeEventIndex = matchCount ? matchedIndexes[normalizedActive] : -1;
+  const activeEventId = activeEventIndex >= 0 ? events[activeEventIndex]?.id : undefined;
+  return {
+    html: events.map((event, index) => renderLiveEventHtml(
+      event,
+      q,
+      matchCount ? matchedIndexes.includes(index) : false,
+      index === activeEventIndex,
+    )).join(''),
+    matchCount,
+    activeMatchIndex: normalizedActive,
+    activeEventId,
+  };
+}
+
 function pageHtml(): string {
   return `<section class="page">
     <div class="page-heading">
@@ -613,6 +775,10 @@ export function wireSessionsPage(root: HTMLElement): () => void {
   })();
   let idleCleanupBusy = false;
   let idleCleanupHours: IdleCleanupHours = 24;
+  let drawerSessionId: string | null = null;
+  let drawerSessionSnapshot: any = null;
+  let drawerLiveQuery = '';
+  let drawerLiveActiveMatchIndex = 0;
 
   function selectedIdleCleanupHours(): IdleCleanupHours {
     return idleCleanupHours;
@@ -1284,7 +1450,7 @@ export function wireSessionsPage(root: HTMLElement): () => void {
       ${avatar}
       <div class="history-msg-main">
         <div class="history-msg-meta"><span>${escapeHtml(name)}</span><time>${escapeHtml(time)}</time></div>
-        <div class="history-bubble">${escapeHtml(content)}</div>
+        <div class="history-bubble">${renderLinkedSessionText(content)}</div>
       </div>
     </div>`;
   }
@@ -1329,6 +1495,89 @@ export function wireSessionsPage(root: HTMLElement): () => void {
       if (!historyModal.open) return;
       const bodyEl = historyModal.querySelector<HTMLElement>('.history-body');
       if (bodyEl) bodyEl.innerHTML = `<div class="history-error">${escapeHtml(t('sessions.history.fail'))}: ${escapeHtml(String(e))}</div>`;
+    }
+  }
+
+  function sessionLiveMatchText(result: SessionLiveRenderResult): string {
+    if (!drawerLiveQuery.trim()) return '';
+    if (!result.matchCount) return t('sessions.live.noMatch');
+    return t('sessions.live.matchCount', {
+      current: String(result.activeMatchIndex + 1),
+      total: String(result.matchCount),
+    });
+  }
+
+  function sessionLivePanelHtml(s: any): string {
+    const result = renderSessionLiveListHtml(s, drawerLiveQuery, drawerLiveActiveMatchIndex);
+    drawerLiveActiveMatchIndex = result.activeMatchIndex;
+    return `<section class="session-live-panel" aria-label="${escapeHtml(t('sessions.live.title'))}">
+      <div class="session-live-head">
+        <h4>${escapeHtml(t('sessions.live.title'))}</h4>
+        <div class="session-live-tools">
+          <input id="session-live-search" class="session-live-search" type="search" value="${escapeHtml(drawerLiveQuery)}" placeholder="${escapeHtml(t('sessions.live.searchPlaceholder'))}" autocomplete="off">
+          <span id="session-live-match-count" class="session-live-match-count">${escapeHtml(sessionLiveMatchText(result))}</span>
+          <button type="button" id="session-live-prev" class="card-act" title="${escapeHtml(t('sessions.live.prev'))}" aria-label="${escapeHtml(t('sessions.live.prev'))}"${result.matchCount > 1 ? '' : ' disabled'}>↑</button>
+          <button type="button" id="session-live-next" class="card-act" title="${escapeHtml(t('sessions.live.next'))}" aria-label="${escapeHtml(t('sessions.live.next'))}"${result.matchCount > 1 ? '' : ' disabled'}>↓</button>
+        </div>
+      </div>
+      <div id="session-live-list" class="session-live-list">${result.html}</div>
+    </section>`;
+  }
+
+  function currentDrawerSession(): any | null {
+    if (!drawerSessionId) return null;
+    return store.sessions.get(drawerSessionId) ?? drawerSessionSnapshot;
+  }
+
+  function refreshDrawerLivePanel(): void {
+    if (!drawer.open || !drawerSessionId) return;
+    const s = currentDrawerSession();
+    if (!s) return;
+    drawerSessionSnapshot = s;
+    const list = drawer.querySelector<HTMLElement>('#session-live-list');
+    if (!list) return;
+    const search = drawer.querySelector<HTMLInputElement>('#session-live-search');
+    if (search && search.value !== drawerLiveQuery) search.value = drawerLiveQuery;
+    const result = renderSessionLiveListHtml(s, drawerLiveQuery, drawerLiveActiveMatchIndex);
+    drawerLiveActiveMatchIndex = result.activeMatchIndex;
+    list.innerHTML = result.html;
+    const count = drawer.querySelector<HTMLElement>('#session-live-match-count');
+    if (count) count.textContent = sessionLiveMatchText(result);
+    const prev = drawer.querySelector<HTMLButtonElement>('#session-live-prev');
+    const next = drawer.querySelector<HTMLButtonElement>('#session-live-next');
+    if (prev) prev.disabled = result.matchCount <= 1;
+    if (next) next.disabled = result.matchCount <= 1;
+    if (result.activeEventId) {
+      const active = [...list.querySelectorAll<HTMLElement>('[data-live-event-id]')]
+        .find(el => el.dataset.liveEventId === result.activeEventId);
+      active?.scrollIntoView({ block: 'nearest' });
+    } else if (!drawerLiveQuery.trim()) {
+      list.scrollTop = list.scrollHeight;
+    }
+  }
+
+  function wireDrawerLiveControls(): void {
+    const search = drawer.querySelector<HTMLInputElement>('#session-live-search');
+    const prev = drawer.querySelector<HTMLButtonElement>('#session-live-prev');
+    const next = drawer.querySelector<HTMLButtonElement>('#session-live-next');
+    if (search) {
+      search.oninput = () => {
+        drawerLiveQuery = search.value;
+        drawerLiveActiveMatchIndex = 0;
+        refreshDrawerLivePanel();
+      };
+    }
+    if (prev) {
+      prev.onclick = () => {
+        drawerLiveActiveMatchIndex -= 1;
+        refreshDrawerLivePanel();
+      };
+    }
+    if (next) {
+      next.onclick = () => {
+        drawerLiveActiveMatchIndex += 1;
+        refreshDrawerLivePanel();
+      };
     }
   }
 
@@ -1628,6 +1877,7 @@ export function wireSessionsPage(root: HTMLElement): () => void {
     paintCliFilterCount();
     syncBulkUi(visibleRows);
     syncIdleCleanupUi();
+    refreshDrawerLivePanel();
   }
 
   async function locateSession(s: any, locateBtn?: HTMLButtonElement): Promise<void> {
@@ -1817,6 +2067,10 @@ export function wireSessionsPage(root: HTMLElement): () => void {
   }
 
   function openDrawer(s: any): void {
+    drawerSessionId = String(s.sessionId ?? '');
+    drawerSessionSnapshot = s;
+    drawerLiveQuery = '';
+    drawerLiveActiveMatchIndex = 0;
     const closed = s.status === 'closed';
     const terminal = terminalHref(s);
     drawer.innerHTML = `<article>
@@ -1846,6 +2100,7 @@ export function wireSessionsPage(root: HTMLElement): () => void {
         <button id="land-btn" type="button">${t('sessions.land')}</button>
         ${ui.authed ? `<button id="insight-btn" type="button">${t('sessions.insight')}</button>` : ''}
       </div>
+      ${sessionLivePanelHtml(s)}
       <div id="land-area"></div>
       <div id="insight-area"></div>
       <form method="dialog"><button>${t('sessions.dismiss')}</button></form>
@@ -1868,6 +2123,8 @@ export function wireSessionsPage(root: HTMLElement): () => void {
     if (historyBtn) {
       historyBtn.onclick = () => void openHistoryModal(s);
     }
+    wireDrawerLiveControls();
+    refreshDrawerLivePanel();
 
     // Writable-terminal segment (.term-write) lives inside the drawer, outside
     // the board's click delegation — wire it directly.
@@ -2321,6 +2578,12 @@ export function wireSessionsPage(root: HTMLElement): () => void {
   });
   termModal.addEventListener('close', () => {
     termModal.innerHTML = '';
+  });
+  drawer.addEventListener('close', () => {
+    drawerSessionId = null;
+    drawerSessionSnapshot = null;
+    drawerLiveQuery = '';
+    drawerLiveActiveMatchIndex = 0;
   });
   historyModal.addEventListener('click', e => {
     if (e.target === historyModal) historyModal.close();

@@ -11,6 +11,7 @@ import {
   buildCardBodyElements,
   buildImageCardElements,
   buildMarkdownCard,
+  buildTitledMarkdownCard,
   buildContextualReplyCard,
   brandFooterSegment,
   DEFAULT_BRAND_LABEL,
@@ -214,6 +215,31 @@ describe('buildMarkdownCard', () => {
     const card = JSON.parse(json);
     const last = card.body.elements[card.body.elements.length - 1];
     expect(last.content).not.toContain('<at id=');
+  });
+});
+
+describe('buildTitledMarkdownCard', () => {
+  it('renders a plain card header title and body markdown', () => {
+    const card = JSON.parse(buildTitledMarkdownCard({
+      title: '实际会话标题',
+      md: '阶段进度，继续处理。',
+      brand: '',
+      template: 'turquoise',
+    }));
+    expect(card.header.template).toBe('turquoise');
+    expect(card.header.title.content).toBe('实际会话标题');
+    expect(card.body.elements[0]).toMatchObject({ tag: 'markdown', content: '阶段进度，继续处理。' });
+    expect(card.body.elements.some((e: any) => e.tag === 'hr')).toBe(false);
+  });
+
+  it('compacts long titles for mobile cards', () => {
+    const card = JSON.parse(buildTitledMarkdownCard({
+      title: 'x'.repeat(80),
+      md: 'ok.',
+      brand: '',
+      maxTitleChars: 12,
+    }));
+    expect(card.header.title.content).toBe(`${'x'.repeat(11)}…`);
   });
 });
 

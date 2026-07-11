@@ -95,6 +95,13 @@ import {
 import { buildBridgeSendMarkerContent } from './services/bridge-fallback-gate.js';
 import { writeManualIntentIfAbsentTo } from './services/restart-intent-store.js';
 import { stripLegacyPendingCardFields } from './services/session-store.js';
+import {
+  configuredFileShareRoots,
+  localFileShareEnabled,
+  localFileSharePolicyEnv,
+  resolveLocalFileShareBaseUrl,
+  rewriteLocalFileLinks,
+} from './services/local-file-share.js';
 
 // Resolve the CLI's UI locale once from the global config file, so subsequent
 // CLI output (and any t() callers that don't pass an explicit locale) honour
@@ -301,10 +308,22 @@ function ensureUniqueBotProcessNames(bots: any[]): void {
   }
 }
 
+/**
+ * The daemons load ~/.botmux/.env themselves, but dashboard.js is a direct PM2
+ * entry and intentionally has no general dotenv side effect. Copy only the
+ * local-file-share allowlisted keys into PM2's generated env so dashboard and
+ * every daemon see one policy, without copying credentials into the ecosystem
+ * file or logs.
+ */
+function fileSharePm2Env(): Record<string, string> {
+  return localFileSharePolicyEnv();
+}
+
 function ecosystemConfig(): string {
   const daemonScript = join(PKG_ROOT, 'dist', 'index-daemon.js');
   const bots = loadBotsJson();
   ensureUniqueBotProcessNames(bots);
+  const fileShareEnv = fileSharePm2Env();
 
   const baseApp = {
     script: daemonScript,
@@ -344,6 +363,7 @@ function ecosystemConfig(): string {
     env: {
       SESSION_DATA_DIR: DATA_DIR,
       BOTMUX_BOT_INDEX: String(i),
+      ...fileShareEnv,
       // Native-memory diagnostics. Default off; operator can flip it on
       // ad-hoc (e.g. `BOTMUX_MEMORY_DIAG_INTERVAL_MS=5000`) when chasing an
       // RSS regression — turned off in master so logs stay quiet.
@@ -374,6 +394,7 @@ function ecosystemConfig(): string {
       SESSION_DATA_DIR: DATA_DIR,
       BOTMUX_DASHBOARD_HOST: process.env.BOTMUX_DASHBOARD_HOST ?? '0.0.0.0',
       BOTMUX_DASHBOARD_PORT: process.env.BOTMUX_DASHBOARD_PORT ?? '7891',
+      ...fileShareEnv,
     },
   });
 
@@ -4578,6 +4599,22 @@ async function cmdSend(rest: string[]): Promise<void> {
         text = lines.join('\n').trim();
       }
     } catch { /* not JSON, use as-is */ }
+
+    // Feishu cannot open `/abs/path` links from another device. Convert only
+    // explicit markdown links inside this session's working root into opaque,
+    // expiring dashboard capability URLs. Rejected paths stay untouched.
+    if (localFileShareEnabled()) {
+      const sharedLinks = rewriteLocalFileLinks(text, {
+        dataDir: resolveDataDir(),
+        roots: configuredFileShareRoots(s.workingDir ?? process.cwd()),
+        baseUrl: resolveLocalFileShareBaseUrl(),
+        enabled: true,
+      });
+      text = sharedLinks.content;
+      if (sharedLinks.shared.length > 0) {
+        console.error(`🔗 已安全开放 ${sharedLinks.shared.length} 个本地文件链接（过期后自动失效）`);
+      }
+    }
 
     // Auto-detect @BotName in text and inject as mentions, using the sender
     // app's cross-ref file for per-app-scoped open_ids. Without this, a plain

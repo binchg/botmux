@@ -16,6 +16,8 @@ pnpm daemon:logs          # 查看日志
 
 全局 `botmux` 命令走 `~/.botmux/bin/botmux` 瘦 wrapper，指向「最后认领的 checkout」的 `dist/cli.js`（daemon 启动时也会写）：
 
+本机部署有更严格的唯一源约束：live botmux 只能由用户自己的 canonical checkout `/home/chenjinbin.i/workspace/d/botmux` 当前个人分支和工作区代码认领并部署。`workspace/w/*`、task worktree、review checkout、临时分支、干净 `origin/master` 快照和 npm 安装目录都不得认领全局 shim 或重启 live daemon；这些 checkout 构建时必须使用 `BOTMUX_NO_CLAIM=1`，只做测试。其它 checkout 的功能要上线时，先安全集成回 canonical checkout，再从 canonical 执行部署。部署前后必须分别核对 canonical 分支/HEAD/工作区 diff，以及全局 wrapper、daemon、worker 的真实路径，不能只看 build 成功。
+
 ```bash
 pnpm use:here             # 把全局 botmux 指向当前 checkout（仅改指向，不重启 daemon）
 pnpm switch:here          # = build + use:here 一步到位
@@ -24,15 +26,15 @@ BOTMUX_NO_CLAIM=1 pnpm use:here   # 逃生阀：本次不认领
 
 纯 `pnpm build` 故意不认领——review/验证别人 PR 时不会悄悄抢走全局指向。实现见 `scripts/claim-botmux-bin.mjs`。
 
-### 改动需用户手动测试时 → 部署本 checkout 到 live daemon
+### 改动需用户手动测试时 → 先集成到 canonical，再部署 live daemon
 
-当改动需要用户在飞书里**手动验证**（而非纯单测能覆盖），改完自测绿后执行：
+当改动需要用户在飞书里**手动验证**（而非纯单测能覆盖），先把改动集成到 `/home/chenjinbin.i/workspace/d/botmux`，在该 canonical checkout 自测绿后执行：
 
 ```bash
 pnpm switch:here && botmux restart
 ```
 
-否则用户测的还是旧代码（典型症状：新加的命令/配置「找不到」）。⚠️ 这会让**所有 bot** 都跑本 checkout 的 build；测试/合并完成后记得切回 canonical checkout，以免 review worktree 被删后全局 shim 失效。
+否则用户测的还是旧代码（典型症状：新加的命令/配置「找不到」）。⚠️ 这会让**所有 bot** 都运行 canonical checkout 的当前 build；禁止为了临时验证把全局 shim 切到 review worktree，避免遗漏 canonical 未提交功能、worktree 删除后 shim 失效或运行源漂移。
 
 ## 模块结构
 

@@ -14,6 +14,8 @@
  */
 import { describe, it, expect } from 'vitest';
 import { shouldReleaseFirstPromptTimeout, shouldWriteNow } from '../src/utils/input-gate.js';
+import { createCodexAdapter } from '../src/adapters/cli/codex.js';
+import { createCodexAppAdapter } from '../src/adapters/cli/codex-app.js';
 
 const base = {
   isPromptReady: false,
@@ -43,6 +45,32 @@ describe('shouldWriteNow', () => {
 
   it('queues when the CLI is busy and does not support type-ahead', () => {
     expect(shouldWriteNow({ ...base, supportsTypeAhead: false, awaitingFirstPrompt: false })).toBe(false);
+  });
+
+  it.each([
+    ['codex', createCodexAdapter('/bin/codex')],
+    ['codex-app', createCodexAppAdapter('/bin/codex')],
+  ])('%s writes a busy follow-up after first prompt so it becomes guidance/type-ahead', (_name, adapter) => {
+    expect(adapter.supportsTypeAhead).toBe(true);
+    expect(shouldWriteNow({
+      isPromptReady: false,
+      isFlushing: false,
+      supportsTypeAhead: adapter.supportsTypeAhead === true,
+      awaitingFirstPrompt: false,
+    })).toBe(true);
+  });
+
+  it.each([
+    ['codex', createCodexAdapter('/bin/codex')],
+    ['codex-app', createCodexAppAdapter('/bin/codex')],
+  ])('%s still queues during startup before the input box exists', (_name, adapter) => {
+    expect(adapter.supportsTypeAhead).toBe(true);
+    expect(shouldWriteNow({
+      isPromptReady: false,
+      isFlushing: false,
+      supportsTypeAhead: adapter.supportsTypeAhead === true,
+      awaitingFirstPrompt: true,
+    })).toBe(false);
   });
 });
 
