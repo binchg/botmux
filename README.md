@@ -202,7 +202,7 @@ CLI 进入 botmux 会话时自动获得 `~/.botmux/bin` 在 PATH 中，以及一
 
 ### 飞书中安全打开本地文件（可选）
 
-开启 `BOTMUX_FILE_SHARE_ENABLED=true` 后，botmux 会调用 irepo `subrepo/secure-local-file-share` 打包安装的 CLI，把出站 Markdown 中明确写出的本地文件链接（例如 `[报告](/workspace/report.md)`）替换为短期 capability URL。botmux 主仓只保留 CLI 调用与旧 `/f/` 入口转发；token、文件校验、Markdown 前后端和过期页都由独立组件实现。
+开启 `BOTMUX_FILE_SHARE_ENABLED=true` 后，botmux 会调用 irepo `subrepo/botmux-secure-local-file-share` 打包安装的 CLI，把出站 Markdown 中明确写出的本地文件链接（例如 `[报告](/workspace/report.md)`）替换为短期 capability URL。botmux 主仓只保留 CLI 调用与旧 `/f/` 入口转发；token、文件校验、Markdown 前后端和过期页都由独立组件实现。
 
 发送链路会自动扫描 Markdown 超链接；链接目标是允许 root 内的本地文件时调用独立 CLI 转成 `/f/` URL，再继续发送，不需要给 AI 注入额外 prompt。Markdown 查看页从文档一级标题提取页面标题，并展示具体到期时间；到期后返回 `410 Gone` 和“链接已过期”，过期记录会脱敏成不含本地路径的轻量 tombstone 并最多保留一年，未知或越权 token 仍统一返回 `404`。
 

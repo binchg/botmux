@@ -99,7 +99,7 @@ function resolveCli(): string | null {
   if (configured) return existsSync(configured) ? configured : null;
   const candidates = [
     join(homedir(), '.local', 'bin', 'secure-local-file-share'),
-    join(homedir(), 'workspace', 'd', 'irepo', 'subrepo', 'secure-local-file-share', 'dist', 'cli.mjs'),
+    join(homedir(), 'workspace', 'd', 'irepo', 'subrepo', 'botmux-secure-local-file-share', 'dist', 'cli.mjs'),
   ].filter((value): value is string => !!value);
   return candidates.find(path => existsSync(path)) ?? null;
 }

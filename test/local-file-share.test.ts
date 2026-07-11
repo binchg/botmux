@@ -41,7 +41,7 @@ describe('external secure file share adapter', () => {
     const fake = join(root, 'secure-local-file-share');
     writeFileSync(fake, `#!/usr/bin/env node
 let input='';process.stdin.on('data',c=>input+=c);process.stdin.on('end',()=>{
- const body=JSON.parse(input);process.stdout.write(JSON.stringify({content:body.content.replace('/tmp/report.md','https://devbox/f/token/v-token.md'),shared:[{path:'/tmp/report.md',url:'https://devbox/f/token/v-token.md'}],skipped:[]}));
+ const body=JSON.parse(input);process.stdout.write(JSON.stringify({content:body.content.replace('/tmp/report.md','https://devbox/f/token'),shared:[{path:'/tmp/report.md',url:'https://devbox/f/token'}],skipped:[]}));
 });
 `);
     chmodSync(fake, 0o755);
@@ -52,7 +52,7 @@ let input='';process.stdin.on('data',c=>input+=c);process.stdin.on('end',()=>{
       baseUrl: 'https://devbox',
       enabled: true,
     });
-    expect(result.content).toBe('[文档标题](https://devbox/f/token/v-token.md)');
+    expect(result.content).toBe('[文档标题](https://devbox/f/token)');
     expect(result.shared).toHaveLength(1);
   });
 
@@ -67,7 +67,7 @@ let input='';process.stdin.on('data',c=>input+=c);process.stdin.on('end',()=>{
 
   it('proxies legacy dashboard /f links to the standalone loopback service', async () => {
     const upstream = await listen(createServer((req, res) => {
-      if (req.url?.includes('/expired/')) {
+      if (req.url?.includes('/expired')) {
         res.writeHead(410, { 'content-type': 'text/html' }).end('<h1>链接已过期</h1>');
       } else {
         res.writeHead(200, { 'content-type': 'text/html' }).end('<h1>独立服务</h1>');
@@ -78,10 +78,13 @@ let input='';process.stdin.on('data',c=>input+=c);process.stdin.on('end',()=>{
       const url = new URL(req.url ?? '/', `http://${req.headers.host}`);
       if (!handleLocalFileShareRequest(req, res, url, { dataDir: join(root, 'data'), enabled: true })) res.writeHead(404).end();
     }));
-    const ok = await fetch(`${dashboard}/f/token/v-token.md`);
+    const ok = await fetch(`${dashboard}/f/token`);
     expect(ok.status).toBe(200);
     expect(await ok.text()).toContain('独立服务');
-    const expired = await fetch(`${dashboard}/f/expired/v-expired.md`);
+    const legacy = await fetch(`${dashboard}/f/token/v-token.md`);
+    expect(legacy.status).toBe(200);
+    expect(await legacy.text()).toContain('独立服务');
+    const expired = await fetch(`${dashboard}/f/expired`);
     expect(expired.status).toBe(410);
     expect(await expired.text()).toContain('链接已过期');
   });
