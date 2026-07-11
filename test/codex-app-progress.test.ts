@@ -128,7 +128,7 @@ describe('Codex App progress throttling', () => {
 
   it('normalizes and keeps a complete long sentence beyond the soft limit', () => {
     const text = normalizeCodexAppProgressText(`first,\r\n\r\n\r\nsecond sentence. ${'x'.repeat(30)}`, 20);
-    expect(text).toBe('first,\n\nsecond sentence.');
+    expect(text).toBe('first,\nsecond sentence.');
   });
 
   it('does not split clauses at commas and emits the complete sentence', () => {
@@ -167,9 +167,46 @@ describe('Codex App progress throttling', () => {
     });
   });
 
+  it('drops a detached leading tail through the next full stop', () => {
+    const raw = ')，不再只回复当前旧话题。这个动作需要 botmux-send 的顶层消息。';
+    const chunk = selectCodexAppProgressChunk(raw, 240);
+
+    expect(chunk?.content).toBe('这个动作需要 botmux-send 的顶层消息。');
+    expect(raw.slice(chunk?.consumedChars)).toBe('');
+  });
+
+  it('uses a comma as the weakest recovery boundary for a detached beginning', () => {
+    expect(selectCodexAppProgressChunk('），还在检查原因，下一步核对发送日志。', 240)?.content)
+      .toBe('下一步核对发送日志。');
+  });
+
+  it('buffers a detached beginning until a safe recovery boundary appears', () => {
+    expect(selectCodexAppProgressChunk('），仍在检查这段内容。', 240)).toBeNull();
+  });
+
   it('keeps a long sentence intact instead of hard-splitting at the soft card limit', () => {
     const chunk = selectCodexAppProgressChunk('abcdefghij klmnopqrstuvwxyz。', 10);
     expect(chunk?.content).toBe('abcdefghij klmnopqrstuvwxyz。');
+  });
+
+  it('keeps exactly one complete sentence per card without blank lines', () => {
+    expect(selectCodexAppProgressChunk('第一句。\n\n第二句。', 240)?.content).toBe('第一句。');
+    const forwarder = new CodexAppProgressForwarder();
+    expect(forwarder.drain('turn-one-sentence', '第一句。\n\n第二句。').map(item => item.content))
+      .toEqual(['第一句。', '第二句。']);
+  });
+
+  it('drains multiple completed runner sentences immediately as separate snapshots', () => {
+    const throttler = new CodexAppProgressThrottler({ minIntervalMs: 10_000 });
+    expect(throttler.drainSnapshots({
+      turnId: 'turn-drain',
+      text: '版本根因已经定位。接下来增加自动版本并在 push 后部署。',
+      startedAtMs: 0,
+      nowMs: 1,
+    }).map(item => item.content)).toEqual([
+      '版本根因已经定位。',
+      '接下来增加自动版本并在 push 后部署。',
+    ]);
   });
 
   it('forwards legacy cumulative progress as incremental chunks', () => {
@@ -193,6 +230,29 @@ describe('Codex App progress throttling', () => {
 
     expect(forwarder.next('turn-1', '我')).toBeNull();
     expect(forwarder.next('turn-1', '正在检查原因。')?.content).toBe('我正在检查原因。');
+  });
+
+  it('realigns a legacy runner chunk that starts inside the previous sentence', () => {
+    const forwarder = new CodexAppProgressForwarder();
+
+    expect(forwarder.next('turn-1', ')，不再只回复当前旧话题。这个动作需要顶层消息。')?.content)
+      .toBe('这个动作需要顶层消息。');
+  });
+
+  it('realigns after a forced runner snapshot ended mid-sentence', () => {
+    const throttler = new CodexAppProgressThrottler({ minIntervalMs: 1 });
+
+    expect(throttler.maybeSnapshot({
+      text: '收到，完成后在同一个话题群发新话题，并真实 @ 你（open_id `ou_641',
+      startedAtMs: 0,
+      nowMs: 1,
+      force: true,
+    })?.content).toContain('open_id');
+    expect(throttler.maybeSnapshot({
+      text: '收到，完成后在同一个话题群发新话题，并真实 @ 你（open_id `ou_641`），不再只回复当前旧话题。这个动作需要顶层消息。',
+      startedAtMs: 0,
+      nowMs: 2,
+    })?.content).toBe('这个动作需要顶层消息。');
   });
 
   it('uses the latest question with a 25-Chinese-character visual budget', () => {

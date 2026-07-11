@@ -2454,48 +2454,50 @@ function setupWorkerHandlers(ds: DaemonSession, worker: ChildProcess): void {
       }
 
       case 'progress_output': {
-        const progress = codexAppProgressForwarderFor(ds).next(msg.turnId, msg.content);
-        if (!progress) {
+        const progresses = codexAppProgressForwarderFor(ds).drain(msg.turnId, msg.content);
+        if (progresses.length === 0) {
           logger.info(`[${t}] Codex App progress skipped as duplicate or partial (turn ${msg.turnId.substring(0, 8)})`);
           break;
         }
-        const content = progress.content.trim();
-        if (!content) break;
-        appendSessionLiveEvent(ds, {
-          kind: 'assistant_progress',
-          turnId: msg.turnId,
-          content,
-          at: Date.now(),
-        });
-        dashboardEventBus.publish({
-          type: 'session.update',
-          body: {
-            sessionId: ds.session.sessionId,
-            patch: sessionLivePatch(ds),
-          },
-        });
-        if (ds.pendingWaitPromises?.has(msg.turnId) || ds.asyncTriggerResults?.has(msg.turnId)) {
-          logger.info(`[${t}] Codex App progress captured but not posted for HTTP turn ${msg.turnId.substring(0, 8)}`);
-          break;
-        }
-        if (ds.session.status === 'closed') {
-          logger.info(`[${t}] Codex App progress abandoned — session closed (turn ${msg.turnId.substring(0, 8)})`);
-          break;
-        }
-        try {
-          const cardJson = buildTitledMarkdownCard({
-            title: codexAppProgressCardTitle(
-              ds.currentTurnTitle || ds.session.currentTurnTitle || ds.lastUserPrompt || ds.session.title,
-            ),
-            md: content,
-            brand: '',
-            locale: localeForBot(ds.larkAppId),
-            template: 'turquoise',
+        for (const progress of progresses) {
+          const content = progress.content.trim();
+          if (!content) continue;
+          appendSessionLiveEvent(ds, {
+            kind: 'assistant_progress',
+            turnId: msg.turnId,
+            content,
+            at: Date.now(),
           });
-          await scopedReply(cardJson, 'interactive', msg.turnId);
-          logger.info(`[${t}] Codex App progress card forwarded (turn ${msg.turnId.substring(0, 8)}, ${content.length} chars)`);
-        } catch (err: any) {
-          logger.error(`[${t}] Failed to deliver Codex App progress to Lark: ${err.message}`);
+          dashboardEventBus.publish({
+            type: 'session.update',
+            body: {
+              sessionId: ds.session.sessionId,
+              patch: sessionLivePatch(ds),
+            },
+          });
+          if (ds.pendingWaitPromises?.has(msg.turnId) || ds.asyncTriggerResults?.has(msg.turnId)) {
+            logger.info(`[${t}] Codex App progress captured but not posted for HTTP turn ${msg.turnId.substring(0, 8)}`);
+            continue;
+          }
+          if (ds.session.status === 'closed') {
+            logger.info(`[${t}] Codex App progress abandoned — session closed (turn ${msg.turnId.substring(0, 8)})`);
+            break;
+          }
+          try {
+            const cardJson = buildTitledMarkdownCard({
+              title: codexAppProgressCardTitle(
+                ds.currentTurnTitle || ds.session.currentTurnTitle || ds.lastUserPrompt || ds.session.title,
+              ),
+              md: content,
+              brand: '',
+              locale: localeForBot(ds.larkAppId),
+              template: 'turquoise',
+            });
+            await scopedReply(cardJson, 'interactive', msg.turnId);
+            logger.info(`[${t}] Codex App progress card forwarded (turn ${msg.turnId.substring(0, 8)}, ${content.length} chars)`);
+          } catch (err: any) {
+            logger.error(`[${t}] Failed to deliver Codex App progress to Lark: ${err.message}`);
+          }
         }
         break;
       }

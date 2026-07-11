@@ -25,6 +25,7 @@
     "daemon:status": "node dist/cli.js status",
     "use:here": "node scripts/claim-botmux-bin.mjs",
     "switch:here": "pnpm build && pnpm use:here",
+    "deploy:dev": "node scripts/deploy-dev.mjs",
     "test": "vitest run --project unit",
     "test:all": "vitest run",
     "test:e2e": "vitest run --project e2e",

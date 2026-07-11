@@ -98,6 +98,7 @@ function resolveCli(): string | null {
   const configured = setting('BOTMUX_FILE_SHARE_CLI')?.trim();
   if (configured) return existsSync(configured) ? configured : null;
   const candidates = [
+    join(homedir(), '.local', 'bin', 'botmux-secure-local-file-share'),
     join(homedir(), '.local', 'bin', 'secure-local-file-share'),
     join(homedir(), 'workspace', 'd', 'irepo', 'subrepo', 'botmux-secure-local-file-share', 'dist', 'cli.mjs'),
   ].filter((value): value is string => !!value);

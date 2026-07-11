@@ -57,6 +57,47 @@ function extendSentenceEnd(text: string, end: number): number {
   return cursor;
 }
 
+function endsAtNaturalBoundary(text: string, end: number): boolean {
+  let cursor = Math.min(text.length, end) - 1;
+  while (cursor >= 0 && /[\s…”’」』）】》]/.test(text[cursor])) cursor--;
+  return cursor >= 0 && isNaturalBoundary(text, cursor);
+}
+
+function startsWithDetachedPunctuation(text: string): boolean {
+  return /^[，,、；;：:。！？!?…）)】》」』’”]/.test(text);
+}
+
+function firstCommaEnd(text: string, start: number): number {
+  for (let i = Math.max(0, start); i < text.length; i++) {
+    if (text[i] === '，' || text[i] === ',') return i + 1;
+  }
+  return -1;
+}
+
+function leadingFragmentEnd(text: string, alignLeadingFragment: boolean): number {
+  let meaningfulStart = 0;
+  while (meaningfulStart < text.length && /[\s，,、；;：:。！？!?…）)】》」』’”]/.test(text[meaningfulStart])) {
+    meaningfulStart++;
+  }
+  if (!alignLeadingFragment && meaningfulStart === 0) return 0;
+
+  // The previous card may have been forced out in the middle of one model
+  // message. Prefer dropping the detached tail through its first full stop so
+  // the new card starts with an independent sentence. If no following sentence
+  // is available yet, a comma is the weakest accepted recovery boundary.
+  const sentenceEnd = firstBoundaryEndAfter(text, meaningfulStart);
+  if (sentenceEnd >= 0) {
+    const extendedEnd = extendSentenceEnd(text, sentenceEnd);
+    if (text.slice(extendedEnd).trim()) return extendedEnd;
+  }
+
+  const commaEnd = firstCommaEnd(text, meaningfulStart);
+  if (commaEnd >= 0 && text.slice(commaEnd).trim()) return commaEnd;
+
+  // Keep buffering rather than publishing another visibly broken beginning.
+  return -1;
+}
+
 function lastBoundaryEndAtOrBefore(text: string, limit: number): number {
   let last = -1;
   const end = Math.min(text.length, Math.max(0, limit));
@@ -71,6 +112,14 @@ function firstBoundaryEndAfter(text: string, start: number): number {
     if (isNaturalBoundary(text, i)) return i + 1;
   }
   return -1;
+}
+
+function collapseCardWhitespace(text: string): string {
+  return text
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n[ \t]+/g, '\n')
+    .replace(/\n{2,}/g, '\n')
+    .trim();
 }
 
 export interface CodexAppProgressChunk {
@@ -89,34 +138,38 @@ export function selectCodexAppProgressChunk(
   raw: string,
   maxContentChars = DEFAULT_MAX_CONTENT_CHARS,
   force = false,
+  alignLeadingFragment = false,
 ): CodexAppProgressChunk | null {
   const normalized = normalizeRawProgressText(raw, false);
   if (!normalized.trim()) return null;
 
   const leading = normalized.length - normalized.trimStart().length;
-  const text = normalized.slice(leading);
+  const unalignedText = normalized.slice(leading);
+  if (!unalignedText) return null;
+
+  const fragmentEnd = leadingFragmentEnd(
+    unalignedText,
+    alignLeadingFragment || startsWithDetachedPunctuation(unalignedText),
+  );
+  if (fragmentEnd < 0) return null;
+  const alignedLeading = unalignedText.slice(fragmentEnd).length
+    - unalignedText.slice(fragmentEnd).trimStart().length;
+  const alignment = fragmentEnd + alignedLeading;
+  const text = unalignedText.slice(alignment);
   if (!text) return null;
 
-  const limit = Math.max(1, maxContentChars);
-  let end = -1;
-  if (text.length <= limit) {
-    end = force ? text.length : lastBoundaryEndAtOrBefore(text, text.length);
-    if (end < 0) return null;
-  } else {
-    end = lastBoundaryEndAtOrBefore(text, limit);
-    if (end < 0) {
-      // `maxContentChars` is a soft card-size target, never a sentence cutter.
-      // If the first sentence is long, keep scanning until its real ending.
-      end = firstBoundaryEndAfter(text, limit);
-      if (end < 0) end = force ? text.length : -1;
-      if (end < 0) return null;
-    }
-  }
+  // One progress card owns exactly one complete sentence. maxContentChars is
+  // deliberately a soft target: a long first sentence stays intact, while a
+  // second finished sentence is drained as a separate card immediately.
+  void maxContentChars;
+  let end = firstBoundaryEndAfter(text, 0);
+  if (end < 0) end = force ? text.length : -1;
+  if (end < 0) return null;
 
   end = extendSentenceEnd(text, end);
-  const content = text.slice(0, end).trim();
+  const content = collapseCardWhitespace(text.slice(0, end));
   if (!content) return null;
-  return { content, consumedChars: leading + end };
+  return { content, consumedChars: leading + alignment + end };
 }
 
 export function normalizeCodexAppProgressText(raw: string, maxContentChars = DEFAULT_MAX_CONTENT_CHARS): string {
@@ -171,6 +224,7 @@ export class CodexAppProgressThrottler {
       // clause into a card. Only item/completed may accept text without final
       // punctuation because app-server then guarantees semantic completion.
       input.force,
+      this.emittedUntil > 0 && !endsAtNaturalBoundary(fullContent, this.emittedUntil),
     );
     if (!chunk) return null;
     if (this.lastSentAtMs === 0 && chunk.content.length < this.minInitialChars) return null;
@@ -186,6 +240,34 @@ export class CodexAppProgressThrottler {
       startedAtMs: input.startedAtMs,
       updatedAtMs: input.nowMs,
     };
+  }
+
+  /** Emit every already-complete sentence in the current model snapshot.
+   * The first sentence still obeys the throttle; backlog sentences bypass the
+   * interval because they are already independent progress units. */
+  drainSnapshots(input: CodexAppProgressInput, maxCards = 8): CodexAppProgressSnapshot[] {
+    const first = this.maybeSnapshot(input);
+    if (!first) return [];
+    const snapshots = [first];
+    const fullContent = normalizeCodexAppProgressText(input.text, Number.MAX_SAFE_INTEGER);
+    while (snapshots.length < Math.max(1, maxCards) && this.emittedUntil < fullContent.length) {
+      const chunk = selectCodexAppProgressChunk(
+        fullContent.slice(this.emittedUntil),
+        this.maxContentChars,
+        false,
+        !endsAtNaturalBoundary(fullContent, this.emittedUntil),
+      );
+      if (!chunk) break;
+      this.emittedUntil += chunk.consumedChars;
+      this.emittedPrefix = fullContent.slice(0, this.emittedUntil);
+      snapshots.push({
+        turnId: input.turnId,
+        content: chunk.content,
+        startedAtMs: input.startedAtMs,
+        updatedAtMs: input.nowMs,
+      });
+    }
+    return snapshots;
   }
 }
 
@@ -218,6 +300,18 @@ export class CodexAppProgressForwarder {
     if (!chunk) return null;
     state.pending = state.pending.slice(chunk.consumedChars);
     return { ...chunk, sequence: ++state.sequence };
+  }
+
+  /** Compatibility path for cumulative/older runners: one incoming payload
+   * may contain several sentences, but every returned card contains one. */
+  drain(turnId: string | undefined, raw: string, maxCards = 8): CodexAppProgressChunk[] {
+    const chunks: CodexAppProgressChunk[] = [];
+    while (chunks.length < Math.max(1, maxCards)) {
+      const chunk = this.next(turnId, raw);
+      if (!chunk) break;
+      chunks.push(chunk);
+    }
+    return chunks;
   }
 }
 

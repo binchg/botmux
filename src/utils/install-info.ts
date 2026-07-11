@@ -29,9 +29,21 @@ export function isLocalDevInstall(): boolean {
  *  npm-global install this is the real published version; in a source checkout
  *  it's the unbuilt '0.0.0' (CI injects the real version at publish). */
 export function botmuxVersion(): string {
+  return botmuxVersionAt(packageRoot());
+}
+
+/** Resolve a version for a concrete install root. Published npm installs use
+ * package.json; the canonical source checkout uses a tracked dev-version.json
+ * that the push-before-deploy workflow increments on every deployment. */
+export function botmuxVersionAt(rootDir: string): string {
   try {
-    const pkg = JSON.parse(readFileSync(join(packageRoot(), 'package.json'), 'utf-8'));
-    return typeof pkg.version === 'string' ? pkg.version : '0.0.0';
+    const pkg = JSON.parse(readFileSync(join(rootDir, 'package.json'), 'utf-8'));
+    const packageVersion = typeof pkg.version === 'string' ? pkg.version : '0.0.0';
+    if (packageVersion !== '0.0.0') return packageVersion;
+    const dev = JSON.parse(readFileSync(join(rootDir, 'dev-version.json'), 'utf-8'));
+    return typeof dev.version === 'string' && /^\d+\.\d+\.\d+$/.test(dev.version)
+      ? dev.version
+      : packageVersion;
   } catch {
     return '0.0.0';
   }

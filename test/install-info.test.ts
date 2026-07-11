@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { isLocalDevInstallAt, isLocalDevInstall, botmuxVersion } from '../src/utils/install-info.js';
+import { isLocalDevInstallAt, isLocalDevInstall, botmuxVersion, botmuxVersionAt } from '../src/utils/install-info.js';
 
 describe('isLocalDevInstallAt', () => {
   let dir: string;
@@ -39,10 +39,25 @@ describe('isLocalDevInstall (runtime)', () => {
 });
 
 describe('botmuxVersion', () => {
-  it('reads the version from the package root package.json', () => {
+  it('reads the tracked dev version for this source checkout', () => {
     // resolve repo root from this test file: test/ → repo root
     const root = fileURLToPath(new URL('..', import.meta.url));
-    const expected = JSON.parse(readFileSync(join(root, 'package.json'), 'utf-8')).version;
+    const expected = JSON.parse(readFileSync(join(root, 'dev-version.json'), 'utf-8')).version;
     expect(botmuxVersion()).toBe(expected);
+  });
+
+  it('prefers a published package version and falls back safely', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'botmux-version-'));
+    try {
+      writeFileSync(join(dir, 'package.json'), JSON.stringify({ version: '2.3.4' }));
+      writeFileSync(join(dir, 'dev-version.json'), JSON.stringify({ version: '9.9.9' }));
+      expect(botmuxVersionAt(dir)).toBe('2.3.4');
+      writeFileSync(join(dir, 'package.json'), JSON.stringify({ version: '0.0.0' }));
+      expect(botmuxVersionAt(dir)).toBe('9.9.9');
+      writeFileSync(join(dir, 'dev-version.json'), JSON.stringify({ version: 'bad' }));
+      expect(botmuxVersionAt(dir)).toBe('0.0.0');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

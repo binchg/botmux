@@ -213,6 +213,16 @@ CLI 进入 botmux 会话时自动获得 `~/.botmux/bin` 在 PATH 中，以及一
 
 关闭 `BOTMUX_FILE_SHARE_ENABLED` 并重启即可立即停止新链接生成和 `/f/` 访问。
 
+### canonical dev 版本与部署
+
+`/home/chenjinbin.i/workspace/d/botmux` 的 `dev` 分支需要更新 live 服务时，使用：
+
+```bash
+corepack pnpm deploy:dev -- --message "fix(scope): 中文描述"
+```
+
+命令会自动将 `dev-version.json` 的 patch 尾号 +1，先完成测试和构建，再提交并 push `dev`；只有远程 HEAD 回读与本地一致后才重启。重启通知因此显示可追溯的 `v0.0.N`，不再显示源码占位版本 `v0.0.0`。npm 正式版本仍由 tag/CI 管理。
+
 ---
 
 ## 前置要求

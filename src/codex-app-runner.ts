@@ -283,14 +283,14 @@ function userTextInput(content: string): JsonObject[] {
 
 function maybeEmitProgress(turn: ActiveTurn, force = false): void {
   if (turn.finalText) return;
-  const snapshot = turn.progress.maybeSnapshot({
+  const snapshots = turn.progress.drainSnapshots({
     turnId: turn.turnId,
     text: turn.allAgentText,
     startedAtMs: turn.startedAtMs,
     nowMs: Date.now(),
     force,
   });
-  if (snapshot) emitMarker('progress', snapshot);
+  for (const snapshot of snapshots) emitMarker('progress', snapshot);
 }
 
 function enqueueNextTurn(content: string): void {

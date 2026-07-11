@@ -10,7 +10,10 @@ pnpm daemon:restart       # 重启 daemon（自动恢复 active sessions）
 pnpm daemon:logs          # 查看日志
 ```
 
-- 每次修改后需要 `pnpm build` 然后 `pnpm daemon:restart`
+- canonical `dev` 分支每次修改后部署必须使用
+  `corepack pnpm deploy:dev -- --message "type(scope): 中文描述"`。该命令会把
+  `dev-version.json` 尾号 +1，先测试/build、commit/push 并回读远程 HEAD，
+  只有 push 成功后才认领 checkout 并 restart。禁止把未 push 代码直接部署到 live。
 
 ### 多 checkout：全局 `botmux` 指向谁
 
@@ -28,10 +31,10 @@ BOTMUX_NO_CLAIM=1 pnpm use:here   # 逃生阀：本次不认领
 
 ### 改动需用户手动测试时 → 先集成到 canonical，再部署 live daemon
 
-当改动需要用户在飞书里**手动验证**（而非纯单测能覆盖），先把改动集成到 `/home/chenjinbin.i/workspace/d/botmux`，在该 canonical checkout 自测绿后执行：
+当改动需要用户在飞书里**手动验证**（而非纯单测能覆盖），先把改动集成到 `/home/chenjinbin.i/workspace/d/botmux`，然后执行：
 
 ```bash
-pnpm switch:here && botmux restart
+corepack pnpm deploy:dev -- --message "fix(scope): 中文描述"
 ```
 
 否则用户测的还是旧代码（典型症状：新加的命令/配置「找不到」）。⚠️ 这会让**所有 bot** 都运行 canonical checkout 的当前 build；禁止为了临时验证把全局 shim 切到 review worktree，避免遗漏 canonical 未提交功能、worktree 删除后 shim 失效或运行源漂移。
@@ -55,12 +58,12 @@ pnpm switch:here && botmux restart
 
 - 标题与 commit message 同格式：`type(scope): 中文描述`
 - 描述用**中文说明**：改了什么、为什么、影响面（涉及哪些模块/会话类型）
-- 附**实际测试验证**：贴出跑过的命令和关键结果（`pnpm build`、`pnpm test`、相关 e2e），不要只写「应该没问题」；需要 live 验证的先 `pnpm switch:here && botmux restart` 在飞书里实测并注明结果
+- 附**实际测试验证**：贴出跑过的命令和关键结果（`pnpm build`、`pnpm test`、相关 e2e），不要只写「应该没问题」；需要 live 验证的使用 `deploy:dev` 在 push 后部署，再在飞书里实测并注明结果
 - UI 类改动（飞书卡片 / dashboard / web 终端）附**截图示意**，让 reviewer 不用跑代码就能看到效果
 
 ## Git 提交 & 发版规范
 
 - commit message 格式：`type(scope): 中文描述`。`type`（feat/fix/docs/chore 等）和 `scope`（模块名）保留英文，冒号后的描述用中文
 - 日常 `git commit` + `git push` 不会触发发版；打 `v*` annotated tag 并 push 才发版（**仅在用户明确要求时**），CI 自动从 tag 提取版本号发布 npm + 创建 GitHub Release
-- **不要**手动修改 `package.json` 的 `version` 字段；tag message 用中文撰写，CI 会用作 Release body
+- **不要**手动修改 `package.json` 的 `version` 字段；正式发版仍由 tag/CI 注入。canonical 源码部署版本单独记录在 `dev-version.json`，只允许 `deploy:dev` 自动尾号 +1，用于重启通知和 Git 回查。
 - **正式版（latest）必须从 master 出**：CI 校验被打 tag 的 commit 含最新 `origin/master`。非 master 分支灰度用 `-canary.N`/`-beta.N`/`-rc.N` 后缀（CI 自动路由到对应 npm dist-tag，其它 `-` 后缀兜底到 `next`，都不污染 latest）；验证 canary：`npm i -g botmux@canary`
