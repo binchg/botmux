@@ -38,13 +38,23 @@ function normalizeRawProgressText(raw: string, trim = true): string {
 
 function isNaturalBoundary(text: string, index: number): boolean {
   const ch = text[index];
-  if (ch === '\n') return true;
-  if ('。！？!?；;，,、：:'.includes(ch)) return true;
+  // A progress card must end at a complete sentence. Commas, enumeration
+  // separators, colons, semicolons and line breaks are clause/formatting
+  // boundaries and used to produce bad cases such as "我" or "入口".
+  if ('。！？!?…'.includes(ch)) return true;
   if (ch === '.') {
     const next = text[index + 1];
     return next === undefined || /\s/.test(next);
   }
   return false;
+}
+
+function extendSentenceEnd(text: string, end: number): number {
+  let cursor = end;
+  // Keep repeated ellipses and closing punctuation with the sentence instead
+  // of starting the next progress card with a dangling quote/bracket.
+  while (cursor < text.length && /[…”’」』）】》]/.test(text[cursor])) cursor++;
+  return cursor;
 }
 
 function lastBoundaryEndAtOrBefore(text: string, limit: number): number {
@@ -56,21 +66,23 @@ function lastBoundaryEndAtOrBefore(text: string, limit: number): number {
   return last;
 }
 
-function hardSplitEnd(text: string, limit: number): number {
-  const capped = Math.min(text.length, Math.max(1, limit));
-  for (let i = capped; i > Math.max(0, capped - 40); i--) {
-    if (/\s/.test(text[i - 1] ?? '')) return i;
+function firstBoundaryEndAfter(text: string, start: number): number {
+  for (let i = Math.max(0, start); i < text.length; i++) {
+    if (isNaturalBoundary(text, i)) return i + 1;
   }
-  return capped;
+  return -1;
 }
 
 export interface CodexAppProgressChunk {
   content: string;
   consumedChars: number;
+  sequence?: number;
 }
 
 interface ForwardedProgressState {
-  emittedPrefix: string;
+  lastRaw: string;
+  pending: string;
+  sequence: number;
 }
 
 export function selectCodexAppProgressChunk(
@@ -93,10 +105,15 @@ export function selectCodexAppProgressChunk(
   } else {
     end = lastBoundaryEndAtOrBefore(text, limit);
     if (end < 0) {
-      end = hardSplitEnd(text, limit);
+      // `maxContentChars` is a soft card-size target, never a sentence cutter.
+      // If the first sentence is long, keep scanning until its real ending.
+      end = firstBoundaryEndAfter(text, limit);
+      if (end < 0) end = force ? text.length : -1;
+      if (end < 0) return null;
     }
   }
 
+  end = extendSentenceEnd(text, end);
   const content = text.slice(0, end).trim();
   if (!content) return null;
   return { content, consumedChars: leading + end };
@@ -143,14 +160,17 @@ export class CodexAppProgressThrottler {
     const elapsedMs = input.nowMs - this.lastSentAtMs;
     if (this.lastSentAtMs > 0 && elapsedMs < this.minIntervalMs) return null;
 
-    const forceIntervalSnapshot = input.force
-      || (this.lastSentAtMs === 0 && input.nowMs - input.startedAtMs >= this.initialFallbackMs)
+    const intervalReady = (this.lastSentAtMs === 0 && input.nowMs - input.startedAtMs >= this.initialFallbackMs)
       || (this.lastSentAtMs > 0 && elapsedMs >= this.minIntervalMs);
+    const forceIntervalSnapshot = input.force || intervalReady;
 
     const chunk = selectCodexAppProgressChunk(
       fullContent.slice(this.emittedUntil),
       this.maxContentChars,
-      forceIntervalSnapshot,
+      // A timer may decide *when* to check, but must not turn an unfinished
+      // clause into a card. Only item/completed may accept text without final
+      // punctuation because app-server then guarantees semantic completion.
+      input.force,
     );
     if (!chunk) return null;
     if (this.lastSentAtMs === 0 && chunk.content.length < this.minInitialChars) return null;
@@ -182,22 +202,28 @@ export class CodexAppProgressForwarder {
     const normalized = normalizeRawProgressText(raw);
     if (!normalized) return null;
 
-    const state = this.states.get(key) ?? { emittedPrefix: '' };
+    const state = this.states.get(key) ?? { lastRaw: '', pending: '', sequence: 0 };
     this.states.set(key, state);
 
-    if (state.emittedPrefix && state.emittedPrefix === normalized) return null;
-    if (state.emittedPrefix && state.emittedPrefix.startsWith(normalized)) return null;
-
-    const cumulative = !!state.emittedPrefix && normalized.startsWith(state.emittedPrefix);
-    const source = cumulative ? normalized.slice(state.emittedPrefix.length) : normalized;
-    const chunk = selectCodexAppProgressChunk(source, this.maxContentChars, true);
-    if (!chunk) return null;
-
-    if (cumulative) {
-      state.emittedPrefix += source.slice(0, chunk.consumedChars);
-    } else {
-      state.emittedPrefix += normalized.slice(0, chunk.consumedChars);
+    if (normalized !== state.lastRaw) {
+      const cumulative = !!state.lastRaw && normalized.startsWith(state.lastRaw);
+      state.pending += cumulative ? normalized.slice(state.lastRaw.length) : normalized;
+      state.lastRaw = normalized;
     }
-    return chunk;
+
+    // Daemon-side validation intentionally remains strict even if an older
+    // runner emits a partial forced chunk. Buffer it until the sentence-ending
+    // fragment arrives, then post one coherent card.
+    const chunk = selectCodexAppProgressChunk(state.pending, this.maxContentChars, false);
+    if (!chunk) return null;
+    state.pending = state.pending.slice(chunk.consumedChars);
+    return { ...chunk, sequence: ++state.sequence };
   }
+}
+
+export function codexAppProgressCardTitle(sequence: number | undefined): string {
+  const node = Number.isFinite(sequence) && (sequence ?? 0) > 0 ? Math.floor(sequence!) : 1;
+  // Fixed short title: unlike the user prompt, this cannot wrap to a second
+  // line on either the desktop or mobile Lark card header.
+  return `进度节点 ${node}`;
 }

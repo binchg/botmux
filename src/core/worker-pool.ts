@@ -27,7 +27,7 @@ import { botLocale, localeForBot, t as tr } from '../i18n/index.js';
 import { claudeJsonlPathForSession } from '../adapters/cli/claude-code.js';
 import { findUniqueClaudeSessionByCwd } from './session-discovery.js';
 import { buildMarkdownCard, buildContextualReplyCard, buildTitledMarkdownCard } from '../im/lark/md-card.js';
-import { CodexAppProgressForwarder } from '../services/codex-app-progress.js';
+import { CodexAppProgressForwarder, codexAppProgressCardTitle } from '../services/codex-app-progress.js';
 import { replyToDocComment, chunkCommentText, unsubscribeDocFile } from '../im/lark/doc-comment.js';
 import { listDocSubscriptionsForSession, removeDocSubscription } from '../services/doc-subs-store.js';
 import { TmuxBackend } from '../adapters/backend/tmux-backend.js';
@@ -2483,9 +2483,8 @@ function setupWorkerHandlers(ds: DaemonSession, worker: ChildProcess): void {
           break;
         }
         try {
-          const title = ds.currentTurnTitle || ds.session.currentTurnTitle || ds.session.title || getCliDisplayName(effectiveCliId);
           const cardJson = buildTitledMarkdownCard({
-            title,
+            title: codexAppProgressCardTitle(progress.sequence),
             md: content,
             brand: '',
             locale: localeForBot(ds.larkAppId),
