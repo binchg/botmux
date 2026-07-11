@@ -202,12 +202,14 @@ CLI 进入 botmux 会话时自动获得 `~/.botmux/bin` 在 PATH 中，以及一
 
 ### 飞书中安全打开本地文件（可选）
 
-开启 `BOTMUX_FILE_SHARE_ENABLED=true` 后，botmux 会把出站 Markdown 中明确写出的本地文件链接（例如 `[报告](/workspace/report.md)`）替换为现有 Dashboard 上的短期 capability URL。URL 使用 256-bit 随机 token，不包含真实文件名或磁盘路径；只允许会话工作目录或 `BOTMUX_FILE_SHARE_ROOTS` 中的普通文件，不提供目录浏览和任意 `path` 参数。
+开启 `BOTMUX_FILE_SHARE_ENABLED=true` 后，botmux 会调用 irepo `subrepo/secure-local-file-share` 打包安装的 CLI，把出站 Markdown 中明确写出的本地文件链接（例如 `[报告](/workspace/report.md)`）替换为短期 capability URL。botmux 主仓只保留 CLI 调用与旧 `/f/` 入口转发；token、文件校验、Markdown 前后端和过期页都由独立组件实现。
 
-- 默认 7 天失效、单文件 50 MiB、Markdown 5 MiB、每来源 IP 每分钟 120 次；均可通过 `.env.example` 中的变量收紧。
+AI 交付 Markdown 文档时应使用文档一级标题作为链接文本，例如 `[序列化 Crash 分析报告](/workspace/report.md)`，不要发送裸路径或裸 URL。文档页会展示具体到期时间；到期后返回 `410 Gone` 并明确提示“链接已过期”，过期记录会脱敏成不含本地路径的轻量 tombstone 并最多保留一年，未知或越权 token 仍统一返回 `404`。
+
+- 默认 7 天失效、单文件 50 MiB、Markdown 5 MiB；均可通过 `.env.example` 中的变量收紧。
 - `.env`、私钥/证书、`.git`、`.ssh`、`.botmux` 和 symlink 越界会被拒绝；请求仅允许私网/loopback socket 与私网 Host。
 - Markdown 使用开源 `markdown-it` 解析，在浏览器中按接近飞书 Doc 的中文字体、内容宽度、标题层级、列表、引用、表格和代码块风格响应式展示，并支持默认浅色、手动切换深色；原始 HTML/脚本被禁用，并带 CSP、`nosniff`、防 iframe 和 `no-referrer`。
-- 默认只生成直接内网 Dashboard URL，不经远程访问平台；如需固定内网入口，可显式设置 `BOTMUX_FILE_SHARE_BASE_URL=http://<内网IP>:<Dashboard端口>`。
+- 推荐由 devbox 443 网关把 `/f/` 反代到独立服务 `127.0.0.1:7892`，并显式设置 `BOTMUX_FILE_SHARE_BASE_URL=https://<内网主机>`；旧的 7891 `/f/` 链接仍由 botmux 薄代理兼容。
 
 关闭 `BOTMUX_FILE_SHARE_ENABLED` 并重启即可立即停止新链接生成和 `/f/` 访问。
 
