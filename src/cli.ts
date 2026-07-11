@@ -95,6 +95,7 @@ import {
 import { buildBridgeSendMarkerContent } from './services/bridge-fallback-gate.js';
 import { writeManualIntentIfAbsentTo } from './services/restart-intent-store.js';
 import { stripLegacyPendingCardFields } from './services/session-store.js';
+import { botmuxVersion } from './utils/install-info.js';
 import {
   configuredFileShareRoots,
   localFileShareEnabled,
@@ -327,6 +328,7 @@ function ecosystemConfig(): string {
 
   const baseApp = {
     script: daemonScript,
+    version: botmuxVersion(),
     cwd: CONFIG_DIR,
     autorestart: true,
     max_restarts: 10,
@@ -374,6 +376,7 @@ function ecosystemConfig(): string {
   apps.push({
     name: 'botmux-dashboard',
     script: join(PKG_ROOT, 'dist', 'dashboard.js'),
+    version: botmuxVersion(),
     cwd: PKG_ROOT,
     autorestart: true,
     max_restarts: 10,
@@ -6115,13 +6118,7 @@ async function cmdPresetExport(rest: string[]): Promise<void> {
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 function getVersion(): string {
-  const pkgPath = join(PKG_ROOT, 'package.json');
-  try {
-    const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
-    return pkg.version || 'unknown';
-  } catch {
-    return 'unknown';
-  }
+  return botmuxVersion();
 }
 
 const command = process.argv[2];
