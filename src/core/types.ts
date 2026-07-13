@@ -113,6 +113,12 @@ export interface DaemonSession {
   /** Dashboard-only live transcript snippets. In-memory by design so they never
    *  expand persisted prompt context or get replayed back into an agent turn. */
   liveEvents?: SessionLiveEvent[];
+  /** Daemon-originated Lark replies currently in flight. An explicit terminal
+   *  `botmux send` drains this set before posting its final card. In-memory only. */
+  outboundReplies?: Set<Promise<unknown>>;
+  /** Current turn's explicit terminal-send barrier. While present, late
+   *  Codex App progress/final events are not posted. Cleared by beginNewTurn. */
+  terminalSend?: import('../services/terminal-send-barrier.js').TerminalSendState;
   lastUserPrompt?: string;
   lastCliInput?: string;
   replyThreadAliases?: { [rootMessageId: string]: { createdAt: string; lastUsedAt: string } };

@@ -58,6 +58,7 @@ import { triggerWorkflowFromEnvelope } from '../workflows/trigger-from-envelope.
 import type { TriggerInput, TriggerResult } from '../workflows/trigger-run.js';
 import { validateTriggerRequest, type TriggerResponse } from '../services/trigger-types.js';
 import { resolveCliSelection, selectionKeyForBot } from '../setup/cli-selection.js';
+import { cancelTerminalSend, commitTerminalSend, prepareTerminalSend } from '../services/terminal-send-barrier.js';
 
 // Workflow runner is wired by the daemon (it owns the heavy triggerWorkflowRun
 // deps). Until set, workflow-targeted triggers report not-implemented.
@@ -132,7 +133,7 @@ export async function readJsonBody<T = unknown>(req: IncomingMessage): Promise<T
   return JSON.parse(Buffer.concat(chunks).toString('utf8'));
 }
 
-// ─── Token-route auth (loopback HMAC) ───────────────────────────────────────
+// ─── Sensitive-route auth (loopback HMAC) ───────────────────────────────────
 //
 // Most IPC routes are loopback-trusted: the codebase's threat model treats a
 // local botmux process as already root-equivalent on the box (see the
@@ -141,6 +142,8 @@ export async function readJsonBody<T = unknown>(req: IncomingMessage): Promise<T
 // terminal-control credential (the worker write token: GET /write-link returns
 // the URL, POST /write-link-card delivers it as a private Lark card), so they
 // additionally require the caller to prove it can read ~/.botmux/.dashboard-secret.
+// The terminal-send barrier uses the same gate because it can suppress later
+// user-visible progress/final replies for a live turn.
 // That keeps a sandboxed worker, or a random local process that merely discovered
 // the ipcPort, from minting write tokens for sessions it doesn't own. The legit
 // callers — the dashboard proxy and `botmux term-link` — sign with the same secret
@@ -636,6 +639,41 @@ ipcRoute('POST', '/api/sessions/:sessionId/write-link-card', async (req, res, pa
     : r.error === 'no_owner' ? 422
     : 502;
   jsonRes(res, status, r);
+});
+
+/**
+ * Synchronize the daemon's automatic reply channel with a direct terminal
+ * `botmux send`. `prepare` marks the current turn terminal and waits for every
+ * daemon reply already in flight; `commit` confirms the direct card landed;
+ * `cancel` releases a held final when the direct send failed. HMAC-gated
+ * because this endpoint can suppress
+ * user-visible output for a live session.
+ */
+ipcRoute('POST', '/api/sessions/:sessionId/terminal-send', async (req, res, params) => {
+  if (!tokenRouteAuthorized(req)) return jsonRes(res, 401, { ok: false, error: 'unauthorized' });
+  const ds = findActiveBySessionId(params.sessionId);
+  if (!ds) return jsonRes(res, 404, { ok: false, error: 'session_not_active' });
+  let body: { action?: unknown; requestId?: unknown; turnId?: unknown };
+  try { body = await readJsonBody(req); }
+  catch { return jsonRes(res, 400, { ok: false, error: 'bad_json' }); }
+  if (typeof body.requestId !== 'string' || !body.requestId) {
+    return jsonRes(res, 400, { ok: false, error: 'bad_request_id' });
+  }
+  if (body.action === 'cancel') {
+    return jsonRes(res, 200, { ok: true, cancelled: cancelTerminalSend(ds, body.requestId) });
+  }
+  if (body.action === 'commit') {
+    const committed = commitTerminalSend(ds, body.requestId);
+    return jsonRes(res, committed ? 200 : 409, committed
+      ? { ok: true, committed: true }
+      : { ok: false, error: 'terminal_request_mismatch' });
+  }
+  if (body.action !== 'prepare') return jsonRes(res, 400, { ok: false, error: 'bad_action' });
+  if (typeof body.turnId !== 'string' || !body.turnId) {
+    return jsonRes(res, 400, { ok: false, error: 'bad_turn_id' });
+  }
+  const result = await prepareTerminalSend(ds, { requestId: body.requestId, turnId: body.turnId });
+  jsonRes(res, 200, { ok: true, drained: result.drained });
 });
 
 // ─── Sandbox landing (owner reviews the clone's diff then applies it back) ───

@@ -27,6 +27,15 @@ describe('built-in botmux-send skill', () => {
     expect(skill!.content).toContain('--content-file > 位置参数 > stdin');
     expect(skill!.content).toContain('多行正文推荐只放在 heredoc/stdin 中');
   });
+
+  it('teaches terminal sends when the final card must remain last', () => {
+    const skill = BUILTIN_SKILLS.find(s => s.name === 'botmux-send');
+    expect(skill).toBeDefined();
+    expect(skill!.content).toContain('botmux send --terminal --mention-back');
+    expect(skill!.content).toContain('排空已经在途的自动消息');
+    expect(skill!.content).toContain('发送成功后不要再调用 `botmux send`');
+    expect(skill!.content).toContain('下一条用户消息会自动开启新一轮');
+  });
 });
 
 describe('built-in botmux-history skill', () => {

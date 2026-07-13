@@ -105,6 +105,7 @@ import {
 } from '../src/services/session-lifecycle-hooks.js';
 import { initWorkerPool, __testOnly_setupWorkerHandlers } from '../src/core/worker-pool.js';
 import type { DaemonSession } from '../src/core/types.js';
+import { commitTerminalSend, prepareTerminalSend } from '../src/services/terminal-send-barrier.js';
 
 function makeFakeWorker() {
   const worker = new EventEmitter() as any;
@@ -220,9 +221,12 @@ describe('session lifecycle hook helper', () => {
 });
 
 describe('worker-pool lifecycle hook integration', () => {
+  let sessionReplyMock: ReturnType<typeof vi.fn>;
+
   beforeEach(() => {
+    sessionReplyMock = vi.fn(async () => 'om_reply');
     initWorkerPool({
-      sessionReply: vi.fn(async () => 'om_reply'),
+      sessionReply: sessionReplyMock,
       getSessionWorkingDir: () => '/repo',
       getActiveCount: () => 1,
       closeSession: vi.fn(),
@@ -298,5 +302,22 @@ describe('worker-pool lifecycle hook integration', () => {
       reason: 'exit_code_1',
       code: 1,
     }));
+  });
+
+  it('does not post late Codex App progress after a terminal send marker', async () => {
+    const worker = makeFakeWorker();
+    const ds = makeDs({ worker });
+    await prepareTerminalSend(ds, { requestId: 'terminal-progress', turnId: 'lark-turn' });
+    commitTerminalSend(ds, 'terminal-progress');
+    __testOnly_setupWorkerHandlers(ds, worker);
+
+    worker.emit('message', {
+      type: 'progress_output',
+      turnId: 'codex-app-turn',
+      content: '这是一条完整但已经迟到的进度。',
+    });
+    await flush();
+
+    expect(sessionReplyMock).not.toHaveBeenCalled();
   });
 });

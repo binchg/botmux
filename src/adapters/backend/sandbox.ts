@@ -685,7 +685,7 @@ export interface RelayRequest {
 // (--content-file/--file(s)/--image(s)), routing flags (--chat-id/--into/
 // --top-level), and --session-id are NOT allowlisted: content/attachments come
 // from validated outbox files, and session-id is forced by the worker.
-const RELAY_FLAGS_NOVAL = new Set(['--mention-back', '--no-mention', '--no-quote', '--voice']);
+const RELAY_FLAGS_NOVAL = new Set(['--mention-back', '--no-mention', '--no-quote', '--voice', '--terminal']);
 const RELAY_FLAGS_VAL = new Set(['--mention', '--quote']);
 
 export interface ValidatedRelay { contentName: string; attachmentNames: string[]; flags: string[]; }

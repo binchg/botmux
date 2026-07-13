@@ -3423,6 +3423,8 @@ botmux v${getVersion()} — IM ↔ AI 编程 CLI 桥接
        --no-mention                    明确声明本条不@任何人
        --quote <message_id>            指定引用某条消息（普通群，默认引用本轮触发消息）
        --no-quote                      不引用，发独立消息（普通群）
+       --terminal                      声明为本轮最后一张卡片：排空在途自动消息，
+                                       并抑制本轮后续进度/最终兜底
        --voice "<口语文字>"            合成语音气泡发出（需先 botmux voice 配置 TTS）
        --top-level                     发顶层消息（不回复进当前话题）
        --chat-id <oc_xxx>              指定目标群（默认当前话题所在群）
@@ -4166,7 +4168,7 @@ async function relaySend(rest: string[], relayDir: string): Promise<void> {
   if (contentFile) {
     content = existsSync(contentFile) ? readFileSync(contentFile, 'utf-8') : '';
   } else {
-    const pos = positionals(rest, ['--card', '--text', '--top-level', '--no-quote', '--mention-back', '--no-mention', '--anyway', '--voice']);
+    const pos = positionals(rest, ['--card', '--text', '--top-level', '--no-quote', '--mention-back', '--no-mention', '--anyway', '--voice', '--terminal']);
     content = pos.length > 0 ? pos.join(' ') : await readStdin();
   }
   const id = randomBytes(8).toString('hex');
@@ -4191,7 +4193,7 @@ async function relaySend(rest: string[], relayDir: string): Promise<void> {
   // Forward only presentation flags (must match the watcher's allowlist); path,
   // routing (--chat-id/--into/--top-level) and --session-id flags are dropped —
   // content/attachments come from the outbox and session-id is forced host-side.
-  const FLAGS_NOVAL = new Set(['--mention-back', '--no-mention', '--no-quote', '--voice']);
+  const FLAGS_NOVAL = new Set(['--mention-back', '--no-mention', '--no-quote', '--voice', '--terminal']);
   const FLAGS_VAL = new Set(['--mention', '--quote']);
   const flags: string[] = [];
   for (let i = 0; i < rest.length; i++) {
@@ -4221,6 +4223,42 @@ async function relaySend(rest: string[], relayDir: string): Promise<void> {
   }
   console.error('relay: 等待 daemon 投递超时（120s）');
   process.exit(1);
+}
+
+async function requestTerminalSendBarrier(input: {
+  action: 'prepare' | 'commit' | 'cancel';
+  sessionId: string;
+  larkAppId: string;
+  requestId: string;
+  turnId?: string;
+}): Promise<{ drained?: number; cancelled?: boolean }> {
+  const daemon = findDaemon(input.larkAppId);
+  if (!daemon) throw new Error(`找不到在线 daemon (larkAppId=${input.larkAppId})`);
+  const secret = loadDashboardSecret(join(CONFIG_DIR, '.dashboard-secret'));
+  if (!secret) throw new Error('缺少或为空 .dashboard-secret，无法建立终态发送屏障');
+  const ts = Math.floor(Date.now() / 1000).toString();
+  const nonce = randomBytes(8).toString('hex');
+  const sig = createHmac('sha256', secret).update(`${ts}:${nonce}`).digest('base64url');
+  const res = await fetch(
+    `http://127.0.0.1:${daemon.ipcPort}/api/sessions/${encodeURIComponent(input.sessionId)}/terminal-send`,
+    {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'X-Botmux-Cli-Ts': ts,
+        'X-Botmux-Cli-Nonce': nonce,
+        'X-Botmux-Cli-Auth': sig,
+      },
+      body: JSON.stringify(input),
+      signal: AbortSignal.timeout(30_000),
+    },
+  );
+  let body: any = {};
+  try { body = await res.json(); } catch { /* handled below */ }
+  if (!res.ok || !body?.ok) {
+    throw new Error(`daemon 终态发送屏障失败: ${body?.error ?? `HTTP ${res.status}`}`);
+  }
+  return body;
 }
 
 async function cmdSend(rest: string[]): Promise<void> {
@@ -4278,6 +4316,10 @@ async function cmdSend(rest: string[]): Promise<void> {
   // text/card message. The content should be spoken-style prose (the 🔊 button
   // injects a condense-first instruction before the model calls this).
   const asVoice = rest.includes('--voice');
+  // --terminal declares this the last user-visible message of the current turn.
+  // The daemon blocks new automatic progress/final cards and drains cards
+  // already in flight before this process posts the final card directly.
+  const terminal = rest.includes('--terminal');
   // Quote chain (chat scope): --quote <message_id> overrides the auto target,
   // --no-quote forces a plain (un-quoted) send.
   const explicitQuote = argValue(rest, '--quote');
@@ -4309,7 +4351,7 @@ async function cmdSend(rest: string[]): Promise<void> {
     if (!existsSync(contentFile)) { console.error(`文件不存在: ${contentFile}`); process.exit(1); }
     content = readFileSync(contentFile, 'utf-8');
   } else {
-    const pos = positionals(rest, ['--card', '--text', '--top-level', '--no-quote', '--mention-back', '--no-mention', '--anyway', '--voice', '--attention']);
+    const pos = positionals(rest, ['--card', '--text', '--top-level', '--no-quote', '--mention-back', '--no-mention', '--anyway', '--voice', '--attention', '--terminal']);
     if (pos.length > 0) {
       content = pos.join(' ');
     } else {
@@ -4321,6 +4363,19 @@ async function cmdSend(rest: string[]): Promise<void> {
   if (!content.trim() && images.length === 0 && files.length === 0) {
     console.error('没有内容可发送。用法:\n  echo "消息" | botmux send\n  botmux send "消息"\n  botmux send --content-file /tmp/msg.md --images /tmp/chart.png');
     process.exit(1);
+  }
+
+  if (terminal && (sendTopLevel || !!overrideChatId || !!sendInto || asVoice)) {
+    console.error('--terminal 只支持当前会话内的卡片回复，不能与 --top-level/--chat-id/--into/--voice 混用。');
+    process.exit(2);
+  }
+  if (terminal && files.length > 0) {
+    console.error('--terminal 不支持 --files：附件会作为后续独立消息发送，无法保证卡片最后。请先发附件，最后再发终态卡片。');
+    process.exit(2);
+  }
+  if (terminal && !currentTurnId) {
+    console.error('--terminal 无法确定当前 turn-id；请在本轮 botmux 会话的 CLI 进程内执行。');
+    process.exit(2);
   }
 
   // --attention guard: only valid replying into the current session with a text
@@ -4390,6 +4445,10 @@ async function cmdSend(rest: string[]): Promise<void> {
   // （之前 currentTurnId 取自 cliPidMarker，文档轮里取值不稳导致误判落到 @ 硬门）。
   const docTarget = s.currentDocCommentTarget;
   if (docTarget && !sendTopLevel && !overrideChatId && !sendInto) {
+    if (terminal) {
+      console.error('--terminal 暂不支持飞书文档评论落点。');
+      process.exit(2);
+    }
     const { registerBot, loadBotConfigs } = await import('./bot-registry.js');
     try { for (const cfg of loadBotConfigs()) registerBot(cfg); } catch { /* */ }
     const { replyToDocComment, chunkCommentText } = await import('./im/lark/doc-comment.js');
@@ -4550,6 +4609,7 @@ async function cmdSend(rest: string[]): Promise<void> {
   };
 
   const shouldRecordBridgeMarker = !sendTopLevel && !overrideChatId && !sendInto;
+  const terminalRequestId = terminal ? randomBytes(12).toString('hex') : undefined;
 
   // Quote chain (普通群): the primary message replies to the turn's target so
   // Lark renders a 引用 chain. --quote overrides, --no-quote opts out. Thread
@@ -4827,7 +4887,60 @@ async function cmdSend(rest: string[]): Promise<void> {
         config: { update_multi: true },
         body: { direction: 'vertical', elements },
       });
-      messageId = await dispatchPrimary(cardJson, 'interactive');
+      if (terminalRequestId) {
+        try {
+          const barrier = await requestTerminalSendBarrier({
+            action: 'prepare',
+            sessionId: sid,
+            larkAppId: appId,
+            requestId: terminalRequestId,
+            turnId: currentTurnId,
+          });
+          console.error(`⏹️ 终态发送屏障已建立${barrier.drained ? `，排空 ${barrier.drained} 条在途消息` : ''}`);
+        } catch (prepareErr) {
+          try {
+            await requestTerminalSendBarrier({
+              action: 'cancel',
+              sessionId: sid,
+              larkAppId: appId,
+              requestId: terminalRequestId,
+            });
+          } catch { /* prepare may have failed before creating a marker */ }
+          throw prepareErr;
+        }
+      }
+      try {
+        messageId = await dispatchPrimary(cardJson, 'interactive');
+      } catch (err) {
+        if (terminalRequestId) {
+          try {
+            await requestTerminalSendBarrier({
+              action: 'cancel',
+              sessionId: sid,
+              larkAppId: appId,
+              requestId: terminalRequestId,
+            });
+          } catch (cancelErr) {
+            console.error(`⚠️ 终态发送失败后解除屏障也失败：${cancelErr instanceof Error ? cancelErr.message : String(cancelErr)}`);
+          }
+        }
+        throw err;
+      }
+      if (terminalRequestId) {
+        try {
+          await requestTerminalSendBarrier({
+            action: 'commit',
+            sessionId: sid,
+            larkAppId: appId,
+            requestId: terminalRequestId,
+          });
+        } catch (commitErr) {
+          // The card is already visible. Never fail the command here or an
+          // agent may retry and duplicate it; the preparing marker remains
+          // fail-closed until the next inbound turn clears it.
+          console.error(`⚠️ 终态卡片已发送，但提交屏障状态失败（请勿重发）：${commitErr instanceof Error ? commitErr.message : String(commitErr)}`);
+        }
+      }
     }
 
     // Bridge fallback marker — append-only jsonl per session. Same-thread
@@ -4890,6 +5003,7 @@ async function cmdSend(rest: string[]): Promise<void> {
       sessionId: sid,
       quotedMessageId: primaryQuotedId,
       mentioned: mentions.map(m => ({ open_id: m.open_id, name: m.name })),
+      ...(terminal ? { terminal: true } : {}),
       ...(attention.requested ? { attentionRaised, attentionError } : {}),
       ...(failedAttachments.length > 0
         ? { failedAttachments: failedAttachments.map(f => f.path) }

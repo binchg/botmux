@@ -270,12 +270,12 @@ describe('codex-app sandboxExtraExecPaths', () => {
 // path flags / sandbox-chosen session-id are rejected.
 describe('validateRelayRequest', () => {
   it('accepts plain basenames + allowlisted presentation flags', () => {
-    const r = validateRelayRequest({ contentFile: 'c.content', attachments: ['a.png'], flags: ['--mention-back', '--mention', 'ou:X', '--voice'] });
+    const r = validateRelayRequest({ contentFile: 'c.content', attachments: ['a.png'], flags: ['--mention-back', '--mention', 'ou:X', '--voice', '--terminal'] });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.value.contentName).toBe('c.content');
     expect(r.value.attachmentNames).toEqual(['a.png']);
-    expect(r.value.flags).toEqual(['--mention-back', '--mention', 'ou:X', '--voice']);
+    expect(r.value.flags).toEqual(['--mention-back', '--mention', 'ou:X', '--voice', '--terminal']);
   });
 
   it('rejects the raw-hostArgs exploit (path-bearing flag not allowlisted)', () => {

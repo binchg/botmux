@@ -76,6 +76,7 @@ vi.mock('@larksuiteoapi/node-sdk', () => ({
 import { initWorkerPool } from '../src/core/worker-pool.js';
 import { MessageWithdrawnError } from '../src/im/lark/client.js';
 import type { DaemonSession } from '../src/core/types.js';
+import { commitTerminalSend, prepareTerminalSend } from '../src/services/terminal-send-barrier.js';
 import type { WorkerToDaemon } from '../src/types.js';
 import { EventEmitter } from 'node:events';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -186,6 +187,26 @@ describe('Bridge final_output delivery (P2 retry)', () => {
     await vi.advanceTimersByTimeAsync(10);
     expect(sessionReply).toHaveBeenCalledTimes(1);
     expect(sessionReply.mock.calls[0][4]).toBe('turn-1');
+    expect(ds.lastBridgeEmittedUuid).toBe('uuid-1');
+  });
+
+  it('suppresses a late final_output after an explicit terminal send', async () => {
+    const sessionReply = vi.fn(async () => 'om_reply');
+    initWorkerPool({
+      sessionReply,
+      getSessionWorkingDir: () => '/tmp',
+      getActiveCount: () => 1,
+      closeSession: vi.fn(),
+    });
+
+    const ds = makeDs();
+    await prepareTerminalSend(ds, { requestId: 'terminal-1', turnId: 'lark-turn-1' });
+    commitTerminalSend(ds, 'terminal-1');
+    const { __testOnly_deliverFinalOutput } = await import('../src/core/worker-pool.js') as any;
+    __testOnly_deliverFinalOutput(ds, finalOutputMsg(), 'tag', 0);
+
+    await vi.advanceTimersByTimeAsync(10);
+    expect(sessionReply).not.toHaveBeenCalled();
     expect(ds.lastBridgeEmittedUuid).toBe('uuid-1');
   });
 

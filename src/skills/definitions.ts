@@ -240,6 +240,22 @@ description: 向飞书话题发送消息。用户在飞书上阅读看不到终�
 - 进度更新（长任务的中途汇报）
 - 需要用户回复的问题
 
+## 最终卡片必须保持最后：\`--terminal\`
+
+当用户明确要求“最终卡片在最后”“卡片后不要再有进度消息”，最后一次发送必须加 \`--terminal\`：
+
+\`\`\`bash
+botmux send --terminal --mention-back <<'EOF'
+## 最终结果
+
+详情见 [完整文档](https://example.com/report)。
+EOF
+\`\`\`
+
+\`--terminal\` 会先让 daemon 停止本轮后续自动进度/最终兜底，并排空已经在途的自动消息，再发送当前卡片。发送成功后不要再调用 \`botmux send\`，直接结束本轮；下一条用户消息会自动开启新一轮并恢复进度发送。
+
+边界：只能回复当前会话；不能与 \`--top-level\` / \`--chat-id\` / \`--into\` / \`--voice\` / \`--files\` 混用。图片可用 \`--images\` 内联在同一张终态卡片里。
+
 ## 什么时候不用
 
 - 中间过程的调试输出
@@ -439,6 +455,7 @@ botmux send --top-level --chat-id oc_xxxxxxxxxxxx "📦 自动推送内容..."
 | \`--no-mention\` | 明确声明本条不 @ 任何人。满足 @ 硬门 |
 | \`--quote <message_id>\` | 引用指定消息（普通群）。默认引用本轮触发消息 |
 | \`--no-quote\` | 不引用，发独立消息（普通群） |
+| \`--terminal\` | 本轮最后一张卡片：排空在途自动回复，并抑制本轮后续 progress/final |
 | \`--top-level\` | 发顶层消息（不回复进当前话题）；自动跳过"发送给/cc" footer |
 | \`--chat-id <oc_xxx>\` | 指定目标群（默认当前会话所在群）；常和 \`--top-level\` 一起用做跨群发布 |
 | \`--session-id <id>\` | 手动指定 session（通常自动推断，不需要传） |

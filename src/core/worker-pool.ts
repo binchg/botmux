@@ -57,6 +57,7 @@ import {
   rewriteLocalFileLinks,
 } from '../services/local-file-share.js';
 import { usageLimitStateKey, type CliUsageLimitState } from '../utils/cli-usage-limit.js';
+import { shouldSuppressAfterTerminalSend, terminalSendDecision } from '../services/terminal-send-barrier.js';
 
 type WindowsForkOptions = ForkOptions & { windowsHide?: boolean };
 
@@ -2487,6 +2488,10 @@ function setupWorkerHandlers(ds: DaemonSession, worker: ChildProcess): void {
             logger.info(`[${t}] Codex App progress abandoned — session closed (turn ${msg.turnId.substring(0, 8)})`);
             break;
           }
+          if (shouldSuppressAfterTerminalSend(ds)) {
+            logger.info(`[${t}] Codex App progress suppressed after terminal send (turn ${msg.turnId.substring(0, 8)})`);
+            continue;
+          }
           try {
             const cardJson = buildTitledMarkdownCard({
               title: codexAppProgressCardTitle(
@@ -2675,6 +2680,12 @@ function deliverFinalOutput(
     // a closed thread.
     if (ds.session.status === 'closed') {
       logger.info(`[${t}] Bridge final_output abandoned — session closed (turn ${msg.turnId.substring(0, 8)})`);
+      return;
+    }
+    const terminalDecision = await terminalSendDecision(ds);
+    if (terminalDecision === 'committed') {
+      ds.lastBridgeEmittedUuid = msg.lastUuid;
+      logger.info(`[${t}] Bridge final_output suppressed after terminal send (turn ${msg.turnId.substring(0, 8)})`);
       return;
     }
     try {

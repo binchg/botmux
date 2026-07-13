@@ -38,6 +38,7 @@ import { registerBot } from '../src/bot-registry.js';
 import { sessionKey } from '../src/core/types.js';
 import { __testOnly_sessionReply as sessionReply, __testOnly_activeSessions as activeSessions } from '../src/daemon.js';
 import type { DaemonSession } from '../src/core/types.js';
+import { prepareTerminalSend } from '../src/services/terminal-send-barrier.js';
 
 const APP = 'session_reply_anchor_app';
 const CHAT = 'oc_shared_chat';
@@ -96,5 +97,42 @@ describe('sessionReply chat-scope chokepoint — shared fold-back anchoring', ()
     await sessionReply(CHAT, 'hello', 'text', APP);
     expect(mocks.sendMessage).toHaveBeenCalledTimes(1);
     expect(mocks.replyMessage).not.toHaveBeenCalled();
+  });
+
+  it('reserves the whole async routing operation so a terminal barrier drains it', async () => {
+    const ds = seedSharedSession(undefined);
+    let resolveMode!: (mode: 'group') => void;
+    mocks.getChatMode.mockImplementationOnce(() => new Promise(resolve => { resolveMode = resolve; }));
+
+    const sending = sessionReply(CHAT, 'progress', 'interactive', APP);
+    expect(ds.outboundReplies?.size).toBe(1);
+
+    let prepared = false;
+    const preparing = prepareTerminalSend(ds, { requestId: 'req-barrier', turnId: 'turn-current' })
+      .then(result => { prepared = true; return result; });
+    expect(prepared).toBe(false);
+
+    resolveMode('group');
+    await expect(sending).resolves.toBe('om_top');
+    await expect(preparing).resolves.toEqual({ drained: 1 });
+    expect(ds.outboundReplies?.size).toBe(0);
+  });
+
+  it('keeps the outbound lease until the actual Lark reply promise settles', async () => {
+    const ds = seedSharedSession({ rootMessageId: 'om_topic', turnId: 'turn-lease', updatedAt: NOW });
+    let resolveReply!: (messageId: string) => void;
+    mocks.replyMessage.mockImplementationOnce(() => new Promise(resolve => { resolveReply = resolve; }));
+
+    const sending = sessionReply(CHAT, 'progress-in-flight', 'interactive', APP);
+    expect(ds.outboundReplies?.size).toBe(1);
+    let prepared = false;
+    const preparing = prepareTerminalSend(ds, { requestId: 'req-lark', turnId: 'turn-lease' })
+      .then(result => { prepared = true; return result; });
+    await Promise.resolve();
+    expect(prepared).toBe(false);
+
+    resolveReply('om_reply_delayed');
+    await expect(sending).resolves.toBe('om_reply_delayed');
+    await expect(preparing).resolves.toEqual({ drained: 1 });
   });
 });

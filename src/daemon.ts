@@ -95,6 +95,7 @@ import {
   ensureSessionWhiteboard,
 } from './core/session-manager.js';
 import { beginReplyTargetTurn, fallbackTurnId, resolveSessionReplyTarget, syncReplyTargetState } from './core/reply-target.js';
+import { beginOutboundReply, clearTerminalSend } from './services/terminal-send-barrier.js';
 import { sweepOrphanSandboxes } from './adapters/backend/sandbox.js';
 import { sweepIdleWorkers, DEFAULT_MAX_LIVE_WORKERS } from './core/idle-worker-sweeper.js';
 import { handleCardAction } from './im/lark/card-handler.js';
@@ -428,6 +429,8 @@ async function sessionReply(anchor: string, content: string, msgType: string = '
       if (sessionAnchorId(s) === anchor) { ds = s; break; }
     }
   }
+  const outboundReply = ds ? beginOutboundReply(ds) : undefined;
+  try {
   const appId = larkAppId ?? ds?.larkAppId ?? getAllBots()[0]?.config.larkAppId;
   if (!appId) throw new Error('No bot configured');
   const hookContext = ds ? {
@@ -467,20 +470,26 @@ async function sessionReply(anchor: string, content: string, msgType: string = '
       // (drives the real sessionReply) and test/reply-target-fallback.test.ts
       // (the resolveSessionReplyTarget × fallbackTurnId composition it relies on).
       const target = resolveSessionReplyTarget(ds, fallbackTurnId(ds, turnId));
-      if (target.mode === 'thread') return replyMessage(appId, target.rootMessageId, content, msgType, true, undefined, hookContext);
+      if (target.mode === 'thread') return await replyMessage(appId, target.rootMessageId, content, msgType, true, undefined, hookContext);
       if (ds.session.rootMessageId) {
         const mode = await getChatMode(appId, chatId, { forceRefresh: true });
         if (mode === 'topic') {
           logger.warn(`[routing] Chat-scope session ${ds.session.sessionId.substring(0, 8)} is now topic-mode; replying in original thread ${ds.session.rootMessageId.substring(0, 12)}`);
-          return replyMessage(appId, ds.session.rootMessageId, content, msgType, true, undefined, hookContext);
+          return await replyMessage(appId, ds.session.rootMessageId, content, msgType, true, undefined, hookContext);
         }
       }
     }
-    return sendMessage(appId, chatId, content, msgType, undefined, hookContext);
+    return await sendMessage(appId, chatId, content, msgType, undefined, hookContext);
   }
 
   // Thread-scope (or unknown / legacy): reply in thread.
-  return replyMessage(appId, anchor, content, msgType, true, undefined, hookContext);
+  // `await` is intentional on every return in this try block: returning a bare
+  // promise would run `finally` immediately and release the outbound lease
+  // before the Lark request actually settled.
+  return await replyMessage(appId, anchor, content, msgType, true, undefined, hookContext);
+  } finally {
+    outboundReply?.release();
+  }
 }
 
 // Test seams: drive the real sessionReply (the chat-scope thread/top-level
@@ -1521,6 +1530,7 @@ function getActiveCount(): number {
  * sees no visible response.
  */
 function beginNewTurn(ds: DaemonSession, title: string): void {
+  clearTerminalSend(ds);
   // Busy Codex App follow-ups use turn/steer, so the server turn id may stay
   // unchanged. Clear any daemon-side half sentence from the previous prompt;
   // otherwise the first progress sentence after guidance can be buffered away.
