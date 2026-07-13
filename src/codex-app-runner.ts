@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { Buffer } from 'node:buffer';
+import { CodexAppHeartbeat } from './services/codex-app-heartbeat.js';
 import { CodexAppProgressThrottler } from './services/codex-app-progress.js';
 
 type JsonObject = Record<string, any>;
@@ -28,6 +29,8 @@ interface ActiveTurn {
   allAgentText: string;
   itemText: Map<string, string>;
   progress: CodexAppProgressThrottler;
+  heartbeat: CodexAppHeartbeat;
+  activity?: string;
   progressTimer?: ReturnType<typeof setInterval>;
   pendingSteers: string[];
   steerChain: Promise<void>;
@@ -264,12 +267,14 @@ let processing = false;
 function makeTurn(): ActiveTurn {
   let resolveDone!: () => void;
   const done = new Promise<void>(resolve => { resolveDone = resolve; });
+  const startedAtMs = Date.now();
   return {
-    startedAtMs: Date.now(),
+    startedAtMs,
     finalText: '',
     allAgentText: '',
     itemText: new Map(),
     progress: new CodexAppProgressThrottler(),
+    heartbeat: new CodexAppHeartbeat(startedAtMs),
     pendingSteers: [],
     steerChain: Promise.resolve(),
     done,
@@ -283,14 +288,21 @@ function userTextInput(content: string): JsonObject[] {
 
 function maybeEmitProgress(turn: ActiveTurn, force = false): void {
   if (turn.finalText) return;
+  const nowMs = Date.now();
   const snapshots = turn.progress.drainSnapshots({
     turnId: turn.turnId,
     text: turn.allAgentText,
     startedAtMs: turn.startedAtMs,
-    nowMs: Date.now(),
+    nowMs,
     force,
   });
   for (const snapshot of snapshots) emitMarker('progress', snapshot);
+  if (snapshots.length > 0) {
+    turn.heartbeat.noteVisibleProgress(nowMs);
+    return;
+  }
+  const heartbeat = turn.heartbeat.maybeSnapshot(turn.turnId, nowMs, turn.activity);
+  if (heartbeat) emitMarker('progress', heartbeat);
 }
 
 function enqueueNextTurn(content: string): void {
@@ -410,8 +422,10 @@ function handleNotification(msg: JsonObject): void {
   if (msg.method === 'item/started') {
     const item = params.item;
     if (item?.type === 'commandExecution') {
+      activeTurn.activity = '执行命令';
       writeLine(`\n$ ${item.command}`);
     } else if (item?.type === 'fileChange') {
+      activeTurn.activity = '修改文件';
       writeLine('\n[files changed]');
     }
     return;
@@ -434,6 +448,9 @@ function handleNotification(msg: JsonObject): void {
 
   if (msg.method === 'item/completed') {
     const item = params.item;
+    if (item?.type === 'commandExecution' || item?.type === 'fileChange') {
+      activeTurn.activity = undefined;
+    }
     if (item?.type === 'agentMessage') {
       if (item.phase === 'final_answer') activeTurn.finalText = String(item.text ?? '');
       else if (!activeTurn.itemText.has(item.id) && item.text) {
