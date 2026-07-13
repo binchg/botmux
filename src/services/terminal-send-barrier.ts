@@ -30,6 +30,31 @@ export interface TerminalSendHost {
   terminalSend?: TerminalSendState;
 }
 
+export interface TerminalTurnContext {
+  currentReplyTarget?: { turnId?: string };
+  session?: {
+    sessionId?: string;
+    rootMessageId?: string;
+    currentReplyTarget?: { turnId?: string };
+  };
+  lastMessageAt?: number;
+}
+
+/**
+ * Codex App app-server tool subprocesses inherit BOTMUX_SESSION_ID but are not
+ * descendants of the long-lived CLI process, so they often have no turn-id pid
+ * marker. The daemon owns the live session state and is the authoritative
+ * fallback for terminal-send diagnostics/lifecycle.
+ */
+export function resolveTerminalTurnId(explicit: unknown, host: TerminalTurnContext): string {
+  if (typeof explicit === 'string' && explicit) return explicit;
+  const replyTarget = host.currentReplyTarget?.turnId ?? host.session?.currentReplyTarget?.turnId;
+  if (replyTarget) return replyTarget;
+  const sid = host.session?.sessionId || 'unknown';
+  const last = typeof host.lastMessageAt === 'number' ? host.lastMessageAt : 'current';
+  return `session:${sid}:last-message:${last}`;
+}
+
 /**
  * Reserve one daemon-originated reply before it reaches its first async await.
  * Tracking only the final Lark API promise is insufficient: chat-scope routing

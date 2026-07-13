@@ -5,12 +5,27 @@ import {
   clearTerminalSend,
   commitTerminalSend,
   prepareTerminalSend,
+  resolveTerminalTurnId,
   shouldSuppressAfterTerminalSend,
   terminalSendDecision,
   type TerminalSendHost,
 } from '../src/services/terminal-send-barrier.js';
 
 describe('terminal send barrier', () => {
+  it('lets the daemon resolve a current turn when Codex App exposes only session-id', () => {
+    expect(resolveTerminalTurnId(undefined, {
+      session: { sessionId: 'sid-app-server' },
+      lastMessageAt: 12345,
+    })).toBe('session:sid-app-server:last-message:12345');
+    expect(resolveTerminalTurnId(undefined, {
+      currentReplyTarget: { turnId: 'om_current' },
+      session: { sessionId: 'sid-app-server' },
+    })).toBe('om_current');
+    expect(resolveTerminalTurnId('explicit-turn', {
+      currentReplyTarget: { turnId: 'om_current' },
+    })).toBe('explicit-turn');
+  });
+
   it('marks terminal before draining daemon replies already in flight', async () => {
     const host: TerminalSendHost = {};
     const reply = beginOutboundReply(host);

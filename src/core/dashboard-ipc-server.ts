@@ -58,7 +58,7 @@ import { triggerWorkflowFromEnvelope } from '../workflows/trigger-from-envelope.
 import type { TriggerInput, TriggerResult } from '../workflows/trigger-run.js';
 import { validateTriggerRequest, type TriggerResponse } from '../services/trigger-types.js';
 import { resolveCliSelection, selectionKeyForBot } from '../setup/cli-selection.js';
-import { cancelTerminalSend, commitTerminalSend, prepareTerminalSend } from '../services/terminal-send-barrier.js';
+import { cancelTerminalSend, commitTerminalSend, prepareTerminalSend, resolveTerminalTurnId } from '../services/terminal-send-barrier.js';
 
 // Workflow runner is wired by the daemon (it owns the heavy triggerWorkflowRun
 // deps). Until set, workflow-targeted triggers report not-implemented.
@@ -669,11 +669,9 @@ ipcRoute('POST', '/api/sessions/:sessionId/terminal-send', async (req, res, para
       : { ok: false, error: 'terminal_request_mismatch' });
   }
   if (body.action !== 'prepare') return jsonRes(res, 400, { ok: false, error: 'bad_action' });
-  if (typeof body.turnId !== 'string' || !body.turnId) {
-    return jsonRes(res, 400, { ok: false, error: 'bad_turn_id' });
-  }
-  const result = await prepareTerminalSend(ds, { requestId: body.requestId, turnId: body.turnId });
-  jsonRes(res, 200, { ok: true, drained: result.drained });
+  const turnId = resolveTerminalTurnId(body.turnId, ds);
+  const result = await prepareTerminalSend(ds, { requestId: body.requestId, turnId });
+  jsonRes(res, 200, { ok: true, drained: result.drained, turnId });
 });
 
 // ─── Sandbox landing (owner reviews the clone's diff then applies it back) ───

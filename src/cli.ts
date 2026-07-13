@@ -4373,11 +4373,6 @@ async function cmdSend(rest: string[]): Promise<void> {
     console.error('--terminal 不支持 --files：附件会作为后续独立消息发送，无法保证卡片最后。请先发附件，最后再发终态卡片。');
     process.exit(2);
   }
-  if (terminal && !currentTurnId) {
-    console.error('--terminal 无法确定当前 turn-id；请在本轮 botmux 会话的 CLI 进程内执行。');
-    process.exit(2);
-  }
-
   // --attention guard: only valid replying into the current session with a text
   // reason (clear-on-reply binds to this anchor; dashboard needs a reason).
   const attentionErr = attentionUsageError({
