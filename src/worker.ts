@@ -37,6 +37,7 @@ import {
   type PidFollowResult,
 } from './services/bridge-rotation-policy.js';
 import { CodexBridgeQueue } from './services/codex-bridge-queue.js';
+import { CodexAppHeartbeat } from './services/codex-app-heartbeat.js';
 import { drainCodexRollout, findCodexRolloutBySessionId, findCodexRolloutByPid, splitCodexEventsByCutoff, extractLastCodexTurn, type CodexBridgeEvent } from './services/codex-transcript.js';
 import { findTraexRolloutBySessionId, findTraexRolloutByPid } from './services/traex-transcript.js';
 import { cocoEventsPathForSession, drainCocoEvents, findCocoSessionByPid } from './services/coco-transcript.js';
@@ -406,6 +407,7 @@ const inflightInputs = new InflightInputTracker();
  *  start work before their history/transcript submit marker is observable. */
 let lastPtyActivityAtMs = 0;
 let currentBotmuxTurnId: string | undefined;
+let codexAppHeartbeat: CodexAppHeartbeat | null = null;
 function writeCliPidMarker(): void {
   if (!cliPidMarker || !sessionId) return;
   try {
@@ -2893,6 +2895,30 @@ const TERMINAL_UI_OSC_PREFIX = '\x1b]778;botmux-ui:';
 const APP_RUNNER_OSC_CLI_IDS = new Set(['codex-app', 'mira', 'mir']);
 let codexAppOscPending = '';
 
+function beginCodexAppHeartbeat(): void {
+  if (!APP_RUNNER_OSC_CLI_IDS.has(lastInitConfig?.cliId ?? '')) return;
+  codexAppHeartbeat = new CodexAppHeartbeat(Date.now());
+}
+
+function noteCodexAppVisibleProgress(nowMs = Date.now()): void {
+  codexAppHeartbeat?.noteVisibleProgress(nowMs);
+}
+
+function clearCodexAppHeartbeat(): void {
+  codexAppHeartbeat = null;
+}
+
+function maybeEmitCodexAppHeartbeat(status: RuntimeScreenStatus): void {
+  if (!codexAppHeartbeat || status === 'idle') return;
+  const snapshot = codexAppHeartbeat.maybeSnapshot(currentBotmuxTurnId, Date.now(), '执行任务');
+  if (!snapshot) return;
+  send({
+    type: 'progress_output',
+    content: snapshot.content,
+    turnId: snapshot.turnId ?? currentBotmuxTurnId ?? `${lastInitConfig?.cliId ?? 'app'}-${snapshot.updatedAtMs}`,
+  });
+}
+
 function decodeCodexAppPayload(payload: string): any | undefined {
   try {
     return JSON.parse(Buffer.from(payload, 'base64').toString('utf8'));
@@ -2934,6 +2960,7 @@ function handleCodexAppMarker(body: string): void {
   }
 
   if (kind === 'progress' && typeof payload.content === 'string') {
+    noteCodexAppVisibleProgress(typeof payload.updatedAtMs === 'number' ? payload.updatedAtMs : Date.now());
     const turnId = typeof payload.turnId === 'string' ? payload.turnId : (currentBotmuxTurnId ?? `${lastInitConfig?.cliId ?? 'app'}-${Date.now()}`);
     emitTerminalUiEvent({
       type: 'progress',
@@ -2950,6 +2977,7 @@ function handleCodexAppMarker(body: string): void {
   }
 
   if (kind === 'final' && typeof payload.content === 'string') {
+    clearCodexAppHeartbeat();
     const startedAtMs = typeof payload.startedAtMs === 'number' ? payload.startedAtMs : undefined;
     const completedAtMs = typeof payload.completedAtMs === 'number' ? payload.completedAtMs : Date.now();
     if (startedAtMs !== undefined) {
@@ -3094,6 +3122,7 @@ function markPromptReady(): void {
     return;
   }
   isPromptReady = true;
+  clearCodexAppHeartbeat();
   // CLI 实际启动成功（回到 prompt）：复位连续重启计数。
   // 任何能到这一步的 spawn 都算"成功"——后续即便再崩溃（不是 resume 目标不存在
   // 的问题），下一轮也该有新的 2 次重试预算，而不是被历史重启计数卡住。
@@ -3442,6 +3471,7 @@ async function flushPending(): Promise<void> {
       inflightInputs.onWrite(item);
       const msg = item.content;
       currentBotmuxTurnId = item.turnId;
+      beginCodexAppHeartbeat();
       writeCliPidMarker();
       const turnSeq = usageLimitTracker.beginTurn(currentUsageLimitSnapshot());
       // Bridge fallback: mark immediately before writeInput. Doing it here
@@ -3629,6 +3659,7 @@ function startScreenUpdates(): void {
       }
 
       const usageAware = usageLimitTracker.classify(content, status);
+      maybeEmitCodexAppHeartbeat(status);
       if (changed || usageAware.status !== lastSentStatus) {
         lastSentStatus = usageAware.status;
         send({ type: 'screen_update', content, ...usageAware, turnId: currentBotmuxTurnId });

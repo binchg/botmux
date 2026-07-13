@@ -23,12 +23,6 @@ describe('codex-app runner steering', () => {
     expect(source).toContain('clearInterval(turn.progressTimer)');
   });
 
-  it('falls back to a user-visible heartbeat during long tool calls', () => {
-    expect(source).toContain('heartbeat: new CodexAppHeartbeat(startedAtMs)');
-    expect(source).toContain('turn.heartbeat.noteVisibleProgress(nowMs)');
-    expect(source).toContain('turn.heartbeat.maybeSnapshot(turn.turnId, nowMs, turn.activity)');
-  });
-
   it('starts a new progress epoch when busy follow-up guidance arrives', () => {
     expect(source).toContain('activeTurn.progress.resetTo(activeTurn.allAgentText)');
   });
