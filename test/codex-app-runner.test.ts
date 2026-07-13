@@ -22,4 +22,8 @@ describe('codex-app runner steering', () => {
     expect(source).toContain('turn.progressTimer = setInterval');
     expect(source).toContain('clearInterval(turn.progressTimer)');
   });
+
+  it('starts a new progress epoch when busy follow-up guidance arrives', () => {
+    expect(source).toContain('activeTurn.progress.resetTo(activeTurn.allAgentText)');
+  });
 });

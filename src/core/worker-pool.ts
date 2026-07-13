@@ -99,6 +99,10 @@ function codexAppProgressForwarderFor(ds: DaemonSession): CodexAppProgressForwar
   return forwarder;
 }
 
+export function resetCodexAppProgressForwarder(ds: DaemonSession): void {
+  codexAppProgressForwarders.get(ds)?.reset();
+}
+
 // ─── Active session registry (daemon-owned, accessor for IPC) ───────────────
 // The activeSessions Map physically lives in daemon.ts. To let the dashboard
 // IPC server (and other modules) read it without reaching back into daemon, the

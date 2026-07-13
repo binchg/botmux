@@ -64,6 +64,7 @@ import {
   ensureCliEnv,
   sweepGlobalBotmuxSkills,
   writableTerminalLinkFor,
+  resetCodexAppProgressForwarder,
 } from './core/worker-pool.js';
 import { ipcRoute, jsonRes, readJsonBody, setBotName, setLarkAppId, startIpcServer, setWorkflowRunner, setBotRenamer } from './core/dashboard-ipc-server.js';
 import { saveFrozenCards, deleteFrozenCards } from './services/frozen-card-store.js';
@@ -1520,6 +1521,10 @@ function getActiveCount(): number {
  * sees no visible response.
  */
 function beginNewTurn(ds: DaemonSession, title: string): void {
+  // Busy Codex App follow-ups use turn/steer, so the server turn id may stay
+  // unchanged. Clear any daemon-side half sentence from the previous prompt;
+  // otherwise the first progress sentence after guidance can be buffered away.
+  resetCodexAppProgressForwarder(ds);
   // 每开新轮先清掉上一轮可能残留的「回评论落点」并**落盘**——botmux send 子进程只
   // 从磁盘读会话态判断"本轮是否文档评论轮"，所以磁盘必须权威：飞书轮清掉，文档轮
   // 由随后的 handleDocComment 重新设值+落盘。只在确有残留时写盘，避免普通轮多余写。

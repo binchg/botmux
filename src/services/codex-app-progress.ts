@@ -197,6 +197,16 @@ export class CodexAppProgressThrottler {
     this.maxContentChars = options.maxContentChars ?? DEFAULT_MAX_CONTENT_CHARS;
   }
 
+  /** Start a fresh progress epoch after mid-turn user guidance.
+   * Existing model text becomes the baseline, so only assistant text produced
+   * after the guidance can be forwarded. */
+  resetTo(text = ''): void {
+    const baseline = normalizeCodexAppProgressText(text, Number.MAX_SAFE_INTEGER);
+    this.lastSentAtMs = 0;
+    this.emittedUntil = baseline.length;
+    this.emittedPrefix = baseline;
+  }
+
   maybeSnapshot(input: CodexAppProgressInput): CodexAppProgressSnapshot | null {
     const fullContent = normalizeCodexAppProgressText(input.text, Number.MAX_SAFE_INTEGER);
     if (!fullContent) return null;
@@ -277,6 +287,12 @@ export class CodexAppProgressForwarder {
 
   constructor(options: Pick<CodexAppProgressOptions, 'maxContentChars'> = {}) {
     this.maxContentChars = options.maxContentChars ?? DEFAULT_MAX_CONTENT_CHARS;
+  }
+
+  /** Drop pending partial sentences when a new user message starts or steers
+   * the visible turn. Reusing them would delay or corrupt the next update. */
+  reset(): void {
+    this.states.clear();
   }
 
   next(turnId: string | undefined, raw: string): CodexAppProgressChunk | null {

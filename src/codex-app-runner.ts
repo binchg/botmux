@@ -355,6 +355,10 @@ function handleUserMessage(content: string): void {
     enqueueNextTurn(content);
     return;
   }
+  // A busy follow-up is a new visible progress epoch even though app-server
+  // keeps it inside the same turn/steer lifecycle. Do not let the previous
+  // assistant text cursor suppress commentary produced for this guidance.
+  activeTurn.progress.resetTo(activeTurn.allAgentText);
   activeTurn.pendingSteers.push(content);
   flushSteers(activeTurn);
 }

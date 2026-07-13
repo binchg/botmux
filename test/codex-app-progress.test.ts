@@ -126,6 +126,24 @@ describe('Codex App progress throttling', () => {
     })?.content).toBe('completed.');
   });
 
+  it('starts a fresh progress epoch after mid-turn user guidance', () => {
+    const throttler = new CodexAppProgressThrottler();
+    expect(throttler.maybeSnapshot({
+      turnId: 'turn-steer',
+      text: '正在检查旧问题。',
+      startedAtMs: 0,
+      nowMs: 1,
+    })?.content).toBe('正在检查旧问题。');
+
+    throttler.resetTo('正在检查旧问题。');
+    expect(throttler.maybeSnapshot({
+      turnId: 'turn-steer',
+      text: '正在检查旧问题。已收到新的补充要求。',
+      startedAtMs: 0,
+      nowMs: 2,
+    })?.content).toBe('已收到新的补充要求。');
+  });
+
   it('normalizes and keeps a complete long sentence beyond the soft limit', () => {
     const text = normalizeCodexAppProgressText(`first,\r\n\r\n\r\nsecond sentence. ${'x'.repeat(30)}`, 20);
     expect(text).toBe('first,\nsecond sentence.');
@@ -230,6 +248,15 @@ describe('Codex App progress throttling', () => {
 
     expect(forwarder.next('turn-1', '我')).toBeNull();
     expect(forwarder.next('turn-1', '正在检查原因。')?.content).toBe('我正在检查原因。');
+  });
+
+  it('drops a pending partial sentence when the visible turn is reset', () => {
+    const forwarder = new CodexAppProgressForwarder();
+    expect(forwarder.next('turn-steer', '旧的半句')).toBeNull();
+
+    forwarder.reset();
+    expect(forwarder.next('turn-steer', '补充后的完整进度。')?.content)
+      .toBe('补充后的完整进度。');
   });
 
   it('realigns a legacy runner chunk that starts inside the previous sentence', () => {
