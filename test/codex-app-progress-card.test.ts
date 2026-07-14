@@ -34,6 +34,32 @@ describe('Codex App single progress card', () => {
     expect(remove).toHaveBeenCalledWith('om_progress');
   });
 
+  it('posts a fresh card after an explicit Lark user-turn boundary', async () => {
+    const post = vi.fn()
+      .mockResolvedValueOnce('om_turn_1')
+      .mockResolvedValueOnce('om_turn_2');
+    const patch = vi.fn(async () => {});
+    const onStateChange = vi.fn();
+    const card = new CodexAppProgressCard({
+      post,
+      patch,
+      remove: vi.fn(async () => {}),
+      onStateChange,
+    });
+
+    await card.upsert('protocol-turn-before', 'first turn');
+    await card.beginTurn();
+    await card.upsert('protocol-turn-after', 'second turn');
+
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(patch).not.toHaveBeenCalled();
+    expect(onStateChange).toHaveBeenCalledWith({ turnId: undefined, messageId: undefined });
+    expect(onStateChange).toHaveBeenLastCalledWith({
+      turnId: 'protocol-turn-after',
+      messageId: 'om_turn_2',
+    });
+  });
+
   it('withdraws the temporary card after the final answer succeeds', async () => {
     const remove = vi.fn(async () => {});
     const card = new CodexAppProgressCard({

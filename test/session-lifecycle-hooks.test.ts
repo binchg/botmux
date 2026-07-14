@@ -105,7 +105,11 @@ import {
   emitSessionStateTransitionHook,
   setSessionLifecycleShutdown,
 } from '../src/services/session-lifecycle-hooks.js';
-import { initWorkerPool, __testOnly_setupWorkerHandlers } from '../src/core/worker-pool.js';
+import {
+  beginCodexAppProgressTurn,
+  initWorkerPool,
+  __testOnly_setupWorkerHandlers,
+} from '../src/core/worker-pool.js';
 import type { DaemonSession } from '../src/core/types.js';
 import { commitTerminalSend, prepareTerminalSend } from '../src/services/terminal-send-barrier.js';
 
@@ -373,5 +377,32 @@ describe('worker-pool lifecycle hook integration', () => {
     expect(sessionReplyMock).toHaveBeenCalledTimes(1);
     expect(updateMessageMock).toHaveBeenCalledTimes(1);
     expect(updateMessageMock.mock.calls[0][1]).toBe('om_reply');
+  });
+
+  it('posts a new progress card for the next Lark user turn', async () => {
+    const worker = makeFakeWorker();
+    const ds = makeDs({ worker });
+    __testOnly_setupWorkerHandlers(ds, worker);
+
+    worker.emit('message', {
+      type: 'progress_output',
+      kind: 'assistant',
+      turnId: 'first-user-turn',
+      content: '第一轮正在排查。',
+    });
+    await flush();
+
+    beginCodexAppProgressTurn(ds);
+    await flush();
+    worker.emit('message', {
+      type: 'progress_output',
+      kind: 'assistant',
+      turnId: 'second-user-turn',
+      content: '第二轮继续处理。',
+    });
+    await flush();
+
+    expect(sessionReplyMock).toHaveBeenCalledTimes(2);
+    expect(updateMessageMock).not.toHaveBeenCalled();
   });
 });

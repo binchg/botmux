@@ -157,6 +157,15 @@ export function resetCodexAppProgressForwarder(ds: DaemonSession): void {
   codexAppProgressForwarders.get(ds)?.reset();
 }
 
+/** Mark a real Lark user-turn boundary for Codex App progress delivery.
+ * Keep this separate from protocol turn ids: app-server may replace those
+ * during a daemon restart even though the visible user turn did not change. */
+export function beginCodexAppProgressTurn(ds: DaemonSession): void {
+  void codexAppProgressCardFor(ds).beginTurn().catch((error: any) => {
+    logger.warn(`[${tag(ds)}] Failed to rotate Codex App progress card: ${error?.message ?? error}`);
+  });
+}
+
 // ─── Active session registry (daemon-owned, accessor for IPC) ───────────────
 // The activeSessions Map physically lives in daemon.ts. To let the dashboard
 // IPC server (and other modules) read it without reaching back into daemon, the

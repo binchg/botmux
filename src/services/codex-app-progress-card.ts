@@ -46,6 +46,21 @@ export class CodexAppProgressCard {
     });
   }
 
+  /** Detach the previous user turn from its mutable progress card.
+   *
+   * A daemon/app-server restart may change the protocol turn id while the
+   * same Lark user turn is still running, so `upsert()` deliberately keeps
+   * patching the restored card across id changes. The daemon is the only
+   * layer that knows when a genuinely new Lark user turn begins; it calls
+   * this method before forwarding that prompt so the next progress update is
+   * POSTed as a new reply instead of silently PATCHing an older message.
+   */
+  beginTurn(): Promise<void> {
+    return this.enqueue(async () => {
+      this.setState(undefined, undefined);
+    });
+  }
+
   finish(turnId: string, completedCardJson: string): Promise<void> {
     return this.enqueue(async () => {
       if (this.turnId !== turnId || !this.messageId) return;
