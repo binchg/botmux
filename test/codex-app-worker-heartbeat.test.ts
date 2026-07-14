@@ -15,4 +15,10 @@ describe('Codex App worker progress heartbeat integration', () => {
     expect(source).toContain('clearCodexAppHeartbeat();');
     expect(source).toContain("if (!codexAppHeartbeat || status === 'idle') return;");
   });
+
+  it('tracks app-server activities and marks heartbeats separately from assistant progress', () => {
+    expect(source).toContain("if (kind === 'activity' && typeof payload.id === 'string')");
+    expect(source).toContain("kind: 'heartbeat'");
+    expect(source).toContain("kind: 'assistant'");
+  });
 });

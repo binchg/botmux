@@ -26,4 +26,12 @@ describe('codex-app runner steering', () => {
   it('starts a new progress epoch when busy follow-up guidance arrives', () => {
     expect(source).toContain('activeTurn.progress.resetTo(activeTurn.allAgentText)');
   });
+
+  it('forwards structured item and hook lifecycles as activity markers', () => {
+    expect(source).toContain("msg.method === 'hook/started' || msg.method === 'hook/completed'");
+    expect(source).toContain("codexAppHookActivity(run, phase");
+    expect(source).toContain("codexAppItemActivity(item, 'started'");
+    expect(source).toContain("codexAppItemActivity(item, 'completed'");
+    expect(source).toContain("emitMarker('activity'");
+  });
 });

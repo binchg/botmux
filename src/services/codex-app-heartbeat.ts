@@ -8,6 +8,13 @@ export interface CodexAppHeartbeatOptions {
   intervalMs?: number;
 }
 
+export interface CodexAppHeartbeatActivity {
+  id: string;
+  label: string;
+  detail?: string;
+  startedAtMs: number;
+}
+
 const DEFAULT_INTERVAL_MS = 45_000;
 
 function formatElapsed(elapsedMs: number): string {
@@ -25,10 +32,14 @@ export class CodexAppHeartbeat {
   private readonly intervalMs: number;
   private readonly startedAtMs: number;
   private lastVisibleAtMs: number;
+  private lastSnapshotAtMs = 0;
+  private phaseStartedAtMs: number;
+  private readonly activities = new Map<string, CodexAppHeartbeatActivity>();
 
   constructor(startedAtMs: number, options: CodexAppHeartbeatOptions = {}) {
     this.startedAtMs = startedAtMs;
     this.lastVisibleAtMs = startedAtMs;
+    this.phaseStartedAtMs = startedAtMs;
     this.intervalMs = options.intervalMs ?? DEFAULT_INTERVAL_MS;
   }
 
@@ -36,13 +47,36 @@ export class CodexAppHeartbeat {
     this.lastVisibleAtMs = nowMs;
   }
 
-  maybeSnapshot(turnId: string | undefined, nowMs: number, activity?: string): CodexAppHeartbeatSnapshot | null {
+  startActivity(activity: CodexAppHeartbeatActivity): void {
+    this.activities.set(activity.id, activity);
+    this.phaseStartedAtMs = activity.startedAtMs;
+  }
+
+  completeActivity(id: string, completedAtMs: number): void {
+    if (!this.activities.delete(id)) return;
+    const current = this.currentActivity();
+    this.phaseStartedAtMs = current?.startedAtMs ?? completedAtMs;
+  }
+
+  maybeSnapshot(turnId: string | undefined, nowMs: number): CodexAppHeartbeatSnapshot | null {
     if (nowMs - this.lastVisibleAtMs < this.intervalMs) return null;
-    this.lastVisibleAtMs = nowMs;
-    const activityText = activity ? `，当前${activity}` : '';
+    if (this.lastSnapshotAtMs > 0 && nowMs - this.lastSnapshotAtMs < this.intervalMs) return null;
+    return this.snapshot(turnId, nowMs);
+  }
+
+  private currentActivity(): CodexAppHeartbeatActivity | undefined {
+    return [...this.activities.values()].sort((a, b) => b.startedAtMs - a.startedAtMs)[0];
+  }
+
+  private snapshot(turnId: string | undefined, nowMs: number): CodexAppHeartbeatSnapshot {
+    this.lastSnapshotAtMs = nowMs;
+    const activity = this.currentActivity();
+    const headline = activity
+      ? `正在执行：${activity.label}${activity.detail ? `（${activity.detail}）` : ''}`
+      : '正在处理：模型分析与下一步决策';
     return {
       turnId,
-      content: `任务仍在执行${activityText}，已持续${formatElapsed(nowMs - this.startedAtMs)}。`,
+      content: `${headline}\n- 当前步骤已持续：${formatElapsed(nowMs - (activity?.startedAtMs ?? this.phaseStartedAtMs))}\n- 本轮已持续：${formatElapsed(nowMs - this.startedAtMs)}`,
       updatedAtMs: nowMs,
     };
   }

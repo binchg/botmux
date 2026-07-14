@@ -2,6 +2,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { Buffer } from 'node:buffer';
 import { CodexAppProgressThrottler } from './services/codex-app-progress.js';
+import { codexAppHookActivity, codexAppItemActivity } from './services/codex-app-activity.js';
 
 type JsonObject = Record<string, any>;
 
@@ -407,6 +408,17 @@ function handleNotification(msg: JsonObject): void {
     return;
   }
 
+  if (msg.method === 'hook/started' || msg.method === 'hook/completed') {
+    const phase = msg.method === 'hook/started' ? 'started' : 'completed';
+    const run = params.run;
+    const atMs = phase === 'started'
+      ? Number(run?.startedAt ?? Date.now())
+      : Number(run?.completedAt ?? Date.now());
+    const activity = codexAppHookActivity(run, phase, Number.isFinite(atMs) ? atMs : Date.now());
+    if (activity) emitMarker('activity', { ...activity, turnId: activeTurn.turnId });
+    return;
+  }
+
   if (msg.method === 'item/started') {
     const item = params.item;
     if (item?.type === 'commandExecution') {
@@ -414,6 +426,9 @@ function handleNotification(msg: JsonObject): void {
     } else if (item?.type === 'fileChange') {
       writeLine('\n[files changed]');
     }
+    const startedAtMs = Number(params.startedAtMs ?? Date.now());
+    const activity = codexAppItemActivity(item, 'started', Number.isFinite(startedAtMs) ? startedAtMs : Date.now());
+    if (activity) emitMarker('activity', { ...activity, turnId: activeTurn.turnId });
     return;
   }
 
@@ -434,6 +449,9 @@ function handleNotification(msg: JsonObject): void {
 
   if (msg.method === 'item/completed') {
     const item = params.item;
+    const completedAtMs = Number(params.completedAtMs ?? Date.now());
+    const activity = codexAppItemActivity(item, 'completed', Number.isFinite(completedAtMs) ? completedAtMs : Date.now());
+    if (activity) emitMarker('activity', { ...activity, turnId: activeTurn.turnId });
     if (item?.type === 'agentMessage') {
       if (item.phase === 'final_answer') activeTurn.finalText = String(item.text ?? '');
       else if (!activeTurn.itemText.has(item.id) && item.text) {

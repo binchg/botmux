@@ -2908,15 +2908,19 @@ function clearCodexAppHeartbeat(): void {
   codexAppHeartbeat = null;
 }
 
-function maybeEmitCodexAppHeartbeat(status: RuntimeScreenStatus): void {
-  if (!codexAppHeartbeat || status === 'idle') return;
-  const snapshot = codexAppHeartbeat.maybeSnapshot(currentBotmuxTurnId, Date.now(), '执行任务');
+function sendCodexAppHeartbeatSnapshot(snapshot: ReturnType<CodexAppHeartbeat['maybeSnapshot']>): void {
   if (!snapshot) return;
   send({
     type: 'progress_output',
+    kind: 'heartbeat',
     content: snapshot.content,
     turnId: snapshot.turnId ?? currentBotmuxTurnId ?? `${lastInitConfig?.cliId ?? 'app'}-${snapshot.updatedAtMs}`,
   });
+}
+
+function maybeEmitCodexAppHeartbeat(status: RuntimeScreenStatus): void {
+  if (!codexAppHeartbeat || status === 'idle') return;
+  sendCodexAppHeartbeatSnapshot(codexAppHeartbeat.maybeSnapshot(currentBotmuxTurnId, Date.now()));
 }
 
 function decodeCodexAppPayload(payload: string): any | undefined {
@@ -2959,6 +2963,27 @@ function handleCodexAppMarker(body: string): void {
     return;
   }
 
+  if (kind === 'activity' && typeof payload.id === 'string') {
+    const nowMs = typeof payload.atMs === 'number' && Number.isFinite(payload.atMs) ? payload.atMs : Date.now();
+    if (payload.phase === 'started' && typeof payload.label === 'string') {
+      codexAppHeartbeat?.startActivity({
+        id: payload.id,
+        label: payload.label,
+        detail: typeof payload.detail === 'string' ? payload.detail : undefined,
+        startedAtMs: nowMs,
+      });
+    } else if (payload.phase === 'completed') {
+      codexAppHeartbeat?.completeActivity(payload.id, nowMs);
+    }
+    emitTerminalUiEvent({
+      type: 'activity',
+      ...payload,
+      at: nowMs,
+      turnId: typeof payload.turnId === 'string' ? payload.turnId : currentBotmuxTurnId,
+    });
+    return;
+  }
+
   if (kind === 'progress' && typeof payload.content === 'string') {
     noteCodexAppVisibleProgress(typeof payload.updatedAtMs === 'number' ? payload.updatedAtMs : Date.now());
     const turnId = typeof payload.turnId === 'string' ? payload.turnId : (currentBotmuxTurnId ?? `${lastInitConfig?.cliId ?? 'app'}-${Date.now()}`);
@@ -2970,6 +2995,7 @@ function handleCodexAppMarker(body: string): void {
     });
     send({
       type: 'progress_output',
+      kind: 'assistant',
       content: payload.content,
       turnId,
     });

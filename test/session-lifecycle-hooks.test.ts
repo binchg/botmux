@@ -1,8 +1,10 @@
 import { EventEmitter } from 'node:events';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { emitHookEventMock } = vi.hoisted(() => ({
+const { emitHookEventMock, updateMessageMock, deleteMessageMock } = vi.hoisted(() => ({
   emitHookEventMock: vi.fn(),
+  updateMessageMock: vi.fn(async () => {}),
+  deleteMessageMock: vi.fn(async () => {}),
 }));
 
 vi.mock('../src/services/hook-runner.js', () => ({
@@ -14,8 +16,8 @@ vi.mock('../src/im/lark/client.js', () => {
     constructor(id: string) { super(`withdrawn: ${id}`); this.name = 'MessageWithdrawnError'; }
   }
   return {
-    updateMessage: vi.fn(async () => {}),
-    deleteMessage: vi.fn(async () => {}),
+    updateMessage: (...args: unknown[]) => updateMessageMock(...args),
+    deleteMessage: (...args: unknown[]) => deleteMessageMock(...args),
     MessageWithdrawnError,
   };
 });
@@ -319,5 +321,32 @@ describe('worker-pool lifecycle hook integration', () => {
     await flush();
 
     expect(sessionReplyMock).not.toHaveBeenCalled();
+  });
+
+  it('posts one Codex App progress card and patches it with the latest activity', async () => {
+    const worker = makeFakeWorker();
+    const ds = makeDs({ worker });
+    __testOnly_setupWorkerHandlers(ds, worker);
+
+    worker.emit('message', {
+      type: 'progress_output',
+      kind: 'heartbeat',
+      turnId: 'codex-app-turn',
+      content: '正在执行：搜索代码（worker.ts）\n- 本轮已持续：约 1 分钟',
+    });
+    await flush();
+    worker.emit('message', {
+      type: 'progress_output',
+      kind: 'heartbeat',
+      turnId: 'codex-app-turn',
+      content: '正在执行：运行 Codex Hook（工具完成后检查）\n- 本轮已持续：约 2 分钟',
+    });
+    await flush();
+
+    expect(sessionReplyMock).toHaveBeenCalledTimes(1);
+    expect(updateMessageMock).toHaveBeenCalledTimes(1);
+    expect(updateMessageMock.mock.calls[0][0]).toBe('app_test');
+    expect(updateMessageMock.mock.calls[0][1]).toBe('om_reply');
+    expect(String(updateMessageMock.mock.calls[0][2])).toContain('运行 Codex Hook');
   });
 });

@@ -28,6 +28,7 @@ import { claudeJsonlPathForSession } from '../adapters/cli/claude-code.js';
 import { findUniqueClaudeSessionByCwd } from './session-discovery.js';
 import { buildMarkdownCard, buildContextualReplyCard, buildTitledMarkdownCard } from '../im/lark/md-card.js';
 import { CodexAppProgressForwarder, codexAppProgressCardTitle } from '../services/codex-app-progress.js';
+import { CodexAppProgressCard } from '../services/codex-app-progress-card.js';
 import { replyToDocComment, chunkCommentText, unsubscribeDocFile } from '../im/lark/doc-comment.js';
 import { listDocSubscriptionsForSession, removeDocSubscription } from '../services/doc-subs-store.js';
 import { TmuxBackend } from '../adapters/backend/tmux-backend.js';
@@ -66,6 +67,7 @@ const __dirname = dirname(__filename);
 const WORKER_SIGTERM_BACKSTOP_MS = 2_000;
 const WORKER_SIGKILL_BACKSTOP_MS = 7_000;
 const codexAppProgressForwarders = new WeakMap<DaemonSession, CodexAppProgressForwarder>();
+const codexAppProgressCards = new WeakMap<DaemonSession, CodexAppProgressCard>();
 
 // ─── Callbacks set by daemon at startup ─────────────────────────────────────
 
@@ -98,6 +100,45 @@ function codexAppProgressForwarderFor(ds: DaemonSession): CodexAppProgressForwar
     codexAppProgressForwarders.set(ds, forwarder);
   }
   return forwarder;
+}
+
+function codexAppProgressCardFor(ds: DaemonSession): CodexAppProgressCard {
+  let card = codexAppProgressCards.get(ds);
+  if (!card) {
+    const cb = requireCallbacks();
+    card = new CodexAppProgressCard({
+      post: (cardJson, turnId) => cb.sessionReply(
+        sessionAnchorId(ds),
+        cardJson,
+        'interactive',
+        ds.larkAppId,
+        fallbackTurnId(ds, turnId),
+      ),
+      patch: (messageId, cardJson) => updateMessage(ds.larkAppId, messageId, cardJson),
+      remove: messageId => deleteMessage(ds.larkAppId, messageId),
+      canRepostAfterPatchFailure: error => error instanceof MessageWithdrawnError,
+    });
+    codexAppProgressCards.set(ds, card);
+  }
+  return card;
+}
+
+function completedCodexAppProgressCard(ds: DaemonSession): string {
+  return buildTitledMarkdownCard({
+    title: codexAppProgressCardTitle(
+      ds.currentTurnTitle || ds.session.currentTurnTitle || ds.lastUserPrompt || ds.session.title,
+    ),
+    md: '✅ 本轮已完成，最终结果见最新回复。',
+    brand: '',
+    locale: localeForBot(ds.larkAppId),
+    template: 'green',
+  });
+}
+
+async function finishCodexAppProgressCard(ds: DaemonSession, turnId: string): Promise<void> {
+  const card = codexAppProgressCards.get(ds);
+  if (!card) return;
+  await card.finish(turnId, completedCodexAppProgressCard(ds));
 }
 
 export function resetCodexAppProgressForwarder(ds: DaemonSession): void {
@@ -2459,7 +2500,9 @@ function setupWorkerHandlers(ds: DaemonSession, worker: ChildProcess): void {
       }
 
       case 'progress_output': {
-        const progresses = codexAppProgressForwarderFor(ds).drain(msg.turnId, msg.content);
+        const progresses = msg.kind === 'heartbeat'
+          ? [{ content: msg.content }]
+          : codexAppProgressForwarderFor(ds).drain(msg.turnId, msg.content);
         if (progresses.length === 0) {
           logger.info(`[${t}] Codex App progress skipped as duplicate or partial (turn ${msg.turnId.substring(0, 8)})`);
           break;
@@ -2502,8 +2545,8 @@ function setupWorkerHandlers(ds: DaemonSession, worker: ChildProcess): void {
               locale: localeForBot(ds.larkAppId),
               template: 'turquoise',
             });
-            await scopedReply(cardJson, 'interactive', msg.turnId);
-            logger.info(`[${t}] Codex App progress card forwarded (turn ${msg.turnId.substring(0, 8)}, ${content.length} chars)`);
+            await codexAppProgressCardFor(ds).upsert(msg.turnId, cardJson);
+            logger.info(`[${t}] Codex App progress card upserted (turn ${msg.turnId.substring(0, 8)}, kind=${msg.kind ?? 'assistant'}, ${content.length} chars)`);
           } catch (err: any) {
             logger.error(`[${t}] Failed to deliver Codex App progress to Lark: ${err.message}`);
           }
@@ -2685,6 +2728,7 @@ function deliverFinalOutput(
     const terminalDecision = await terminalSendDecision(ds);
     if (terminalDecision === 'committed') {
       ds.lastBridgeEmittedUuid = msg.lastUuid;
+      await finishCodexAppProgressCard(ds, msg.turnId);
       logger.info(`[${t}] Bridge final_output suppressed after terminal send (turn ${msg.turnId.substring(0, 8)})`);
       return;
     }
@@ -2701,6 +2745,7 @@ function deliverFinalOutput(
         }
         ds.docCommentTurns?.delete(msg.turnId);
         ds.lastBridgeEmittedUuid = msg.lastUuid;
+        await finishCodexAppProgressCard(ds, msg.turnId);
         logger.info(`[${t}] doc-comment final_output → posted ${chunks.length} comment(s) on file=${docTurn.fileToken.slice(0, 12)} (turn ${msg.turnId.substring(0, 8)})`);
         return;
       }
@@ -2749,6 +2794,7 @@ function deliverFinalOutput(
       // used to swallow the answer; a brand-new message always pings.
       await scopedReply(cardJson, 'interactive', msg.turnId);
       ds.lastBridgeEmittedUuid = msg.lastUuid;
+      await finishCodexAppProgressCard(ds, msg.turnId);
       logger.info(`[${t}] Bridge final_output forwarded (turn ${msg.turnId.substring(0, 8)}, ${msg.content.length} chars, kind=${msg.kind ?? 'bridge'}, attempt ${attempt + 1})`);
     } catch (err: any) {
       if (err instanceof MessageWithdrawnError) {
