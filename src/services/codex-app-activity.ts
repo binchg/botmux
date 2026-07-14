@@ -84,12 +84,44 @@ function collabLabel(tool: unknown): string {
   }
 }
 
+function dynamicToolDescription(item: JsonObject): Pick<CodexAppActivityUpdate, 'label' | 'detail'> {
+  const rawInput = (() => {
+    const value = item.input ?? item.arguments ?? item.params;
+    if (typeof value === 'string') return value;
+    try { return value == null ? '' : JSON.stringify(value); } catch { return ''; }
+  })();
+  const toolName = cleanDetail([item.namespace, item.tool].filter(Boolean).join(' / '));
+  const lastNestedTool = rawInput.lastIndexOf('tools.');
+  const classifiableInput = lastNestedTool >= 0 ? rawInput.slice(lastNestedTool) : rawInput;
+
+  // Classify only into fixed, non-sensitive stages. Never forward the raw
+  // dynamic-tool input: code-mode wrappers can contain prompts or credentials.
+  if (/\bgit\s+push\b/i.test(classifiableInput)) return { label: '推送代码', detail: undefined };
+  if (/\bbits\b[\s\S]{0,120}\bmr\b|\bmr\b[\s\S]{0,120}\bbits\b/i.test(classifiableInput)) {
+    return { label: '处理 BITS MR', detail: undefined };
+  }
+  if (/remote\s+start|remote[xX][\s/]|gradlew|assemble|generateSoHar/i.test(classifiableInput)) {
+    return { label: '运行构建', detail: undefined };
+  }
+  if (/\bmeego\b/i.test(classifiableInput)) return { label: '同步 Meego', detail: undefined };
+  if (/write_stdin|tools\.wait\b|\bwait\s*\(/i.test(classifiableInput)) {
+    return { label: '等待工具结果', detail: undefined };
+  }
+  if (/apply_patch|fileChange|write_file|edit_file/i.test(classifiableInput)) {
+    return { label: '修改代码', detail: undefined };
+  }
+  if (/exec_command|\brg\b|\bgit\s+(?:diff|status|log|show)\b|\bsed\b|bytebuild|\blog\b/i.test(classifiableInput)) {
+    return { label: '检查代码与日志', detail: undefined };
+  }
+  return { label: '调用工具', detail: toolName };
+}
+
 function itemDescription(item: JsonObject): Pick<CodexAppActivityUpdate, 'label' | 'detail'> | null {
   switch (item?.type) {
     case 'commandExecution': return commandActivity(item);
     case 'fileChange': return { label: '修改文件', detail: fileChangeDetail(item) };
     case 'mcpToolCall': return { label: '调用 MCP 工具', detail: cleanDetail(`${item.server ?? ''} / ${item.tool ?? ''}`) };
-    case 'dynamicToolCall': return { label: '调用工具', detail: cleanDetail([item.namespace, item.tool].filter(Boolean).join(' / ')) };
+    case 'dynamicToolCall': return dynamicToolDescription(item);
     case 'collabAgentToolCall': return { label: collabLabel(item.tool), detail: undefined };
     case 'subAgentActivity': return { label: '子 Agent 执行', detail: cleanDetail(item.agentPath) };
     case 'webSearch': return { label: '搜索外部资料', detail: cleanDetail(item.query) };

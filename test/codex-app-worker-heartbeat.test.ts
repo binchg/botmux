@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-describe('Codex App worker progress heartbeat integration', () => {
+describe('Codex App worker background progress integration', () => {
   const source = readFileSync(join(process.cwd(), 'src/worker.ts'), 'utf8');
 
   it('starts at the actual PTY turn and emits independently from runner deltas', () => {
@@ -16,9 +16,9 @@ describe('Codex App worker progress heartbeat integration', () => {
     expect(source).toContain("if (!codexAppHeartbeat || status === 'idle') return;");
   });
 
-  it('tracks app-server activities and marks heartbeats separately from assistant progress', () => {
+  it('tracks app-server activities and marks background activity separately from assistant progress', () => {
     expect(source).toContain("if (kind === 'activity' && typeof payload.id === 'string')");
-    expect(source).toContain("kind: 'heartbeat'");
+    expect(source).toContain("kind: 'activity'");
     expect(source).toContain("kind: 'assistant'");
     expect(source).toContain('const turnId = codexAppProgressTurnId ?? currentBotmuxTurnId');
     expect(source).toContain('normalizeCodexAppTimestampMs(payload.atMs)');

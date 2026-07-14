@@ -17,7 +17,6 @@ export interface CodexAppHeartbeatActivity {
 
 const DEFAULT_INTERVAL_MS = 30_000;
 const MAX_ACTIVITY_CHARS = 44;
-const MAX_PROGRESS_CHARS = 64;
 
 function compactField(value: string | undefined, maxChars: number): string | undefined {
   const text = String(value ?? '')
@@ -34,38 +33,25 @@ function compactField(value: string | undefined, maxChars: number): string | und
   return text.length <= maxChars ? text : `${text.slice(0, Math.max(1, maxChars - 1))}…`;
 }
 
-export function compactCodexAppProgressSummary(value: string): string {
-  return compactField(value, MAX_PROGRESS_CHARS) ?? '处理中';
-}
-
-function formatElapsed(elapsedMs: number): string {
-  const seconds = Math.max(1, Math.round(elapsedMs / 1_000));
-  if (seconds < 60) return `约 ${seconds} 秒`;
-  const minutes = Math.max(1, Math.round(seconds / 60));
-  return `约 ${minutes} 分钟`;
-}
-
 /**
- * Keeps long Codex App turns visible in Lark even while the model is blocked
- * inside a tool call and therefore cannot emit a commentary message itself.
+ * Emits factual background activity milestones when the model is silent.
+ * This is event-driven rather than a duration heartbeat: a stage is posted at
+ * most once, contains no elapsed time, and is never synthesized by the AI.
  */
 export class CodexAppHeartbeat {
   private readonly intervalMs: number;
-  private readonly startedAtMs: number;
   private lastVisibleAtMs: number;
   private lastSnapshotAtMs = 0;
-  private latestProgress?: string;
+  private lastActivityFingerprint = '';
   private readonly activities = new Map<string, CodexAppHeartbeatActivity>();
 
   constructor(startedAtMs: number, options: CodexAppHeartbeatOptions = {}) {
-    this.startedAtMs = startedAtMs;
     this.lastVisibleAtMs = startedAtMs;
     this.intervalMs = options.intervalMs ?? DEFAULT_INTERVAL_MS;
   }
 
-  noteVisibleProgress(nowMs: number, summary?: string): void {
+  noteVisibleProgress(nowMs: number, _summary?: string): void {
     this.lastVisibleAtMs = nowMs;
-    if (summary) this.latestProgress = compactCodexAppProgressSummary(summary);
   }
 
   startActivity(activity: CodexAppHeartbeatActivity): void {
@@ -79,12 +65,15 @@ export class CodexAppHeartbeat {
   maybeSnapshot(turnId: string | undefined, nowMs: number): CodexAppHeartbeatSnapshot | null {
     if (nowMs - this.lastVisibleAtMs < this.intervalMs) return null;
     if (this.lastSnapshotAtMs > 0 && nowMs - this.lastSnapshotAtMs < this.intervalMs) return null;
+    const activity = this.currentActivity();
+    if (!activity) return null;
+    const fingerprint = `${activity.label}\u0000${activity.detail ?? ''}`;
+    if (fingerprint === this.lastActivityFingerprint) return null;
+    this.lastActivityFingerprint = fingerprint;
     return this.snapshot(turnId, nowMs);
   }
 
-  /** Render an immediate user-visible status after an explicit assistant
-   * progress sentence. The same compact shape is reused by periodic heartbeats
-   * so the progress card never oscillates between long prose and timer lists. */
+  /** Render the current factual tool stage without duration text. */
   currentSnapshot(turnId: string | undefined, nowMs: number): CodexAppHeartbeatSnapshot {
     return this.snapshot(turnId, nowMs);
   }
@@ -102,10 +91,9 @@ export class CodexAppHeartbeat {
         : '分析问题',
       MAX_ACTIVITY_CHARS,
     ) ?? '分析问题';
-    const progress = this.latestProgress ? `｜进展：${this.latestProgress}` : '';
     return {
       turnId,
-      content: `正在执行：${activityText}${progress}｜本轮${formatElapsed(nowMs - this.startedAtMs)}。`,
+      content: `正在执行：${activityText}。`,
       updatedAtMs: nowMs,
     };
   }

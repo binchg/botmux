@@ -59,6 +59,24 @@ describe('Codex App activity formatter', () => {
     }, 'started', 5_000)).toMatchObject({ label: '等待子 Agent' });
   });
 
+  it('turns code-mode dynamic calls into fixed non-sensitive stages', () => {
+    expect(codexAppItemActivity({
+      type: 'dynamicToolCall',
+      id: 'dynamic-build',
+      namespace: 'functions',
+      tool: 'exec',
+      input: 'await tools.exec_command({cmd:"./remote start.sh app:assembleRelease"})',
+    }, 'started', 6_000)).toMatchObject({ label: '运行构建', detail: undefined });
+
+    expect(codexAppItemActivity({
+      type: 'dynamicToolCall',
+      id: 'dynamic-push',
+      namespace: 'functions',
+      tool: 'exec',
+      input: 'await tools.exec_command({cmd:"git push origin HEAD"})',
+    }, 'started', 7_000)).toMatchObject({ label: '推送代码', detail: undefined });
+  });
+
   it('normalizes app-server seconds without changing millisecond timestamps', () => {
     expect(normalizeCodexAppTimestampMs(1_784_005_480)).toBe(1_784_005_480_000);
     expect(normalizeCodexAppTimestampMs(1_784_005_480_123)).toBe(1_784_005_480_123);

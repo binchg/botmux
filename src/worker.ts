@@ -2922,7 +2922,7 @@ function sendCodexAppHeartbeatSnapshot(snapshot: ReturnType<CodexAppHeartbeat['m
   if (!snapshot) return;
   send({
     type: 'progress_output',
-    kind: 'heartbeat',
+    kind: 'activity',
     content: snapshot.content,
     turnId: snapshot.turnId ?? codexAppProgressTurnId ?? currentBotmuxTurnId ?? `${lastInitConfig?.cliId ?? 'app'}-${snapshot.updatedAtMs}`,
   });
@@ -2983,6 +2983,7 @@ function handleCodexAppMarker(body: string): void {
         detail: typeof payload.detail === 'string' ? payload.detail : undefined,
         startedAtMs: nowMs,
       });
+      sendCodexAppHeartbeatSnapshot(codexAppHeartbeat?.maybeSnapshot(codexAppProgressTurnId, nowMs) ?? null);
     } else if (payload.phase === 'completed') {
       codexAppHeartbeat?.completeActivity(payload.id, nowMs);
     }

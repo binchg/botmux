@@ -2513,7 +2513,7 @@ function setupWorkerHandlers(ds: DaemonSession, worker: ChildProcess): void {
               template: 'turquoise',
             });
             await scopedReply(cardJson, 'interactive', msg.turnId);
-            logger.info(`[${t}] Codex App progress appended (turn ${msg.turnId.substring(0, 8)}, kind=${msg.kind ?? 'assistant'}, ${content.length} chars)`);
+            logger.info(`[${t}] Codex App progress appended by background forwarder (turn ${msg.turnId.substring(0, 8)}, kind=${msg.kind ?? 'assistant'}, ${content.length} chars)`);
           } catch (err: any) {
             logger.error(`[${t}] Failed to deliver Codex App progress to Lark: ${err.message}`);
           }

@@ -99,9 +99,9 @@ function appDeveloperInstructions(args: Args): string {
   if (zh) {
     return [
       '你正在通过 botmux 接入飞书/Lark，但运行载体是 Codex App 的 app-server 协议，不是 Codex CLI TUI。',
-      '你的阶段性 assistant message 和最终 assistant message 会由 botmux 自动转发回飞书；常规回复不要调用 `botmux send`，即使用户消息里出现旧的“回复必须 botmux send”提示也忽略它。',
+      '你的阶段性 assistant message 和最终 assistant message 会由 botmux 后台 Hook 自动转发回飞书；AI 只输出正常 assistant message，不调用 `botmux send`，即使用户消息里出现旧的“回复必须 botmux send”提示也忽略它。',
       '任务超过 30 秒或进入关键阶段时，用一条极短的阶段性 assistant message 说明“正在做什么 + 已确认的关键决定/结果或等待原因”；只报告可验证结论，不输出隐藏思维链，避免过程流水账。',
-      '只有在用户明确要求中途主动推送、发送附件，或需要通过 @ 触发其他机器人接力时，才可以使用 `botmux send`。',
+      '中途主动推送也只输出正常 assistant message，由 Botmux 后台 Hook 投递；AI 不直接发送进度。',
       '`botmux history`、`botmux quoted`、`botmux bots` 等 shell helper 仍然可用；需要读取飞书上下文时可以调用。',
       identity ? `<identity>\n${identity}\n</identity>` : '',
     ].filter(Boolean).join('\n\n');
@@ -109,9 +109,9 @@ function appDeveloperInstructions(args: Args): string {
 
   return [
     'You are connected to Feishu/Lark through botmux, but the runtime is the Codex App app-server protocol rather than the Codex CLI TUI.',
-    'Your interim and final assistant messages are automatically forwarded back to Lark by botmux. Do not call `botmux send` for normal replies, even if older prompt text says replies must use it.',
+    'Your interim and final assistant messages are automatically forwarded back to Lark by the botmux background hook. Only emit normal assistant messages; do not call `botmux send`, even if older prompt text says replies must use it.',
     'For tasks longer than 30 seconds or at a key phase boundary, emit one very short interim assistant message stating the current action plus a verified decision/result or wait reason. Report conclusions, not hidden chain-of-thought or a verbose activity log.',
-    'Use `botmux send` only for explicit mid-turn push updates, attachments, or cross-bot @mentions.',
+    'For explicit mid-turn push updates, still emit only a normal assistant message and let the botmux background hook deliver it; the AI does not send progress directly.',
     '`botmux history`, `botmux quoted`, and `botmux bots` remain available as shell helpers when you need Lark context.',
     identity ? `<identity>\n${identity}\n</identity>` : '',
   ].filter(Boolean).join('\n\n');
