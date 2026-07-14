@@ -23,6 +23,11 @@ describe('codex-app runner steering', () => {
     expect(source).toContain('clearInterval(turn.progressTimer)');
   });
 
+  it('asks the model for concise, verifiable phase decisions rather than hidden reasoning', () => {
+    expect(source).toContain('正在做什么 + 已确认的关键决定/结果或等待原因');
+    expect(source).toContain('不输出隐藏思维链');
+  });
+
   it('starts a new progress epoch when busy follow-up guidance arrives', () => {
     expect(source).toContain('activeTurn.progress.resetTo(activeTurn.allAgentText)');
   });
@@ -33,5 +38,6 @@ describe('codex-app runner steering', () => {
     expect(source).toContain("codexAppItemActivity(item, 'started'");
     expect(source).toContain("codexAppItemActivity(item, 'completed'");
     expect(source).toContain("emitMarker('activity'");
+    expect(source).toContain('normalizeCodexAppTimestampMs');
   });
 });

@@ -14,6 +14,18 @@ type JsonObject = Record<string, any>;
 
 const MAX_DETAIL_CHARS = 96;
 
+/** app-server currently mixes Unix seconds (`startedAt` / `completedAt`) and
+ * JavaScript epoch milliseconds (`startedAtMs`). Normalize both before any
+ * elapsed-time calculation so a seconds value cannot become tens of millions
+ * of minutes. Microsecond timestamps are accepted defensively as well. */
+export function normalizeCodexAppTimestampMs(value: unknown, fallbackMs = Date.now()): number {
+  const raw = Number(value);
+  if (!Number.isFinite(raw) || raw <= 0) return fallbackMs;
+  if (raw < 100_000_000_000) return Math.round(raw * 1_000);
+  if (raw > 100_000_000_000_000) return Math.round(raw / 1_000);
+  return Math.round(raw);
+}
+
 function cleanDetail(value: unknown): string | undefined {
   const text = String(value ?? '')
     .replace(/[\u0000-\u001f\u007f]/g, ' ')

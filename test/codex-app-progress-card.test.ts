@@ -19,6 +19,21 @@ describe('Codex App single progress card', () => {
     expect(patch).toHaveBeenNthCalledWith(2, 'om_progress', 'third');
   });
 
+  it('keeps one card when app-server and botmux report different turn ids', async () => {
+    const post = vi.fn(async () => 'om_progress');
+    const patch = vi.fn(async () => {});
+    const remove = vi.fn(async () => {});
+    const card = new CodexAppProgressCard({ post, patch, remove });
+
+    await card.upsert('codex-turn', 'assistant decision');
+    await card.upsert('lark-turn', 'heartbeat');
+    await card.finish('lark-turn', 'completed');
+
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(patch).toHaveBeenCalledWith('om_progress', 'heartbeat');
+    expect(remove).toHaveBeenCalledWith('om_progress');
+  });
+
   it('withdraws the temporary card after the final answer succeeds', async () => {
     const remove = vi.fn(async () => {});
     const card = new CodexAppProgressCard({

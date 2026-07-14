@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { codexAppHookActivity, codexAppItemActivity } from '../src/services/codex-app-activity.js';
+import { codexAppHookActivity, codexAppItemActivity, normalizeCodexAppTimestampMs } from '../src/services/codex-app-activity.js';
 
 describe('Codex App activity formatter', () => {
   it('turns structured command actions into safe, concrete progress', () => {
@@ -57,5 +57,10 @@ describe('Codex App activity formatter', () => {
       tool: 'wait',
       status: 'inProgress',
     }, 'started', 5_000)).toMatchObject({ label: '等待子 Agent' });
+  });
+
+  it('normalizes app-server seconds without changing millisecond timestamps', () => {
+    expect(normalizeCodexAppTimestampMs(1_784_005_480)).toBe(1_784_005_480_000);
+    expect(normalizeCodexAppTimestampMs(1_784_005_480_123)).toBe(1_784_005_480_123);
   });
 });

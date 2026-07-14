@@ -20,5 +20,7 @@ describe('Codex App worker progress heartbeat integration', () => {
     expect(source).toContain("if (kind === 'activity' && typeof payload.id === 'string')");
     expect(source).toContain("kind: 'heartbeat'");
     expect(source).toContain("kind: 'assistant'");
+    expect(source).toContain('const turnId = currentBotmuxTurnId');
+    expect(source).toContain('normalizeCodexAppTimestampMs(payload.atMs)');
   });
 });

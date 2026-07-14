@@ -349,4 +349,29 @@ describe('worker-pool lifecycle hook integration', () => {
     expect(updateMessageMock.mock.calls[0][1]).toBe('om_reply');
     expect(String(updateMessageMock.mock.calls[0][2])).toContain('运行 Codex Hook');
   });
+
+  it('patches one card when assistant and heartbeat arrive with different turn ids', async () => {
+    const worker = makeFakeWorker();
+    const ds = makeDs({ worker });
+    __testOnly_setupWorkerHandlers(ds, worker);
+
+    worker.emit('message', {
+      type: 'progress_output',
+      kind: 'assistant',
+      turnId: 'codex-native-turn',
+      content: '正在执行：分析问题｜进展：已完成建档｜本轮约 10 秒。',
+    });
+    await flush();
+    worker.emit('message', {
+      type: 'progress_output',
+      kind: 'heartbeat',
+      turnId: 'lark-user-turn',
+      content: '正在执行：搜索代码 worker.ts｜进展：已完成建档｜本轮约 40 秒。',
+    });
+    await flush();
+
+    expect(sessionReplyMock).toHaveBeenCalledTimes(1);
+    expect(updateMessageMock).toHaveBeenCalledTimes(1);
+    expect(updateMessageMock.mock.calls[0][1]).toBe('om_reply');
+  });
 });

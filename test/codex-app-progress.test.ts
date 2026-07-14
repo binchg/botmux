@@ -259,6 +259,14 @@ describe('Codex App progress throttling', () => {
       .toBe('补充后的完整进度。');
   });
 
+  it('forwards the compact one-line status as one complete card update', () => {
+    const forwarder = new CodexAppProgressForwarder();
+    const status = '正在执行：分析问题｜进展：已完成建档，正在核对 Hook 与 Harness｜本轮约 47 秒。';
+    expect(forwarder.drain('turn-status', status)).toEqual([
+      expect.objectContaining({ content: status }),
+    ]);
+  });
+
   it('realigns a legacy runner chunk that starts inside the previous sentence', () => {
     const forwarder = new CodexAppProgressForwarder();
 

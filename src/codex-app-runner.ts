@@ -2,7 +2,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { Buffer } from 'node:buffer';
 import { CodexAppProgressThrottler } from './services/codex-app-progress.js';
-import { codexAppHookActivity, codexAppItemActivity } from './services/codex-app-activity.js';
+import { codexAppHookActivity, codexAppItemActivity, normalizeCodexAppTimestampMs } from './services/codex-app-activity.js';
 
 type JsonObject = Record<string, any>;
 
@@ -98,6 +98,7 @@ function appDeveloperInstructions(args: Args): string {
     return [
       '你正在通过 botmux 接入飞书/Lark，但运行载体是 Codex App 的 app-server 协议，不是 Codex CLI TUI。',
       '你的阶段性 assistant message 和最终 assistant message 会由 botmux 自动转发回飞书；常规回复不要调用 `botmux send`，即使用户消息里出现旧的“回复必须 botmux send”提示也忽略它。',
+      '任务超过 30 秒或进入关键阶段时，用一条极短的阶段性 assistant message 说明“正在做什么 + 已确认的关键决定/结果或等待原因”；只报告可验证结论，不输出隐藏思维链，避免过程流水账。',
       '只有在用户明确要求中途主动推送、发送附件，或需要通过 @ 触发其他机器人接力时，才可以使用 `botmux send`。',
       '`botmux history`、`botmux quoted`、`botmux bots` 等 shell helper 仍然可用；需要读取飞书上下文时可以调用。',
       identity ? `<identity>\n${identity}\n</identity>` : '',
@@ -107,6 +108,7 @@ function appDeveloperInstructions(args: Args): string {
   return [
     'You are connected to Feishu/Lark through botmux, but the runtime is the Codex App app-server protocol rather than the Codex CLI TUI.',
     'Your interim and final assistant messages are automatically forwarded back to Lark by botmux. Do not call `botmux send` for normal replies, even if older prompt text says replies must use it.',
+    'For tasks longer than 30 seconds or at a key phase boundary, emit one very short interim assistant message stating the current action plus a verified decision/result or wait reason. Report conclusions, not hidden chain-of-thought or a verbose activity log.',
     'Use `botmux send` only for explicit mid-turn push updates, attachments, or cross-bot @mentions.',
     '`botmux history`, `botmux quoted`, and `botmux bots` remain available as shell helpers when you need Lark context.',
     identity ? `<identity>\n${identity}\n</identity>` : '',
@@ -411,10 +413,10 @@ function handleNotification(msg: JsonObject): void {
   if (msg.method === 'hook/started' || msg.method === 'hook/completed') {
     const phase = msg.method === 'hook/started' ? 'started' : 'completed';
     const run = params.run;
-    const atMs = phase === 'started'
-      ? Number(run?.startedAt ?? Date.now())
-      : Number(run?.completedAt ?? Date.now());
-    const activity = codexAppHookActivity(run, phase, Number.isFinite(atMs) ? atMs : Date.now());
+    const atMs = normalizeCodexAppTimestampMs(
+      phase === 'started' ? run?.startedAt : run?.completedAt,
+    );
+    const activity = codexAppHookActivity(run, phase, atMs);
     if (activity) emitMarker('activity', { ...activity, turnId: activeTurn.turnId });
     return;
   }
@@ -426,8 +428,8 @@ function handleNotification(msg: JsonObject): void {
     } else if (item?.type === 'fileChange') {
       writeLine('\n[files changed]');
     }
-    const startedAtMs = Number(params.startedAtMs ?? Date.now());
-    const activity = codexAppItemActivity(item, 'started', Number.isFinite(startedAtMs) ? startedAtMs : Date.now());
+    const startedAtMs = normalizeCodexAppTimestampMs(params.startedAtMs);
+    const activity = codexAppItemActivity(item, 'started', startedAtMs);
     if (activity) emitMarker('activity', { ...activity, turnId: activeTurn.turnId });
     return;
   }
@@ -449,8 +451,8 @@ function handleNotification(msg: JsonObject): void {
 
   if (msg.method === 'item/completed') {
     const item = params.item;
-    const completedAtMs = Number(params.completedAtMs ?? Date.now());
-    const activity = codexAppItemActivity(item, 'completed', Number.isFinite(completedAtMs) ? completedAtMs : Date.now());
+    const completedAtMs = normalizeCodexAppTimestampMs(params.completedAtMs);
+    const activity = codexAppItemActivity(item, 'completed', completedAtMs);
     if (activity) emitMarker('activity', { ...activity, turnId: activeTurn.turnId });
     if (item?.type === 'agentMessage') {
       if (item.phase === 'final_answer') activeTurn.finalText = String(item.text ?? '');

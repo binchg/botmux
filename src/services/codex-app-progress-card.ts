@@ -17,13 +17,10 @@ export class CodexAppProgressCard {
 
   upsert(turnId: string, cardJson: string): Promise<void> {
     return this.enqueue(async () => {
-      if (this.turnId !== turnId) {
-        this.turnId = turnId;
-        this.messageId = undefined;
-      }
       if (this.messageId) {
         try {
           await this.operations.patch(this.messageId, cardJson);
+          this.turnId = turnId;
           return;
         } catch (error) {
           // A recalled/expired card is recreated below. The new message id
@@ -33,6 +30,7 @@ export class CodexAppProgressCard {
         }
       }
       this.messageId = await this.operations.post(cardJson, turnId);
+      this.turnId = turnId;
     });
   }
 

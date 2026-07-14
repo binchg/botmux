@@ -37,7 +37,8 @@ import {
   type PidFollowResult,
 } from './services/bridge-rotation-policy.js';
 import { CodexBridgeQueue } from './services/codex-bridge-queue.js';
-import { CodexAppHeartbeat } from './services/codex-app-heartbeat.js';
+import { CodexAppHeartbeat, compactCodexAppProgressSummary } from './services/codex-app-heartbeat.js';
+import { normalizeCodexAppTimestampMs } from './services/codex-app-activity.js';
 import { drainCodexRollout, findCodexRolloutBySessionId, findCodexRolloutByPid, splitCodexEventsByCutoff, extractLastCodexTurn, type CodexBridgeEvent } from './services/codex-transcript.js';
 import { findTraexRolloutBySessionId, findTraexRolloutByPid } from './services/traex-transcript.js';
 import { cocoEventsPathForSession, drainCocoEvents, findCocoSessionByPid } from './services/coco-transcript.js';
@@ -2900,8 +2901,8 @@ function beginCodexAppHeartbeat(): void {
   codexAppHeartbeat = new CodexAppHeartbeat(Date.now());
 }
 
-function noteCodexAppVisibleProgress(nowMs = Date.now()): void {
-  codexAppHeartbeat?.noteVisibleProgress(nowMs);
+function noteCodexAppVisibleProgress(nowMs = Date.now(), summary?: string): void {
+  codexAppHeartbeat?.noteVisibleProgress(nowMs, summary);
 }
 
 function clearCodexAppHeartbeat(): void {
@@ -2964,7 +2965,7 @@ function handleCodexAppMarker(body: string): void {
   }
 
   if (kind === 'activity' && typeof payload.id === 'string') {
-    const nowMs = typeof payload.atMs === 'number' && Number.isFinite(payload.atMs) ? payload.atMs : Date.now();
+    const nowMs = normalizeCodexAppTimestampMs(payload.atMs);
     if (payload.phase === 'started' && typeof payload.label === 'string') {
       codexAppHeartbeat?.startActivity({
         id: payload.id,
@@ -2985,18 +2986,24 @@ function handleCodexAppMarker(body: string): void {
   }
 
   if (kind === 'progress' && typeof payload.content === 'string') {
-    noteCodexAppVisibleProgress(typeof payload.updatedAtMs === 'number' ? payload.updatedAtMs : Date.now());
-    const turnId = typeof payload.turnId === 'string' ? payload.turnId : (currentBotmuxTurnId ?? `${lastInitConfig?.cliId ?? 'app'}-${Date.now()}`);
+    const progressAtMs = normalizeCodexAppTimestampMs(payload.updatedAtMs);
+    noteCodexAppVisibleProgress(progressAtMs, payload.content);
+    // app-server has its own turn id, but Lark progress ownership follows the
+    // botmux user turn. Mixing the two ids made assistant progress and heartbeat
+    // alternately POST new cards for one active task.
+    const turnId = currentBotmuxTurnId
+      ?? (typeof payload.turnId === 'string' ? payload.turnId : `${lastInitConfig?.cliId ?? 'app'}-${Date.now()}`);
+    const status = codexAppHeartbeat?.currentSnapshot(turnId, progressAtMs);
     emitTerminalUiEvent({
       type: 'progress',
       content: payload.content,
-      at: typeof payload.updatedAtMs === 'number' ? payload.updatedAtMs : Date.now(),
+      at: progressAtMs,
       turnId,
     });
     send({
       type: 'progress_output',
       kind: 'assistant',
-      content: payload.content,
+      content: status?.content ?? `进展：${compactCodexAppProgressSummary(payload.content)}`,
       turnId,
     });
     return;
@@ -3004,8 +3011,10 @@ function handleCodexAppMarker(body: string): void {
 
   if (kind === 'final' && typeof payload.content === 'string') {
     clearCodexAppHeartbeat();
-    const startedAtMs = typeof payload.startedAtMs === 'number' ? payload.startedAtMs : undefined;
-    const completedAtMs = typeof payload.completedAtMs === 'number' ? payload.completedAtMs : Date.now();
+    const startedAtMs = payload.startedAtMs == null
+      ? undefined
+      : normalizeCodexAppTimestampMs(payload.startedAtMs);
+    const completedAtMs = normalizeCodexAppTimestampMs(payload.completedAtMs);
     if (startedAtMs !== undefined) {
       const sentByModel = shouldSuppressBridgeEmit(
         { markTimeMs: startedAtMs, isLocal: false, finalText: payload.content },
@@ -3018,7 +3027,8 @@ function handleCodexAppMarker(body: string): void {
         return;
       }
     }
-    const turnId = typeof payload.turnId === 'string' ? payload.turnId : (currentBotmuxTurnId ?? `${lastInitConfig?.cliId ?? 'app'}-${Date.now()}`);
+    const turnId = currentBotmuxTurnId
+      ?? (typeof payload.turnId === 'string' ? payload.turnId : `${lastInitConfig?.cliId ?? 'app'}-${Date.now()}`);
     emitTerminalUiEvent({
       type: 'final',
       content: payload.content,

@@ -15,7 +15,28 @@ export interface CodexAppHeartbeatActivity {
   startedAtMs: number;
 }
 
-const DEFAULT_INTERVAL_MS = 45_000;
+const DEFAULT_INTERVAL_MS = 30_000;
+const MAX_ACTIVITY_CHARS = 44;
+const MAX_PROGRESS_CHARS = 64;
+
+function compactField(value: string | undefined, maxChars: number): string | undefined {
+  const text = String(value ?? '')
+    .replace(/[\r\n]+/g, ' ')
+    .replace(/^[\s>*#`\-•]+/, '')
+    .replace(/(authorization|token|password|secret)\s*[:=]\s*\S+/gi, '$1=[已脱敏]')
+    .replace(/[。！？!?…]+/g, '，')
+    .replace(/\.(?=\s|$)/g, '，')
+    .replace(/，{2,}/g, '，')
+    .replace(/\s+/g, ' ')
+    .replace(/[，,；;：:\s]+$/, '')
+    .trim();
+  if (!text) return undefined;
+  return text.length <= maxChars ? text : `${text.slice(0, Math.max(1, maxChars - 1))}…`;
+}
+
+export function compactCodexAppProgressSummary(value: string): string {
+  return compactField(value, MAX_PROGRESS_CHARS) ?? '处理中';
+}
 
 function formatElapsed(elapsedMs: number): string {
   const seconds = Math.max(1, Math.round(elapsedMs / 1_000));
@@ -33,34 +54,38 @@ export class CodexAppHeartbeat {
   private readonly startedAtMs: number;
   private lastVisibleAtMs: number;
   private lastSnapshotAtMs = 0;
-  private phaseStartedAtMs: number;
+  private latestProgress?: string;
   private readonly activities = new Map<string, CodexAppHeartbeatActivity>();
 
   constructor(startedAtMs: number, options: CodexAppHeartbeatOptions = {}) {
     this.startedAtMs = startedAtMs;
     this.lastVisibleAtMs = startedAtMs;
-    this.phaseStartedAtMs = startedAtMs;
     this.intervalMs = options.intervalMs ?? DEFAULT_INTERVAL_MS;
   }
 
-  noteVisibleProgress(nowMs: number): void {
+  noteVisibleProgress(nowMs: number, summary?: string): void {
     this.lastVisibleAtMs = nowMs;
+    if (summary) this.latestProgress = compactCodexAppProgressSummary(summary);
   }
 
   startActivity(activity: CodexAppHeartbeatActivity): void {
     this.activities.set(activity.id, activity);
-    this.phaseStartedAtMs = activity.startedAtMs;
   }
 
-  completeActivity(id: string, completedAtMs: number): void {
+  completeActivity(id: string, _completedAtMs: number): void {
     if (!this.activities.delete(id)) return;
-    const current = this.currentActivity();
-    this.phaseStartedAtMs = current?.startedAtMs ?? completedAtMs;
   }
 
   maybeSnapshot(turnId: string | undefined, nowMs: number): CodexAppHeartbeatSnapshot | null {
     if (nowMs - this.lastVisibleAtMs < this.intervalMs) return null;
     if (this.lastSnapshotAtMs > 0 && nowMs - this.lastSnapshotAtMs < this.intervalMs) return null;
+    return this.snapshot(turnId, nowMs);
+  }
+
+  /** Render an immediate user-visible status after an explicit assistant
+   * progress sentence. The same compact shape is reused by periodic heartbeats
+   * so the progress card never oscillates between long prose and timer lists. */
+  currentSnapshot(turnId: string | undefined, nowMs: number): CodexAppHeartbeatSnapshot {
     return this.snapshot(turnId, nowMs);
   }
 
@@ -71,12 +96,16 @@ export class CodexAppHeartbeat {
   private snapshot(turnId: string | undefined, nowMs: number): CodexAppHeartbeatSnapshot {
     this.lastSnapshotAtMs = nowMs;
     const activity = this.currentActivity();
-    const headline = activity
-      ? `正在执行：${activity.label}${activity.detail ? `（${activity.detail}）` : ''}`
-      : '正在处理：模型分析与下一步决策';
+    const activityText = compactField(
+      activity
+        ? `${activity.label}${activity.detail ? ` ${activity.detail}` : ''}`
+        : '分析问题',
+      MAX_ACTIVITY_CHARS,
+    ) ?? '分析问题';
+    const progress = this.latestProgress ? `｜进展：${this.latestProgress}` : '';
     return {
       turnId,
-      content: `${headline}\n- 当前步骤已持续：${formatElapsed(nowMs - (activity?.startedAtMs ?? this.phaseStartedAtMs))}\n- 本轮已持续：${formatElapsed(nowMs - this.startedAtMs)}`,
+      content: `正在执行：${activityText}${progress}｜本轮${formatElapsed(nowMs - this.startedAtMs)}。`,
       updatedAtMs: nowMs,
     };
   }
