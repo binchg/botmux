@@ -98,7 +98,6 @@ function main() {
   run('corepack', ['pnpm', 'exec', 'vitest', 'run', '--project', 'unit',
     'test/dev-deploy-version.test.ts', 'test/install-info.test.ts',
     'test/restart-report.test.ts', 'test/codex-app-progress.test.ts',
-    'test/codex-app-progress-card.test.ts', 'test/codex-app-progress-card-view.test.ts',
     'test/persistent-app-runner-reload.test.ts', 'test/session-lifecycle-hooks.test.ts',
     'test/codex-app-hook-health.test.ts', 'test/codex-app-runner.test.ts',
     'test/cli-adapters.test.ts']);
