@@ -5,7 +5,8 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { homedir } from 'node:os';
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { codexHome } from '../src/services/codex-paths.js';
 
@@ -396,6 +397,28 @@ describe('codex-app buildArgs', () => {
     });
     expect(args).toContain('--thread-id');
     expect(args).toContain('thread-123');
+  });
+
+  it('canonicalizes a symlinked cwd before starting Codex App', () => {
+    const root = mkdtempSync(join(tmpdir(), 'botmux-codex-app-cwd-'));
+    try {
+      const realDir = join(root, 'real');
+      const linkedDir = join(root, 'linked');
+      mkdirSync(realDir);
+      symlinkSync(realDir, linkedDir, 'dir');
+
+      const args = adapter.buildArgs({
+        sessionId: 'sess-app',
+        resume: false,
+        workingDir: linkedDir,
+      });
+      const cwdIndex = args.indexOf('--cwd');
+
+      expect(cwdIndex).toBeGreaterThanOrEqual(0);
+      expect(args[cwdIndex + 1]).toBe(realpathSync(realDir));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('allows busy follow-ups so the runner can steer the active turn', () => {

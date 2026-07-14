@@ -3,6 +3,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { Buffer } from 'node:buffer';
 import { CodexAppProgressThrottler } from './services/codex-app-progress.js';
 import { codexAppHookActivity, codexAppItemActivity, normalizeCodexAppTimestampMs } from './services/codex-app-activity.js';
+import { codexAppHookFailure, codexAppHookTrustIssue } from './services/codex-app-hook-health.js';
 
 type JsonObject = Record<string, any>;
 
@@ -34,6 +35,7 @@ interface ActiveTurn {
   steerChain: Promise<void>;
   done: Promise<void>;
   resolveDone: () => void;
+  criticalHookFailure?: string;
 }
 
 const OSC_PREFIX = '\x1b]777;botmux:';
@@ -418,6 +420,25 @@ function handleNotification(msg: JsonObject): void {
     );
     const activity = codexAppHookActivity(run, phase, atMs);
     if (activity) emitMarker('activity', { ...activity, turnId: activeTurn.turnId });
+    if (phase === 'completed') {
+      const failure = codexAppHookFailure(run);
+      if (failure) {
+        writeLine(`\n[codex-app] ${failure.message}`);
+        emitMarker('progress', {
+          content: failure.message,
+          turnId: activeTurn.turnId,
+          startedAtMs: activeTurn.startedAtMs,
+          updatedAtMs: atMs,
+        });
+        if (failure.critical) {
+          activeTurn.criticalHookFailure = failure.message;
+          const failedTurnId = activeTurn.turnId ?? params.turnId;
+          if (threadId && failedTurnId) {
+            void client.request('turn/interrupt', { threadId, turnId: failedTurnId }).catch(() => {});
+          }
+        }
+      }
+    }
     return;
   }
 
@@ -467,10 +488,24 @@ function handleNotification(msg: JsonObject): void {
   if (msg.method === 'turn/completed') {
     const turn = params.turn;
     if (turn?.id && activeTurn.turnId && turn.id !== activeTurn.turnId) return;
-    if (turn?.error?.message && !activeTurn.finalText) {
+    if (activeTurn.criticalHookFailure) {
+      activeTurn.finalText = activeTurn.criticalHookFailure;
+    } else if (turn?.error?.message && !activeTurn.finalText) {
       activeTurn.finalText = `Codex App turn failed: ${turn.error.message}`;
     }
     activeTurn.resolveDone();
+  }
+}
+
+async function currentHookTrustIssue(): Promise<string | undefined> {
+  try {
+    const response = await client.request('hooks/list', { cwds: [args.cwd] });
+    return codexAppHookTrustIssue(response, args.cwd);
+  } catch (err: any) {
+    if (process.env.BOTMUX_CODEX_APP_DEBUG === '1') {
+      writeLine(`[codex-app] hook health check unavailable: ${err?.message ?? err}`);
+    }
+    return undefined;
   }
 }
 
@@ -530,6 +565,8 @@ async function ensureThread(): Promise<string> {
 }
 
 async function runTurn(content: string): Promise<void> {
+  const hookTrustIssue = await currentHookTrustIssue();
+  if (hookTrustIssue) throw new Error(hookTrustIssue);
   const tid = await ensureThread();
   const turn = makeTurn();
   activeTurn = turn;
@@ -647,6 +684,8 @@ async function main(): Promise<void> {
   client.onRequest(handleServerRequest);
   client.onNotification(handleNotification);
   await client.initialize();
+  const hookTrustIssue = await currentHookTrustIssue();
+  if (hookTrustIssue) writeLine(`[codex-app] ${hookTrustIssue}`);
   await ensureThread();
   writeLine('Codex App connected.');
   if (process.stdin.isTTY) process.stdin.setRawMode(true);

@@ -1,5 +1,5 @@
 import { fileURLToPath } from 'node:url';
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { resolveCommand } from './registry.js';
 import type { CliAdapter, PtyHandle } from './types.js';
@@ -17,6 +17,20 @@ function runnerPath(): string {
 function pushOpt(args: string[], key: string, value: string | undefined): void {
   if (value === undefined || value.length === 0) return;
   args.push(key, value);
+}
+
+export function canonicalCodexAppWorkingDir(workingDir: string | undefined): string | undefined {
+  if (!workingDir) return workingDir;
+  try {
+    // Codex hook trust is keyed by the exact hooks.json source path. Resolve a
+    // symlinked cwd (for example /home -> /data00/home) so the same repository
+    // cannot alternate between distinct trust records across app-server runs.
+    return realpathSync(workingDir);
+  } catch {
+    // Preserve the previous behavior for paths that do not exist yet. Codex
+    // remains responsible for reporting an invalid cwd at spawn time.
+    return workingDir;
+  }
 }
 
 export function createCodexAppAdapter(pathOverride?: string): CliAdapter {
@@ -48,7 +62,7 @@ export function createCodexAppAdapter(pathOverride?: string): CliAdapter {
         '--codex-bin', (cachedCodexBin ??= resolveCommand(rawCodexBin)),
       ];
       if (resume && resumeSessionId) args.push('--thread-id', resumeSessionId);
-      pushOpt(args, '--cwd', workingDir);
+      pushOpt(args, '--cwd', canonicalCodexAppWorkingDir(workingDir));
       pushOpt(args, '--bot-name', botName);
       pushOpt(args, '--bot-open-id', botOpenId);
       pushOpt(args, '--locale', locale);

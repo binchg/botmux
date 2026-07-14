@@ -40,4 +40,11 @@ describe('codex-app runner steering', () => {
     expect(source).toContain("emitMarker('activity'");
     expect(source).toContain('normalizeCodexAppTimestampMs');
   });
+
+  it('checks hook trust before each turn and fails critical hooks visibly', () => {
+    expect(source).toContain("client.request('hooks/list'");
+    expect(source).toContain('codexAppHookTrustIssue(response, args.cwd)');
+    expect(source).toContain("client.request('turn/interrupt'");
+    expect(source).toContain('activeTurn.criticalHookFailure');
+  });
 });
