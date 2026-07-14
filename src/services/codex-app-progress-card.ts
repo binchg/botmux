@@ -3,6 +3,12 @@ export interface CodexAppProgressCardOperations {
   patch: (messageId: string, cardJson: string) => Promise<void>;
   remove: (messageId: string) => Promise<unknown>;
   canRepostAfterPatchFailure?: (error: unknown) => boolean;
+  onStateChange?: (state: CodexAppProgressCardState) => void;
+}
+
+export interface CodexAppProgressCardState {
+  turnId?: string;
+  messageId?: string;
 }
 
 /** Maintains exactly one mutable Lark progress message for a Codex App turn.
@@ -13,24 +19,30 @@ export class CodexAppProgressCard {
   private messageId?: string;
   private chain: Promise<void> = Promise.resolve();
 
-  constructor(private readonly operations: CodexAppProgressCardOperations) {}
+  constructor(
+    private readonly operations: CodexAppProgressCardOperations,
+    initialState: CodexAppProgressCardState = {},
+  ) {
+    this.turnId = initialState.turnId;
+    this.messageId = initialState.messageId;
+  }
 
   upsert(turnId: string, cardJson: string): Promise<void> {
     return this.enqueue(async () => {
       if (this.messageId) {
         try {
           await this.operations.patch(this.messageId, cardJson);
-          this.turnId = turnId;
+          this.setState(turnId, this.messageId);
           return;
         } catch (error) {
           // A recalled/expired card is recreated below. The new message id
           // becomes the sole update target for subsequent snapshots.
           if (!this.operations.canRepostAfterPatchFailure?.(error)) throw error;
-          this.messageId = undefined;
+          this.setState(undefined, undefined);
         }
       }
-      this.messageId = await this.operations.post(cardJson, turnId);
-      this.turnId = turnId;
+      const messageId = await this.operations.post(cardJson, turnId);
+      this.setState(turnId, messageId);
     });
   }
 
@@ -45,9 +57,15 @@ export class CodexAppProgressCard {
         // semantics from the existing card.
         try { await this.operations.patch(messageId, completedCardJson); } catch { /* best effort */ }
       }
-      this.turnId = undefined;
-      this.messageId = undefined;
+      this.setState(undefined, undefined);
     });
+  }
+
+  private setState(turnId: string | undefined, messageId: string | undefined): void {
+    if (this.turnId === turnId && this.messageId === messageId) return;
+    this.turnId = turnId;
+    this.messageId = messageId;
+    this.operations.onStateChange?.({ turnId, messageId });
   }
 
   private enqueue(operation: () => Promise<void>): Promise<void> {

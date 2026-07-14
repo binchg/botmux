@@ -409,6 +409,7 @@ const inflightInputs = new InflightInputTracker();
 let lastPtyActivityAtMs = 0;
 let currentBotmuxTurnId: string | undefined;
 let codexAppHeartbeat: CodexAppHeartbeat | null = null;
+let codexAppProgressTurnId: string | undefined;
 function writeCliPidMarker(): void {
   if (!cliPidMarker || !sessionId) return;
   try {
@@ -2896,9 +2897,14 @@ const TERMINAL_UI_OSC_PREFIX = '\x1b]778;botmux-ui:';
 const APP_RUNNER_OSC_CLI_IDS = new Set(['codex-app', 'mira', 'mir']);
 let codexAppOscPending = '';
 
-function beginCodexAppHeartbeat(): void {
+function beginCodexAppHeartbeat(startedAtMs = Date.now(), turnId = currentBotmuxTurnId): void {
   if (!APP_RUNNER_OSC_CLI_IDS.has(lastInitConfig?.cliId ?? '')) return;
-  codexAppHeartbeat = new CodexAppHeartbeat(Date.now());
+  codexAppHeartbeat = new CodexAppHeartbeat(startedAtMs);
+  codexAppProgressTurnId = turnId ?? `${lastInitConfig?.cliId ?? 'app'}-${startedAtMs}`;
+}
+
+function ensureCodexAppHeartbeat(startedAtMs: number, turnId?: string): void {
+  if (!codexAppHeartbeat) beginCodexAppHeartbeat(startedAtMs, turnId);
 }
 
 function noteCodexAppVisibleProgress(nowMs = Date.now(), summary?: string): void {
@@ -2907,6 +2913,7 @@ function noteCodexAppVisibleProgress(nowMs = Date.now(), summary?: string): void
 
 function clearCodexAppHeartbeat(): void {
   codexAppHeartbeat = null;
+  codexAppProgressTurnId = undefined;
 }
 
 function sendCodexAppHeartbeatSnapshot(snapshot: ReturnType<CodexAppHeartbeat['maybeSnapshot']>): void {
@@ -2915,13 +2922,13 @@ function sendCodexAppHeartbeatSnapshot(snapshot: ReturnType<CodexAppHeartbeat['m
     type: 'progress_output',
     kind: 'heartbeat',
     content: snapshot.content,
-    turnId: snapshot.turnId ?? currentBotmuxTurnId ?? `${lastInitConfig?.cliId ?? 'app'}-${snapshot.updatedAtMs}`,
+    turnId: snapshot.turnId ?? codexAppProgressTurnId ?? currentBotmuxTurnId ?? `${lastInitConfig?.cliId ?? 'app'}-${snapshot.updatedAtMs}`,
   });
 }
 
 function maybeEmitCodexAppHeartbeat(status: RuntimeScreenStatus): void {
   if (!codexAppHeartbeat || status === 'idle') return;
-  sendCodexAppHeartbeatSnapshot(codexAppHeartbeat.maybeSnapshot(currentBotmuxTurnId, Date.now()));
+  sendCodexAppHeartbeatSnapshot(codexAppHeartbeat.maybeSnapshot(codexAppProgressTurnId, Date.now()));
 }
 
 function decodeCodexAppPayload(payload: string): any | undefined {
@@ -2966,6 +2973,7 @@ function handleCodexAppMarker(body: string): void {
 
   if (kind === 'activity' && typeof payload.id === 'string') {
     const nowMs = normalizeCodexAppTimestampMs(payload.atMs);
+    ensureCodexAppHeartbeat(nowMs, typeof payload.turnId === 'string' ? payload.turnId : undefined);
     if (payload.phase === 'started' && typeof payload.label === 'string') {
       codexAppHeartbeat?.startActivity({
         id: payload.id,
@@ -2987,11 +2995,16 @@ function handleCodexAppMarker(body: string): void {
 
   if (kind === 'progress' && typeof payload.content === 'string') {
     const progressAtMs = normalizeCodexAppTimestampMs(payload.updatedAtMs);
+    const progressStartedAtMs = normalizeCodexAppTimestampMs(payload.startedAtMs, progressAtMs);
+    ensureCodexAppHeartbeat(
+      progressStartedAtMs,
+      typeof payload.turnId === 'string' ? payload.turnId : undefined,
+    );
     noteCodexAppVisibleProgress(progressAtMs, payload.content);
     // app-server has its own turn id, but Lark progress ownership follows the
     // botmux user turn. Mixing the two ids made assistant progress and heartbeat
     // alternately POST new cards for one active task.
-    const turnId = currentBotmuxTurnId
+    const turnId = codexAppProgressTurnId ?? currentBotmuxTurnId
       ?? (typeof payload.turnId === 'string' ? payload.turnId : `${lastInitConfig?.cliId ?? 'app'}-${Date.now()}`);
     const status = codexAppHeartbeat?.currentSnapshot(turnId, progressAtMs);
     emitTerminalUiEvent({
@@ -3003,13 +3016,14 @@ function handleCodexAppMarker(body: string): void {
     send({
       type: 'progress_output',
       kind: 'assistant',
-      content: status?.content ?? `进展：${compactCodexAppProgressSummary(payload.content)}`,
+      content: status?.content ?? `进展：${compactCodexAppProgressSummary(payload.content)}。`,
       turnId,
     });
     return;
   }
 
   if (kind === 'final' && typeof payload.content === 'string') {
+    const progressTurnId = codexAppProgressTurnId;
     clearCodexAppHeartbeat();
     const startedAtMs = payload.startedAtMs == null
       ? undefined
@@ -3027,7 +3041,7 @@ function handleCodexAppMarker(body: string): void {
         return;
       }
     }
-    const turnId = currentBotmuxTurnId
+    const turnId = progressTurnId ?? currentBotmuxTurnId
       ?? (typeof payload.turnId === 'string' ? payload.turnId : `${lastInitConfig?.cliId ?? 'app'}-${Date.now()}`);
     emitTerminalUiEvent({
       type: 'final',

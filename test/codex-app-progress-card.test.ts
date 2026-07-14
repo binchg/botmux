@@ -85,4 +85,26 @@ describe('Codex App single progress card', () => {
     expect(post).toHaveBeenCalledTimes(1);
     expect(patch).toHaveBeenLastCalledWith('om_progress', 'third');
   });
+
+  it('restores and persists the update target across daemon recreation', async () => {
+    const onStateChange = vi.fn();
+    const patch = vi.fn(async () => {});
+    const card = new CodexAppProgressCard({
+      post: vi.fn(async () => 'om_new'),
+      patch,
+      remove: vi.fn(async () => {}),
+      onStateChange,
+    }, {
+      turnId: 'turn-before-restart',
+      messageId: 'om_existing',
+    });
+
+    await card.upsert('turn-after-restart', 'latest');
+
+    expect(patch).toHaveBeenCalledWith('om_existing', 'latest');
+    expect(onStateChange).toHaveBeenCalledWith({
+      turnId: 'turn-after-restart',
+      messageId: 'om_existing',
+    });
+  });
 });

@@ -99,6 +99,10 @@ export interface Session {
    *  (rather than a fresh POST) after daemon restart. */
   streamCardId?: string;
   streamCardNonce?: string;
+  /** Mutable Codex App progress card. Persisted so a daemon restart can PATCH
+   * the existing card instead of posting a duplicate for the same task. */
+  progressCardId?: string;
+  progressCardTurnId?: string;
   /** Legacy field kept for migrating sessions persisted before displayMode was added. */
   streamExpanded?: boolean;
   /** Card body display mode — 'hidden' | 'screenshot'. */

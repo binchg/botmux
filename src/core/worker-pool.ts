@@ -115,8 +115,20 @@ function codexAppProgressCardFor(ds: DaemonSession): CodexAppProgressCard {
         fallbackTurnId(ds, turnId),
       ),
       patch: (messageId, cardJson) => updateMessage(ds.larkAppId, messageId, cardJson),
-      remove: messageId => deleteMessage(ds.larkAppId, messageId),
+      remove: async messageId => {
+        if (!await deleteMessage(ds.larkAppId, messageId)) {
+          throw new Error('progress card withdraw failed');
+        }
+      },
       canRepostAfterPatchFailure: error => error instanceof MessageWithdrawnError,
+      onStateChange: state => {
+        ds.session.progressCardId = state.messageId;
+        ds.session.progressCardTurnId = state.turnId;
+        sessionStore.updateSession(ds.session);
+      },
+    }, {
+      messageId: ds.session.progressCardId,
+      turnId: ds.session.progressCardTurnId,
     });
     codexAppProgressCards.set(ds, card);
   }
