@@ -39,6 +39,7 @@ import {
 import { CodexBridgeQueue } from './services/codex-bridge-queue.js';
 import { CodexAppHeartbeat } from './services/codex-app-heartbeat.js';
 import { normalizeCodexAppTimestampMs } from './services/codex-app-activity.js';
+import { shouldReloadPersistentAppRunner } from './services/persistent-app-runner-reload.js';
 import { drainCodexRollout, findCodexRolloutBySessionId, findCodexRolloutByPid, splitCodexEventsByCutoff, extractLastCodexTurn, type CodexBridgeEvent } from './services/codex-transcript.js';
 import { findTraexRolloutBySessionId, findTraexRolloutByPid } from './services/traex-transcript.js';
 import { cocoEventsPathForSession, drainCocoEvents, findCocoSessionByPid } from './services/coco-transcript.js';
@@ -2896,6 +2897,7 @@ const CODEX_APP_OSC_PREFIX = '\x1b]777;botmux:';
 const TERMINAL_UI_OSC_PREFIX = '\x1b]778;botmux-ui:';
 const APP_RUNNER_OSC_CLI_IDS = new Set(['codex-app', 'mira', 'mir']);
 let codexAppOscPending = '';
+let reloadPersistentAppRunnerAtIdle = false;
 
 function beginCodexAppHeartbeat(startedAtMs = Date.now(), turnId = currentBotmuxTurnId): void {
   if (!APP_RUNNER_OSC_CLI_IDS.has(lastInitConfig?.cliId ?? '')) return;
@@ -3187,6 +3189,15 @@ function markPromptReady(): void {
   if (awaitingFirstPrompt) {
     awaitingFirstPrompt = false;
     renderer?.markNewTurn();  // exclude history replay from streaming card
+  }
+  // A daemon deploy replaces worker.js but persistent tmux/herdr/zellij panes
+  // keep Botmux-owned app runners alive with old in-memory dist code. Do not
+  // interrupt an active turn: replace that runner only after it reaches idle,
+  // and only when no next user message is already queued.
+  if (reloadPersistentAppRunnerAtIdle && pendingMessages.length === 0 && !isFlushing) {
+    reloadPersistentAppRunnerAtIdle = false;
+    restartOwnedCli('Reloading reattached Botmux app runner at safe idle boundary', false);
+    return;
   }
   send({ type: 'prompt_ready' });
   // Send immediate idle snapshot so Lark card reflects idle status.
@@ -4187,6 +4198,10 @@ function spawnCli(cfg: Extract<DaemonToWorker, { type: 'init' }>): void {
         ? ZellijBackend.hasSession(persistentSessionName)
         : HerdrBackend.hasSession(persistentSessionName)
     : false;
+  reloadPersistentAppRunnerAtIdle = shouldReloadPersistentAppRunner(
+    cfg.cliId,
+    willReattachPersistent,
+  );
 
   // Re-arm the startup-commands one-shot ONLY for a genuinely fresh CLI process.
   // A reattach to a LIVE persistent pane (daemon-restart recovery) is the SAME
@@ -4932,6 +4947,32 @@ function killCli(): void {
   altBufferActive = false;
   trustHandled = false;
   codexAppOscPending = '';
+}
+
+function restartOwnedCli(reason: string, countAsFailure: boolean): void {
+  if (lastInitConfig?.adoptMode) {
+    log(`${reason}: ignored in adopt mode`);
+    return;
+  }
+  log(reason);
+  if (countAsFailure) {
+    consecutiveInWorkerRestarts++;
+    log(`Restart count: ${consecutiveInWorkerRestarts} (>=2 forces FRESH)`);
+  }
+  // Persistent backend kill() only detaches. Destroy the owned session so the
+  // replacement process loads current dist code, then resume the same CLI
+  // conversation id. Callers must ensure no queued input is present because
+  // killCli intentionally clears pendingMessages.
+  backend?.destroySession?.();
+  killCli();
+  awaitingFirstPrompt = true;
+  setTimeout(() => {
+    if (lastInitConfig) {
+      startScreenUpdates();
+      startScreenAnalyzer();
+      spawnCli({ ...lastInitConfig, resume: true, prompt: '' });
+    }
+  }, 500);
 }
 
 // ─── HTTP + WebSocket Server ─────────────────────────────────────────────────
@@ -5993,11 +6034,6 @@ process.on('message', async (raw: unknown) => {
     }
 
     case 'restart': {
-      if (lastInitConfig?.adoptMode) {
-        log('Restart ignored in adopt mode');
-        break;
-      }
-      log('Restart requested');
       // Tier-2 guard: 2nd consecutive in-worker restart forces FRESH.
       // Increment BEFORE spawnCli so the guard trips at count==2 (i.e. the
       // third attempted spawn in a 1-success → 2-failure sequence):
@@ -6007,25 +6043,7 @@ process.on('message', async (raw: unknown) => {
       // Tier 1 probe (adapter.checkResumeTargetExists) is re-run on each
       // spawn, so even count=1 often short-circuits; tier-2 only catches
       // silent/race failures and adapters that don't implement the probe.
-      consecutiveInWorkerRestarts++;
-      log(`Restart count: ${consecutiveInWorkerRestarts} (>=2 forces FRESH)`);
-      // Must destroySession(), not kill(): for persistent backends (tmux/herdr)
-      // kill() only detaches — the backing session + CLI process keep running,
-      // so the resume:true spawnCli below would re-attach to the SAME live CLI
-      // (selectSessionBackend reattaches whenever hasSession() is true) and the
-      // process would never actually restart. destroySession() tears the session
-      // down so the respawn starts a fresh CLI. (PTY has no destroySession, so
-      // the ?. no-ops and killCli()'s kill() does the teardown.)
-      backend?.destroySession?.();
-      killCli();
-      awaitingFirstPrompt = true;
-      setTimeout(() => {
-        if (lastInitConfig) {
-          startScreenUpdates();
-          startScreenAnalyzer();
-          spawnCli({ ...lastInitConfig, resume: true, prompt: '' });
-        }
-      }, 500);
+      restartOwnedCli('Restart requested', true);
       break;
     }
 
