@@ -41,6 +41,11 @@ describe('codex-app runner steering', () => {
     expect(source).toContain('normalizeCodexAppTimestampMs');
   });
 
+  it('makes a resumed terminal explicit instead of looking like an empty failed session', () => {
+    expect(source).toContain('Codex App 已恢复原会话；终端仅显示恢复后的新输出。');
+    expect(source).toContain('Codex App resumed the existing conversation');
+  });
+
   it('checks hook trust before each turn and fails critical hooks visibly', () => {
     expect(source).toContain("client.request('hooks/list'");
     expect(source).toContain('codexAppHookTrustIssue(response, args.cwd)');

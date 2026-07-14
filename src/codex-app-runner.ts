@@ -679,7 +679,13 @@ async function main(): Promise<void> {
   const hookTrustIssue = await currentHookTrustIssue();
   if (hookTrustIssue) writeLine(`[codex-app] ${hookTrustIssue}`);
   await ensureThread();
-  writeLine('Codex App connected.');
+  if (args.threadId) {
+    writeLine(args.locale === 'zh'
+      ? 'Codex App 已恢复原会话；终端仅显示恢复后的新输出。'
+      : 'Codex App resumed the existing conversation; this terminal shows new output after recovery.');
+  } else {
+    writeLine('Codex App connected.');
+  }
   if (process.stdin.isTTY) process.stdin.setRawMode(true);
   process.stdin.resume();
   process.stdin.on('data', handleInput);
