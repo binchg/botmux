@@ -296,18 +296,31 @@ describe('worker-pool lifecycle hook integration', () => {
     }));
   });
 
-  it('emits session.exit from worker process exit', () => {
+  it('emits session.exit and posts a persistent attention reply from unexpected worker exit', async () => {
     const worker = makeFakeWorker();
     const ds = makeDs({ worker });
     __testOnly_setupWorkerHandlers(ds, worker);
 
     worker.emit('exit', 1);
+    await flush();
 
     expect(emitHookEventMock).toHaveBeenCalledWith('session.exit', expect.objectContaining({
       sessionId: 'sid-lifecycle-test',
       reason: 'exit_code_1',
       code: 1,
     }));
+    expect(emitHookEventMock).toHaveBeenCalledWith('session.requires_attention', expect.objectContaining({
+      sessionId: 'sid-lifecycle-test',
+      reason: 'worker_process_exit',
+      code: 1,
+    }));
+    expect(sessionReplyMock).toHaveBeenCalledWith(
+      'om_root',
+      expect.stringContaining('继续'),
+      'text',
+      'app_test',
+      undefined,
+    );
   });
 
   it('does not post late Codex App progress after a terminal send marker', async () => {
@@ -377,6 +390,8 @@ describe('worker-pool lifecycle hook integration', () => {
     expect(sessionReplyMock).toHaveBeenCalledTimes(1);
     expect(updateMessageMock).toHaveBeenCalledTimes(1);
     expect(updateMessageMock.mock.calls[0][1]).toBe('om_reply');
+    expect(String(updateMessageMock.mock.calls[0][2])).toContain('已完成建档');
+    expect(String(updateMessageMock.mock.calls[0][2])).toContain('搜索代码 worker.ts');
   });
 
   it('posts a new progress card for the next Lark user turn', async () => {

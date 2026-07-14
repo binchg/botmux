@@ -29,6 +29,7 @@ import { findUniqueClaudeSessionByCwd } from './session-discovery.js';
 import { buildMarkdownCard, buildContextualReplyCard, buildTitledMarkdownCard } from '../im/lark/md-card.js';
 import { CodexAppProgressForwarder, codexAppProgressCardTitle } from '../services/codex-app-progress.js';
 import { CodexAppProgressCard } from '../services/codex-app-progress-card.js';
+import { CodexAppProgressCardView } from '../services/codex-app-progress-card-view.js';
 import { replyToDocComment, chunkCommentText, unsubscribeDocFile } from '../im/lark/doc-comment.js';
 import { listDocSubscriptionsForSession, removeDocSubscription } from '../services/doc-subs-store.js';
 import { TmuxBackend } from '../adapters/backend/tmux-backend.js';
@@ -68,6 +69,7 @@ const WORKER_SIGTERM_BACKSTOP_MS = 2_000;
 const WORKER_SIGKILL_BACKSTOP_MS = 7_000;
 const codexAppProgressForwarders = new WeakMap<DaemonSession, CodexAppProgressForwarder>();
 const codexAppProgressCards = new WeakMap<DaemonSession, CodexAppProgressCard>();
+const codexAppProgressCardViews = new WeakMap<DaemonSession, CodexAppProgressCardView>();
 
 // ─── Callbacks set by daemon at startup ─────────────────────────────────────
 
@@ -135,6 +137,15 @@ function codexAppProgressCardFor(ds: DaemonSession): CodexAppProgressCard {
   return card;
 }
 
+function codexAppProgressCardViewFor(ds: DaemonSession): CodexAppProgressCardView {
+  let view = codexAppProgressCardViews.get(ds);
+  if (!view) {
+    view = new CodexAppProgressCardView();
+    codexAppProgressCardViews.set(ds, view);
+  }
+  return view;
+}
+
 function completedCodexAppProgressCard(ds: DaemonSession): string {
   return buildTitledMarkdownCard({
     title: codexAppProgressCardTitle(
@@ -151,16 +162,19 @@ async function finishCodexAppProgressCard(ds: DaemonSession, turnId: string): Pr
   const card = codexAppProgressCards.get(ds);
   if (!card) return;
   await card.finish(turnId, completedCodexAppProgressCard(ds));
+  codexAppProgressCardViews.get(ds)?.reset();
 }
 
 export function resetCodexAppProgressForwarder(ds: DaemonSession): void {
   codexAppProgressForwarders.get(ds)?.reset();
+  codexAppProgressCardViews.get(ds)?.reset();
 }
 
 /** Mark a real Lark user-turn boundary for Codex App progress delivery.
  * Keep this separate from protocol turn ids: app-server may replace those
  * during a daemon restart even though the visible user turn did not change. */
 export function beginCodexAppProgressTurn(ds: DaemonSession): void {
+  codexAppProgressCardViewFor(ds).reset();
   void codexAppProgressCardFor(ds).beginTurn().catch((error: any) => {
     logger.warn(`[${tag(ds)}] Failed to rotate Codex App progress card: ${error?.message ?? error}`);
   });
@@ -2557,11 +2571,15 @@ function setupWorkerHandlers(ds: DaemonSession, worker: ChildProcess): void {
             continue;
           }
           try {
+            const cardContent = codexAppProgressCardViewFor(ds).update(
+              msg.kind === 'heartbeat' ? 'heartbeat' : 'assistant',
+              content,
+            );
             const cardJson = buildTitledMarkdownCard({
               title: codexAppProgressCardTitle(
                 ds.currentTurnTitle || ds.session.currentTurnTitle || ds.lastUserPrompt || ds.session.title,
               ),
-              md: content,
+              md: cardContent,
               brand: '',
               locale: localeForBot(ds.larkAppId),
               template: 'turquoise',
@@ -2637,9 +2655,10 @@ function setupWorkerHandlers(ds: DaemonSession, worker: ChildProcess): void {
 
   worker.on('exit', (code) => {
     logger.info(`[${t}] Worker process exited (code: ${code})`);
+    const wasCurrentWorker = ds.worker === worker;
     // Only clear ds.worker if it's still THIS worker — during takeover,
     // the old worker's exit fires AFTER the new worker has been assigned.
-    if (ds.worker === worker) {
+    if (wasCurrentWorker) {
       ds.worker = null;
       ds.workerPort = null;
     }
@@ -2658,6 +2677,17 @@ function setupWorkerHandlers(ds: DaemonSession, worker: ChildProcess): void {
       emitSessionLifecycleHook(ds, 'session.exit', {
         reason: code === 0 ? 'graceful' : `exit_code_${code}`,
         code,
+      });
+    }
+    if (wasCurrentWorker && code !== 0 && ds.session.status !== 'closed') {
+      const message = tr('worker.process_exited_attention', { code: code ?? 'unknown' }, localeForBot(ds.larkAppId));
+      emitSessionLifecycleHook(ds, 'session.requires_attention', {
+        reason: 'worker_process_exit',
+        code,
+        message,
+      });
+      void scopedReply(message, 'text', undefined).catch((err: any) => {
+        logger.error(`[${t}] Failed to deliver worker process exit notice to Lark: ${err?.message ?? err}`);
       });
     }
   });

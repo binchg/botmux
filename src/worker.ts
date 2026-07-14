@@ -37,7 +37,7 @@ import {
   type PidFollowResult,
 } from './services/bridge-rotation-policy.js';
 import { CodexBridgeQueue } from './services/codex-bridge-queue.js';
-import { CodexAppHeartbeat, compactCodexAppProgressSummary } from './services/codex-app-heartbeat.js';
+import { CodexAppHeartbeat } from './services/codex-app-heartbeat.js';
 import { normalizeCodexAppTimestampMs } from './services/codex-app-activity.js';
 import { drainCodexRollout, findCodexRolloutBySessionId, findCodexRolloutByPid, splitCodexEventsByCutoff, extractLastCodexTurn, type CodexBridgeEvent } from './services/codex-transcript.js';
 import { findTraexRolloutBySessionId, findTraexRolloutByPid } from './services/traex-transcript.js';
@@ -3006,7 +3006,6 @@ function handleCodexAppMarker(body: string): void {
     // alternately POST new cards for one active task.
     const turnId = codexAppProgressTurnId ?? currentBotmuxTurnId
       ?? (typeof payload.turnId === 'string' ? payload.turnId : `${lastInitConfig?.cliId ?? 'app'}-${Date.now()}`);
-    const status = codexAppHeartbeat?.currentSnapshot(turnId, progressAtMs);
     emitTerminalUiEvent({
       type: 'progress',
       content: payload.content,
@@ -3016,7 +3015,7 @@ function handleCodexAppMarker(body: string): void {
     send({
       type: 'progress_output',
       kind: 'assistant',
-      content: status?.content ?? `进展：${compactCodexAppProgressSummary(payload.content)}。`,
+      content: payload.content,
       turnId,
     });
     return;

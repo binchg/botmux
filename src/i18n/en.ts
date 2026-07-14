@@ -645,6 +645,7 @@ export const messages: Record<string, string> = {
   'worker.crash_loop_stopped': '⚠️ {cliName} crashed {count} times in 1 minute. Auto-restart disabled. Send a message to retry.',
   'worker.crash_diagnostic_terminal': 'The web terminal, where available, preserves the last startup output. Fix the issue, then send a new message to retry.',
   'worker.crash_recent_output': 'Recent terminal output:',
+  'worker.process_exited_attention': '⚠️ The session worker exited unexpectedly (code: {code}). Botmux did not mark this turn complete; progress and terminal context are preserved. Reply "continue" to retry, or inspect the Web terminal and choose whether to roll back or stop.',
 
   // ─── CLI setup wizard / pm2 lifecycle (no per-bot context) ───────────────
   'setup.lark_create_app': 'First create a Lark app at: https://open.feishu.cn/app',
