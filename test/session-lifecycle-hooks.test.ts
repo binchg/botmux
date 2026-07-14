@@ -340,7 +340,7 @@ describe('worker-pool lifecycle hook integration', () => {
     expect(sessionReplyMock).not.toHaveBeenCalled();
   });
 
-  it('appends each Codex App heartbeat as a fresh progress card', async () => {
+  it('keeps Codex App heartbeats internal even when the activity changes', async () => {
     const worker = makeFakeWorker();
     const ds = makeDs({ worker });
     __testOnly_setupWorkerHandlers(ds, worker);
@@ -360,39 +360,12 @@ describe('worker-pool lifecycle hook integration', () => {
     });
     await flush();
 
-    expect(sessionReplyMock).toHaveBeenCalledTimes(2);
-    expect(String(sessionReplyMock.mock.calls[0][1])).toContain('搜索代码');
-    expect(String(sessionReplyMock.mock.calls[1][1])).toContain('运行 Codex Hook');
+    expect(sessionReplyMock).not.toHaveBeenCalled();
     expect(updateMessageMock).not.toHaveBeenCalled();
     expect(deleteMessageMock).not.toHaveBeenCalled();
   });
 
-  it('does not append another heartbeat when only elapsed time changes', async () => {
-    const worker = makeFakeWorker();
-    const ds = makeDs({ worker });
-    __testOnly_setupWorkerHandlers(ds, worker);
-
-    worker.emit('message', {
-      type: 'progress_output',
-      kind: 'heartbeat',
-      turnId: 'codex-app-turn',
-      content: '正在执行：运行定向测试\n- 本轮已持续：约 1 分钟',
-    });
-    await flush();
-    worker.emit('message', {
-      type: 'progress_output',
-      kind: 'heartbeat',
-      turnId: 'codex-app-turn',
-      content: '正在执行：运行定向测试\n- 本轮已持续：约 2 分钟',
-    });
-    await flush();
-
-    expect(sessionReplyMock).toHaveBeenCalledTimes(1);
-    expect(updateMessageMock).not.toHaveBeenCalled();
-    expect(deleteMessageMock).not.toHaveBeenCalled();
-  });
-
-  it('appends assistant and heartbeat progress independently across turn ids', async () => {
+  it('appends assistant progress but suppresses heartbeat output across turn ids', async () => {
     const worker = makeFakeWorker();
     const ds = makeDs({ worker });
     __testOnly_setupWorkerHandlers(ds, worker);
@@ -412,9 +385,8 @@ describe('worker-pool lifecycle hook integration', () => {
     });
     await flush();
 
-    expect(sessionReplyMock).toHaveBeenCalledTimes(2);
+    expect(sessionReplyMock).toHaveBeenCalledTimes(1);
     expect(String(sessionReplyMock.mock.calls[0][1])).toContain('已完成建档');
-    expect(String(sessionReplyMock.mock.calls[1][1])).toContain('搜索代码 worker.ts');
     expect(updateMessageMock).not.toHaveBeenCalled();
     expect(deleteMessageMock).not.toHaveBeenCalled();
   });

@@ -66,7 +66,6 @@ const __dirname = dirname(__filename);
 const WORKER_SIGTERM_BACKSTOP_MS = 2_000;
 const WORKER_SIGKILL_BACKSTOP_MS = 7_000;
 const codexAppProgressForwarders = new WeakMap<DaemonSession, CodexAppProgressForwarder>();
-const codexAppHeartbeatStageKeys = new WeakMap<DaemonSession, string>();
 
 // ─── Callbacks set by daemon at startup ─────────────────────────────────────
 
@@ -101,23 +100,14 @@ function codexAppProgressForwarderFor(ds: DaemonSession): CodexAppProgressForwar
   return forwarder;
 }
 
-function codexAppHeartbeatStageKey(content: string): string {
-  return content
-    .replace(/\s*(?:\n\s*-\s*|｜)本轮(?:已持续)?[^\n｜]*$/u, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
 export function resetCodexAppProgressForwarder(ds: DaemonSession): void {
   codexAppProgressForwarders.get(ds)?.reset();
-  codexAppHeartbeatStageKeys.delete(ds);
 }
 
 /** Mark a real Lark user-turn boundary for sentence segmentation/dedup only.
- * Visible progress is append-only: every new stage becomes a fresh reply. */
+ * Visible assistant progress is append-only: every new stage is a fresh reply. */
 export function beginCodexAppProgressTurn(ds: DaemonSession): void {
   codexAppProgressForwarders.get(ds)?.reset();
-  codexAppHeartbeatStageKeys.delete(ds);
 }
 
 // ─── Active session registry (daemon-owned, accessor for IPC) ───────────────
@@ -2475,18 +2465,11 @@ function setupWorkerHandlers(ds: DaemonSession, worker: ChildProcess): void {
       }
 
       case 'progress_output': {
-        let progresses: Array<{ content: string }>;
         if (msg.kind === 'heartbeat') {
-          const stageKey = codexAppHeartbeatStageKey(msg.content);
-          if (!stageKey || codexAppHeartbeatStageKeys.get(ds) === stageKey) {
-            logger.info(`[${t}] Codex App heartbeat skipped without a new stage (turn ${msg.turnId.substring(0, 8)})`);
-            break;
-          }
-          codexAppHeartbeatStageKeys.set(ds, stageKey);
-          progresses = [{ content: msg.content }];
-        } else {
-          progresses = codexAppProgressForwarderFor(ds).drain(msg.turnId, msg.content);
+          logger.info(`[${t}] Codex App heartbeat kept internal and not posted (turn ${msg.turnId.substring(0, 8)})`);
+          break;
         }
+        const progresses = codexAppProgressForwarderFor(ds).drain(msg.turnId, msg.content);
         if (progresses.length === 0) {
           logger.info(`[${t}] Codex App progress skipped as duplicate or partial (turn ${msg.turnId.substring(0, 8)})`);
           break;
