@@ -43,7 +43,14 @@ function isNaturalBoundary(text: string, index: number): boolean {
   // boundaries and used to produce bad cases such as "我" or "入口".
   if ('。！？!?…'.includes(ch)) return true;
   if (ch === '.') {
+    const prev = text[index - 1];
     const next = text[index + 1];
+    // Streaming can stop temporarily after any character. A dot immediately
+    // after a digit may still be the first/next separator of `0.0.13`; treating
+    // the temporary `0.` suffix as a sentence made the Lark card publish a
+    // truncated version number. item/completed uses force=true, so a genuine
+    // sentence ending in a number still flushes when no later text arrives.
+    if (next === undefined && prev !== undefined && /\d/.test(prev)) return false;
     return next === undefined || /\s/.test(next);
   }
   return false;

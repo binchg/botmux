@@ -243,6 +243,14 @@ describe('Codex App progress throttling', () => {
     expect(forwarder.next('turn-1', '第二句。')?.content).toBe('第二句。');
   });
 
+  it('does not publish a semantic version at a temporary numeric dot', () => {
+    const forwarder = new CodexAppProgressForwarder();
+
+    expect(forwarder.next('turn-version', '已发布版本 0.')).toBeNull();
+    expect(forwarder.next('turn-version', '已发布版本 0.0.13，发布门禁已通过。')?.content)
+      .toBe('已发布版本 0.0.13，发布门禁已通过。');
+  });
+
   it('buffers legacy partial chunks until they form a complete sentence', () => {
     const forwarder = new CodexAppProgressForwarder();
 
