@@ -2465,8 +2465,8 @@ function setupWorkerHandlers(ds: DaemonSession, worker: ChildProcess): void {
       }
 
       case 'progress_output': {
-        if (msg.kind === 'heartbeat') {
-          logger.info(`[${t}] Codex App heartbeat kept internal and not posted (turn ${msg.turnId.substring(0, 8)})`);
+        if (msg.kind === 'heartbeat' || msg.kind === 'activity') {
+          logger.info(`[${t}] Codex App automatic activity kept internal; only AI assistant progress is posted (turn ${msg.turnId.substring(0, 8)})`);
           break;
         }
         const progresses = codexAppProgressForwarderFor(ds).drain(msg.turnId, msg.content);
