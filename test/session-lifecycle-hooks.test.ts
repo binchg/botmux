@@ -374,7 +374,7 @@ describe('worker-pool lifecycle hook integration', () => {
       type: 'progress_output',
       kind: 'assistant',
       turnId: 'codex-native-turn',
-      content: '正在执行：分析问题｜进展：已完成建档｜本轮约 10 秒。',
+      content: '建档已完成，Hook 与 Harness 校验已开始。',
     });
     await flush();
     worker.emit('message', {
@@ -386,7 +386,7 @@ describe('worker-pool lifecycle hook integration', () => {
     await flush();
 
     expect(sessionReplyMock).toHaveBeenCalledTimes(1);
-    expect(String(sessionReplyMock.mock.calls[0][1])).toContain('已完成建档');
+    expect(String(sessionReplyMock.mock.calls[0][1])).toContain('建档已完成');
     expect(updateMessageMock).not.toHaveBeenCalled();
     expect(deleteMessageMock).not.toHaveBeenCalled();
   });

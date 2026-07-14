@@ -24,7 +24,8 @@ describe('codex-app runner steering', () => {
   });
 
   it('asks the model for concise, verifiable phase decisions rather than hidden reasoning', () => {
-    expect(source).toContain('正在做什么 + 已确认的关键决定/结果或等待原因');
+    expect(source).toContain('直接写已确认的进展、结果或等待原因');
+    expect(source).toContain('不要添加“正在执行”“处理中”或耗时心跳等固定前缀');
     expect(source).toContain('不输出隐藏思维链');
   });
 
@@ -32,12 +33,9 @@ describe('codex-app runner steering', () => {
     expect(source).toContain('activeTurn.progress.resetTo(activeTurn.allAgentText)');
   });
 
-  it('forwards structured item and hook lifecycles as activity markers', () => {
+  it('keeps structured item and hook lifecycles internal', () => {
     expect(source).toContain("msg.method === 'hook/started' || msg.method === 'hook/completed'");
-    expect(source).toContain("codexAppHookActivity(run, phase");
-    expect(source).toContain("codexAppItemActivity(item, 'started'");
-    expect(source).toContain("codexAppItemActivity(item, 'completed'");
-    expect(source).toContain("emitMarker('activity'");
+    expect(source).not.toContain("emitMarker('activity'");
     expect(source).toContain('normalizeCodexAppTimestampMs');
   });
 

@@ -269,7 +269,7 @@ describe('Codex App progress throttling', () => {
 
   it('forwards the compact one-line status as one complete card update', () => {
     const forwarder = new CodexAppProgressForwarder();
-    const status = '正在执行：分析问题｜进展：已完成建档，正在核对 Hook 与 Harness｜本轮约 47 秒。';
+    const status = '全局 Hook 已缩减为两个非阻塞入口，Harness 校验已开始。';
     expect(forwarder.drain('turn-status', status)).toEqual([
       expect.objectContaining({ content: status }),
     ]);
