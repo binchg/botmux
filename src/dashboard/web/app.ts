@@ -252,22 +252,6 @@ async function route() {
     highlightNav(hash);
     return;
   }
-  // The "工作流" nav now points at the v3 runs page (#/workflows). The v2 (v0.2)
-  // engine is kept (backend + Feishu cards), so its run-detail page survives at
-  // the dedicated #/legacy-workflow route (where v2 cards now link). Legacy URL
-  // upkeep so old bookmarks/pasted links don't 404:
-  //   - `#/v3[/<id>]`                                 → `#/workflows[/<id>]` (v3 promoted)
-  //   - `#/workflows/catalog`, `#/workflows-catalog`  → `#/workflows` (v2 catalog gone)
-  if (hash.startsWith('#/v3')) {
-    window.location.replace(`#/workflows${hash.slice('#/v3'.length)}`);
-    return;
-  } else if (/^#\/workflows(?:\/|-)catalog(?:[/?].*)?$/.test(hash)) {
-    // Bounded match (NOT startsWith): a v3 runId can begin with "catalog"
-    // (goal slug → `catalog-all-open-prs-…`), and `#/workflows/catalog-…`
-    // must open that run's detail, not bounce to the list.
-    window.location.replace('#/workflows');
-    return;
-  }
   if (hash.startsWith('#/role-profiles')) {
     window.location.replace(`#/roles/profile${hash.slice('#/role-profiles'.length)}`);
     return;

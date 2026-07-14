@@ -199,7 +199,7 @@ function ConnectorsPage() {
   }
 
   function kindLabel(k: string): string {
-    return k === 'workflow' ? tr('connectors.kindLabelWorkflow') : tr('connectors.kindLabelTurn');
+    return tr('connectors.kindLabelTurn');
   }
 
   function patchForm(patch: Partial<CreateForm>): void {
@@ -227,10 +227,6 @@ function ConnectorsPage() {
     };
     const instruction = form.instruction.trim();
     if (instruction) body.promptEnvelope.instruction = instruction;
-    if (form.kind === 'workflow') {
-      if (!form.workflowId.trim()) { setCreateMsg({ text: tr('connectors.errWf'), error: true }); return; }
-      body.target.workflowId = form.workflowId.trim();
-    }
     if (form.mode === 'fixed') {
       const chatId = form.manualChat ? form.manualChatId.trim() : form.chatId;
       if (!chatId) { setCreateMsg({ text: tr('connectors.errChat'), error: true }); return; }
@@ -350,15 +346,7 @@ function ConnectorsPage() {
           <label htmlFor="cn-kind">{tr('connectors.fKind')}</label>
           <select id="cn-kind" value={form.kind} onChange={e => patchForm({ kind: e.currentTarget.value as CreateForm['kind'] })}>
             <option value="turn">{tr('connectors.kindTurn')}</option>
-            <option value="workflow">{tr('connectors.kindWorkflow')}</option>
           </select>
-
-          {form.kind === 'workflow' ? (
-            <>
-              <label htmlFor="cn-wf">{tr('connectors.fWf')}</label>
-              <input id="cn-wf" value={form.workflowId} onChange={e => patchForm({ workflowId: e.currentTarget.value })} placeholder="workflowId" />
-            </>
-          ) : null}
 
           <label htmlFor="cn-mode">{tr('connectors.fMode')}</label>
           <select id="cn-mode" value={form.mode} onChange={e => patchForm({ mode: e.currentTarget.value as CreateForm['mode'] })}>

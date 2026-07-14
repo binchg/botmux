@@ -858,6 +858,17 @@ const skillsInstalledCliIds = new Set<string>();
  */
 export function ensureCliSkills(cliId: CliId, cliPathOverride?: string): void {
   const adapter = createCliAdapterSync(cliId, cliPathOverride);
+  // Codex App already receives Botmux transport/progress through the app-server
+  // hook.  Keep only the two bridge capabilities the user explicitly retained;
+  // ask/workflow/orchestration and all other Botmux skills stay out of every new
+  // Codex session.  Task-specific skills live in the aicoding repository.
+  if (cliId === 'codex') {
+    if (skillsInstalledCliIds.has(cliId)) return;
+    removeGlobalBotmuxSkills(adapter.skillsDir);
+    ensureSkills(cliId, adapter.skillsDir, ['botmux-send', 'botmux-history']);
+    skillsInstalledCliIds.add(cliId);
+    return;
+  }
   // botmux-whiteboard skill 跟随白板能力开关，且**每次 spawn 都重新评估**（不进
   // 下面 skillsInstalledCliIds 的一次性缓存）——这样运行时在 dashboard/CLI 切换白板
   // 开关，下一个会话即生效，无需重启 daemon。skill 落点与其它内置 skill 同目录

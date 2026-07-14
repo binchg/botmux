@@ -114,6 +114,10 @@ const routes: Route[] = [];
 
 /** Register a handler. Path supports `:name` segments captured into the params object. */
 export function ipcRoute(method: string, path: string, handler: Handler): void {
+  // Botmux Workflow is permanently retired.  Keep every legacy registration
+  // inert here as a defense-in-depth backstop so old daemon modules or future
+  // merges cannot accidentally expose a run/approve/retry endpoint again.
+  if (/^\/api\/(?:workflows|v3)(?:\/|$)/.test(path)) return;
   const keys: string[] = [];
   const pattern = new RegExp(
     '^' + path.replace(/:([a-zA-Z]+)/g, (_, k) => { keys.push(k); return '([^/]+)'; }) + '$',

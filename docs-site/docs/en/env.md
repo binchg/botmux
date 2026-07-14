@@ -20,7 +20,6 @@
 | `BOTMUX_DASHBOARD_PORT` | `7891` | Dashboard HTTP port |
 | `BOTMUX_DASHBOARD_EXTERNAL_HOST` | `WEB_EXTERNAL_HOST` or auto-detect | Host used in URLs the CLI prints |
 | `BOTMUX_DAEMON_IPC_BASE_PORT` | `7892` | Each daemon's IPC port = base + botIndex |
-| `BOTMUX_WORKFLOW_RUNS_DIR` | `~/.botmux/workflow-runs` | Workflow run storage directory |
 
 ## File locations
 

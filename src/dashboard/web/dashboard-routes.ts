@@ -13,23 +13,6 @@ export interface DashboardRoute {
 
 export const dashboardRoutes: DashboardRoute[] = [
   {
-    id: 'legacy-workflow',
-    routePrefix: '#/legacy-workflow',
-    load: async () => {
-      const mod = await import('./workflows.js');
-      return root => mod.renderWorkflowsPage(root);
-    },
-  },
-  {
-    id: 'workflows',
-    routePrefix: '#/workflows',
-    rerenderOnUiChange: false,
-    load: async () => {
-      const mod = await import('./v3-page.js');
-      return root => mod.renderV3RunsPage(root);
-    },
-  },
-  {
     id: 'groups',
     routePrefix: '#/groups',
     // Groups is currently a render-once React scaffold around the existing

@@ -67,7 +67,7 @@ import {
   resetCodexAppProgressForwarder,
   beginCodexAppProgressTurn,
 } from './core/worker-pool.js';
-import { ipcRoute, jsonRes, readJsonBody, setBotName, setLarkAppId, startIpcServer, setWorkflowRunner, setBotRenamer } from './core/dashboard-ipc-server.js';
+import { ipcRoute, jsonRes, readJsonBody, setBotName, setLarkAppId, startIpcServer, setBotRenamer } from './core/dashboard-ipc-server.js';
 import { saveFrozenCards, deleteFrozenCards } from './services/frozen-card-store.js';
 import { DAEMON_COMMANDS, SESSIONLESS_DAEMON_COMMANDS, resolvePassthroughCommands, resolveAdapterDefaultPassthroughCommands, handleCommand, handleCardCommand, handleTermLinkCommand, parseSlashCommandInvocation, parseForceTopicInvocation } from './core/command-handler.js';
 import { SLASH_COMMAND_SHAPE } from './core/passthrough-commands.js';
@@ -101,16 +101,6 @@ import { sweepOrphanSandboxes } from './adapters/backend/sandbox.js';
 import { sweepIdleWorkers, DEFAULT_MAX_LIVE_WORKERS } from './core/idle-worker-sweeper.js';
 import { handleCardAction } from './im/lark/card-handler.js';
 import type { CardHandlerDeps } from './im/lark/card-handler.js';
-import {
-  executeWorkflowCommand,
-  parseWorkflowCommand,
-  parseWorkflowGrillTrigger,
-  buildWorkflowGrillPrompt,
-  resolveBotSnapshot,
-  WORKFLOW_USAGE,
-  WORKFLOW_V2_RENAME_NOTICE,
-  type WorkflowCommandResult,
-} from './im/lark/workflow-slash-command.js';
 import { workflowRunDetailUrl } from './im/lark/workflow-cards.js';
 import { createV3GateRunner, requestV3Retry, requestV3LoopGrant } from './workflows/v3/daemon-run.js';
 import { buildV3GateCard } from './im/lark/v3-gate-card.js';
@@ -1393,126 +1383,6 @@ function workflowSpawnFn(): WorkerSpawnFn {
   return createDaemonSpawnFn(daemonDeps);
 }
 
-async function handleWorkflowCommandIfAny(
-  content: string,
-  anchor: string,
-  chatId: string,
-  larkAppId: string,
-  initiator: string | undefined,
-): Promise<boolean> {
-  // 旧 `/workflow run|cancel` 软降级：在执行前**先**发改名提示，让迁移指引第一时间
-  // 到达用户（codex review：先发优于后发）。从原始 content 判定而非 parse 结果，
-  // 这样连 `/workflow run`（缺 id）这类 invalid legacy 也能收到提示（codex review）。
-  // 仅匹配 legacy 的 run|cancel（executeWorkflowCommand 必然 handle），不误伤 /template。
-  if (/^\/workflow\s+(run|cancel)\b/.test(content.trim())) {
-    await sessionReply(anchor, WORKFLOW_V2_RENAME_NOTICE, 'text', larkAppId);
-  }
-  // Captured by the `onRunCreated` closure so the trailing text reply can be
-  // suppressed when the run-level progress card already landed.  Codex
-  // round 1 medium: "single self-updating tile" promise breaks if we also
-  // dump a `Workflow loop stopped: …` line at the end.
-  let startingCardSent = false;
-  const result = await executeWorkflowCommand(
-    {
-      content,
-      chatId,
-      larkAppId,
-      initiator: initiator ?? 'unknown',
-    },
-    {
-      attachWorkflowEventWatcher,
-      spawnSubagent: workflowSpawnFn(),
-      runLoopFn: (ctx) => driveWorkflowRun(ctx.log.runId),
-      cancelWorkflowRunFn: (runId, reason, opts) => cancelWorkflowRunOnDaemon(runId, reason, opts),
-      onRunCreated: async (info) => {
-        // v0.1.5 slice 1: send the run-level progress card so the user
-        // sees a single self-updating tile.  Best-effort: if the card
-        // send fails we still fall back to a plain-text "started"
-        // reply so they at least see the runId.
-        try {
-          const cardJson = buildWorkflowStartingCard({
-            runId: info.runId,
-            workflowId: info.workflowId,
-            locale: localeForBot(larkAppId),
-          });
-          const cardMessageId = await sessionReply(anchor, cardJson, 'interactive', larkAppId);
-          if (chatId) {
-            workflowRunCards.set(info.runId, {
-              cardMessageId,
-              larkAppId,
-              chatId,
-              updateChain: Promise.resolve(),
-            });
-          }
-          startingCardSent = true;
-        } catch (err) {
-          logger.warn(
-            `[workflow:${info.runId}] failed to send progress card (falling back to text): ${
-              err instanceof Error ? err.message : String(err)
-            }`,
-          );
-          try {
-            await sessionReply(
-              anchor,
-              `Workflow started: ${info.workflowId}\nrunId: ${info.runId}\nWeb: ${workflowRunDetailUrl(info.runId)}`,
-              'text',
-              larkAppId,
-            );
-          } catch (fallbackErr) {
-            logger.warn(
-              `[workflow:${info.runId}] failed to send start reply: ${
-                fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr)
-              }`,
-            );
-          }
-        }
-      },
-    },
-  );
-  if (!result.handled) return false;
-
-  if (!result.ok) {
-    await sessionReply(
-      anchor,
-      `${tr('wf.cmd_failed', { error: result.error }, localeForBot(larkAppId))}${result.usage ? `\n${result.usage}` : ''}`,
-      'text',
-      larkAppId,
-    );
-    return true;
-  }
-
-  // Skip the trailing text echo only for `run` commands whose progress card
-  // landed — the card already shows status/runId/web link, and the card
-  // patch path covers final state.  `cancel` keeps the text since cancel
-  // doesn't drive `onRunCreated` and may target a card-less run.
-  if (result.command === 'run' && startingCardSent) {
-    return true;
-  }
-
-  await sessionReply(anchor, formatWorkflowCommandResult(result), 'text', larkAppId);
-  return true;
-}
-
-function formatWorkflowCommandResult(result: Extract<WorkflowCommandResult, { ok: true }>): string {
-  if (result.command === 'cancel') {
-    if (result.alreadyTerminal) {
-      return `Workflow already terminal: ${result.status}\nrunId: ${result.runId}`;
-    }
-    if (result.pending) {
-      return `Workflow cancel requested; waiting for running activity to drain.\nrunId: ${result.runId}\nstatus: ${result.status}`;
-    }
-    return `Workflow cancel processed.\nrunId: ${result.runId}\nstatus: ${result.status}`;
-  }
-  const status =
-    result.loopResult.reason === 'awaiting-wait'
-      ? '等待审批'
-      : result.loopResult.reason;
-  const next =
-    result.loopResult.reason === 'awaiting-wait'
-      ? '\n请在群里查看审批卡，点击后 workflow 会继续执行。'
-      : '';
-  return `Workflow loop stopped: ${status}\nrunId: ${result.runId}${next}`;
-}
 
 function getActiveCount(): number {
   let count = 0;
@@ -1721,33 +1591,6 @@ const cardDeps: CardHandlerDeps = {
   activeSessions,
   sessionReply,
   lastRepoScan,
-  workflowApprovalResolved: (runId) => {
-    driveWorkflowRun(runId).catch((err) => {
-      logger.warn(`[workflow:${runId}] re-entry after approval failed: ${err instanceof Error ? err.message : String(err)}`);
-    });
-  },
-  v3GateDeps: {
-    driveRun: (runId) => v3GateRunner.driveDetached(runId),
-    // 审批权限：复用 canOperate（话题 owner / allowedUsers / oncall）。无 binding（corrupt /
-    // 非 grill 出生的旧卡）→ **拒**（codex follow-up：合法卡一定有 binding，缺失即可疑）.
-    canResolve: (binding, operatorOpenId) =>
-      binding ? canOperate(binding.larkAppId, binding.chatId, operatorOpenId) : false,
-  },
-  v3BlockedDeps: {
-    driveRun: (runId) => v3GateRunner.driveDetached(runId),
-    canResolve: (binding, operatorOpenId) =>
-      binding ? canOperate(binding.larkAppId, binding.chatId, operatorOpenId) : false,
-  },
-  v3LoopGrantDeps: {
-    driveRun: (runId) => v3GateRunner.driveDetached(runId),
-    canResolve: (binding, operatorOpenId) =>
-      binding ? canOperate(binding.larkAppId, binding.chatId, operatorOpenId) : false,
-  },
-  v3RevisitGrantDeps: {
-    driveRun: (runId) => v3GateRunner.driveDetached(runId),
-    canResolve: (binding, operatorOpenId) =>
-      binding ? canOperate(binding.larkAppId, binding.chatId, operatorOpenId) : false,
-  },
 };
 
 function dashboardWaitStatus(error: ResolveDashboardWaitResult & { ok: false }): number {
@@ -1947,78 +1790,6 @@ ipcRoute('POST', '/api/workflows/runs/:runId/cancel', async (req, res, params) =
           result.error === 'workflow_not_attached' ? 409 :
             result.error === 'wrong_chat' ? 403 :
               500;
-    return jsonRes(res, status, result);
-  }
-  return jsonRes(res, 200, result);
-});
-
-/** Heavy deps for triggerWorkflowRun, shared by the catalog `…/run` route and
- *  the `/api/trigger` (kind=workflow) thin layer. */
-function workflowTriggerDeps() {
-  return {
-    spawnSubagent: workflowSpawnFn(),
-    botResolver: resolveBotSnapshot,
-    makeRuntimeContext: (log: any, def: any, spawnSubagent: any) => ({
-      log,
-      def,
-      spawnSubagent,
-      hostExecutors: createDefaultHostExecutorRegistry(),
-      reconcilers: createDefaultProviderReconcilers(),
-      loadEffectInput: (activityId: any, attemptId: any) =>
-        loadEffectInputSidecar(log, activityId, attemptId),
-    }),
-    attachRuntime: (runId: string, ctx: any) => attachWorkflowEventWatcher(runId, ctx),
-    driveRun: (runId: string) => {
-      driveWorkflowRun(runId).catch((err) => {
-        logger.warn(
-          `[workflow:${runId}] trigger drive failed: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      });
-    },
-  };
-}
-
-ipcRoute('POST', '/api/workflows/definitions/:id/run', async (req, res, params) => {
-  const workflowId = params.id;
-  if (!isValidWorkflowId(workflowId)) {
-    return jsonRes(res, 400, { ok: false, error: 'bad_id' });
-  }
-  let body: { params?: unknown; chatBinding?: unknown };
-  try {
-    body = await readJsonBody<{ params?: unknown; chatBinding?: unknown }>(req);
-  } catch {
-    return jsonRes(res, 400, { ok: false, error: 'bad_json' });
-  }
-  const chatBinding = parseTriggerChatBinding(body.chatBinding);
-  if (!chatBinding) {
-    return jsonRes(res, 400, { ok: false, error: 'missing_chat_binding' });
-  }
-  if (body.params !== undefined) {
-    if (typeof body.params !== 'object' || body.params === null || Array.isArray(body.params)) {
-      return jsonRes(res, 400, { ok: false, error: 'bad_params_shape' });
-    }
-  }
-  // Convert JSON-channel params (decoded values) into the shared RawParamInput
-  // map.  String-channel coercion stays on the IM `/template run` path.
-  const rawParams: Record<string, RawParamInput> = {};
-  for (const [k, v] of Object.entries((body.params as Record<string, unknown> | undefined) ?? {})) {
-    rawParams[k] = { kind: 'json', value: v };
-  }
-
-  const result = await triggerWorkflowRun(
-    {
-      workflowId,
-      rawParams,
-      chatBinding,
-      initiator: 'dashboard',
-    },
-    workflowTriggerDeps(),
-  );
-  if (!result.ok) {
-    const status =
-      result.error === 'unknown_workflow' ? 404 :
-        result.error === 'invalid_params' ? 400 :
-          500;
     return jsonRes(res, status, result);
   }
   return jsonRes(res, 200, result);
@@ -2530,31 +2301,12 @@ async function handleNewTopic(data: any, ctx: RoutingContext): Promise<void> {
     content,
   });
 
-  // v3 即兴 grill：`/workflow [new] <目标>`。daemon 不拷问——把目标包成触发
-  // botmux-workflow skill 的 prompt（改写 content，promptContent 随后从 content
-  // 构造），fall-through 到正常 session 创建，让本话题 agent 接管整条链路。
-  // run|cancel 不在此命中（归 v2 legacy，由下面 handleWorkflowCommandIfAny 处理）。
-  const newTopicGrill = parseWorkflowGrillTrigger(cmdContent);
-  if (newTopicGrill) {
-    if (await replyGrantRestrictionIfNeeded(larkAppId, chatId, senderOpenId, anchor, '/workflow')) {
-      return;
-    }
-    if (newTopicGrill.kind === 'usage') {
-      await sessionReply(anchor, WORKFLOW_USAGE, 'text', larkAppId);
-      return;
-    }
-    content = buildWorkflowGrillPrompt(newTopicGrill.goal);
-    // 保留原 cmdContent（"/workflow new …"）供 title/日志；/workflow 非注册命令，
-    // 下面的 parseSlashCommandInvocation 会让它落到正常 spawn 路径。
-  } else {
-    if (parseWorkflowCommand(cmdContent)) {
-      if (await replyGrantRestrictionIfNeeded(larkAppId, chatId, senderOpenId, anchor, '/template')) {
-        return;
-      }
-    }
-    if (await handleWorkflowCommandIfAny(cmdContent, anchor, chatId, larkAppId, senderOpenId)) {
-      return;
-    }
+  // Workflow authoring/runtime is permanently retired.  Consume these legacy
+  // slash commands in the daemon so they never reach the AI prompt or create a
+  // session.  Normal natural-language tasks continue through the fast path.
+  if (/^\/(?:workflow|template)(?:\s|$)/i.test(cmdContent.trim())) {
+    await sessionReply(anchor, 'Botmux Workflow 已永久下线，请直接发送任务目标。', 'text', larkAppId);
+    return;
   }
 
   // Intercept daemon commands in new topics (no session needed for some commands)
@@ -3090,7 +2842,7 @@ async function handleThreadReply(data: any, ctx: RoutingContext): Promise<void> 
     : '';
 
   // `let` (not const): the v3 grill gate below may replace this with a
-  // skill-trigger prompt when the user sends `/workflow [new] <目标>` mid-thread.
+  // Legacy workflow commands are consumed above and never reach this path.
   let promptContent = buildQuoteHint(parsed, scope, anchor, localeForBot(larkAppId)) + botSenderPrefix + parsed.content;
   const existingHookSession = activeSessions.get(sessionKey(anchor, larkAppId));
   emitHookEvent('thread.reply', {
@@ -3191,35 +2943,9 @@ async function handleThreadReply(data: any, ctx: RoutingContext): Promise<void> 
     }
   }
 
-  // v3 即兴 grill（thread 内）：`/workflow [new] <目标>` → 把目标包成触发
-  // botmux-workflow skill 的 prompt 覆盖 promptContent，fall-through 到下面正常
-  // 转发逻辑，让现有/新建的 agent 接管。run|cancel 归 v2 legacy（走 else）。
-  const threadGrill = parseWorkflowGrillTrigger(cmdContent);
-  if (threadGrill) {
-    if (await replyGrantRestrictionIfNeeded(larkAppId, threadChatId, threadSenderOpenId, anchor, '/workflow')) {
-      return;
-    }
-    if (threadGrill.kind === 'usage') {
-      await sessionReply(anchor, WORKFLOW_USAGE, 'text', larkAppId);
-      return;
-    }
-    promptContent = buildWorkflowGrillPrompt(threadGrill.goal);
-    // fall through to normal forwarding with the rewritten promptContent
-  } else {
-    if (parseWorkflowCommand(cmdContent)) {
-      if (await replyGrantRestrictionIfNeeded(larkAppId, threadChatId, threadSenderOpenId, anchor, '/template')) {
-        return;
-      }
-    }
-    if (await handleWorkflowCommandIfAny(
-      cmdContent,
-      anchor,
-      threadChatId,
-      larkAppId,
-      threadSenderOpenId,
-    )) {
-      return;
-    }
+  if (/^\/(?:workflow|template)(?:\s|$)/i.test(cmdContent.trim())) {
+    await sessionReply(anchor, 'Botmux Workflow 已永久下线，请直接发送任务目标。', 'text', larkAppId);
+    return;
   }
 
   // Intercept daemon commands
@@ -3352,10 +3078,7 @@ async function handleThreadReply(data: any, ctx: RoutingContext): Promise<void> 
   // 回调 URL 已在上方 return，可用来中止）。答复权限 = canTalk，由
   // broker 在 submitCustomReply 内按注入的 canTalkChecker 判定：非授权人返回
   // 'unauthorized'，这里 fall through 到正常路由。卡片由 broker.onSettle 自动 PATCH。
-  // `!threadGrill`：grill goal 分支只改写 promptContent 后 fall-through（不 return），
-  // cmdContent 仍是字面量 `/workflow new <目标>`；若不排除，待回答 ask 会把它当答案吞掉，
-  // grill 永远不启动。grill 必须穿过拦截器走正常转发。
-  if (threadSenderOpenId && threadChatId && !threadGrill) {
+  if (threadSenderOpenId && threadChatId) {
     const askReplyText = cmdContent.trim();
     if (askReplyText) {
       const pendingAsk = findPendingAskByAnchor({ larkAppId, chatId: threadChatId, anchor });
@@ -3968,7 +3691,6 @@ export async function startDaemon(botIndex?: number): Promise<void> {
   setActiveSessionsRegistry(activeSessions);
   // Wire the workflow runner for /api/trigger (kind=workflow): reuse the same
   // heavy deps as the catalog run route.
-  setWorkflowRunner((input) => triggerWorkflowRun(input, workflowTriggerDeps()));
   // Seed dashboard IPC botName with the custom displayName (falling back to the
   // bot's config id); the friendly name from /bot/v3/info is wired into the
   // registry descriptor (below) but the IPC server also needs its own copy for
@@ -4213,15 +3935,6 @@ export async function startDaemon(botIndex?: number): Promise<void> {
     }
   }, 120_000);
   sandboxReconcileTimer.unref?.();
-
-  await attachColdWorkflowRuns(cfg.larkAppId);
-
-  // v3 humanGate cold-attach: re-post pending gate cards + resume healed gates
-  // for runs OWNED BY THIS BOT (codex blocker #1 — owner filter, mirrors
-  // attachColdWorkflowRuns(cfg.larkAppId)).  Best-effort; never blocks startup.
-  await v3GateRunner.coldAttach(cfg.larkAppId).catch((err) => {
-    logger.warn(`[v3] cold-attach failed; continuing daemon startup: ${err instanceof Error ? err.message : String(err)}`);
-  });
 
   // Start scheduler in every daemon.  Each daemon owns exactly one bot, so
   // each filters to only execute tasks whose `larkAppId` matches its bot

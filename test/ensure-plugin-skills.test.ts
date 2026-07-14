@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, existsSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { ensurePluginSkills, removeGlobalBotmuxSkills } from '../src/skills/installer.js';
+import { ensurePluginSkills, ensureSkills, removeGlobalBotmuxSkills } from '../src/skills/installer.js';
 import { BUILTIN_SKILLS, ASK_SKILL_NAME, RETIRED_SKILL_NAMES } from '../src/skills/definitions.js';
 
 describe('ensurePluginSkills', () => {
@@ -27,11 +27,11 @@ describe('ensurePluginSkills', () => {
     }
   });
 
-  it('botmux-goal-ask 文案和 GoalInputs answer 结构一致', () => {
-    const skill = BUILTIN_SKILLS.find((s) => s.name === 'botmux-goal-ask');
-    expect(skill?.content).toContain('"from": "human"');
-    expect(skill?.content).toContain('"name": "answer"');
-    expect(skill?.content).not.toContain('from: "human/answer"');
+  it('不再安装已退役的 spec/DAG skills', () => {
+    ensurePluginSkills('claude-code', dir);
+    for (const name of ['botmux-workflow', 'botmux-workflow-create', 'botmux-goal-ask']) {
+      expect(existsSync(join(dir, 'skills', name))).toBe(false);
+    }
   });
 
   it('幂等：重复调用不报错且内容稳定', () => {
@@ -44,6 +44,17 @@ describe('ensurePluginSkills', () => {
 
   it('pluginDir 为 undefined：直接跳过，不报错', () => {
     expect(() => ensurePluginSkills('claude-code', undefined)).not.toThrow();
+  });
+});
+
+describe('Codex minimal skills', () => {
+  let dir: string;
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'codex-skills-')); });
+  afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
+
+  it('只安装 send 和 history', () => {
+    ensureSkills('codex', dir, ['botmux-send', 'botmux-history']);
+    expect(readdirSync(dir).sort()).toEqual(['botmux-history', 'botmux-send']);
   });
 });
 

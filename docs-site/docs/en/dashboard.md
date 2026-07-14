@@ -18,7 +18,6 @@ botmux dashboard
 - **Schedules**: lists all scheduled tasks, with Run now / Pause / Resume.
 - **Groups**: one-click create a new group, add bots to a group, auto-transfer group ownership, and @ reminders; disband groups and have bots leave groups (associated sessions are cleaned up automatically).
 - **Team / Roles / Bot Defaults**: the Team panel handles [cross-deployment collaboration](/en/roles) (invite someone else's deployment into your team, create cross-deployment groups); Roles manages each bot's per-group persona; Bot Defaults (Bot configuration) sets default behaviors (new-group on-call, card signature, **default role**, etc.).
-- **Workflows control panel**: Run List polling; Run Detail shows the summary / dangling red zone / node-activity / event timeline / concurrent-execution timeline; you can cancel a run directly, approve/reject a humanGate; the Workflow Catalog lists all workflows and can trigger them with parameters.
 
 ## Deployment details
 

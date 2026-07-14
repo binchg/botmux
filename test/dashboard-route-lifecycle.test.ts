@@ -79,7 +79,6 @@ describe('dashboard route lifecycle', () => {
     const roleProfilesDispose = vi.fn();
     const teamDispose = vi.fn();
     const teamManageDispose = vi.fn();
-    const v3Dispose = vi.fn();
     const insightsDispose = vi.fn();
 
     vi.doMock('../src/dashboard/web/overview-page.js', () => ({
@@ -104,9 +103,6 @@ describe('dashboard route lifecycle', () => {
     vi.doMock('../src/dashboard/web/team-federation-page.js', () => ({
       renderTeamFederationPage: vi.fn(() => teamDispose),
       renderTeamManagePage: vi.fn(() => teamManageDispose),
-    }));
-    vi.doMock('../src/dashboard/web/v3-page.js', () => ({
-      renderV3RunsPage: vi.fn(() => v3Dispose),
     }));
     vi.doMock('../src/dashboard/web/insights-page.js', () => ({
       renderInsightsPage: vi.fn(() => insightsDispose),
@@ -142,9 +138,6 @@ describe('dashboard route lifecycle', () => {
     const teamManageRender = await routes.findDashboardRoute('#/team/manage')!.load();
     expect(teamManageRender(root)).toBe(teamManageDispose);
 
-    const v3Render = await routes.findDashboardRoute('#/workflows')!.load();
-    expect(v3Render(root)).toBe(v3Dispose);
-
     const insightsRender = await routes.findDashboardRoute('#/insights')!.load();
     expect(insightsRender(root)).toBe(insightsDispose);
 
@@ -155,7 +148,6 @@ describe('dashboard route lifecycle', () => {
     vi.doUnmock('../src/dashboard/web/groups-page.js');
     vi.doUnmock('../src/dashboard/web/roles-page.js');
     vi.doUnmock('../src/dashboard/web/team-federation-page.js');
-    vi.doUnmock('../src/dashboard/web/v3-page.js');
     vi.doUnmock('../src/dashboard/web/insights-page.js');
   });
 });

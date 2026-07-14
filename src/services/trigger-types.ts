@@ -96,17 +96,14 @@ export function validateTriggerRequest(raw: unknown): { ok: true; request: Trigg
   if (!isRecord(source) || !isRecord(target) || !isRecord(envelope)) {
     return { ok: false, status: 400, body: { ok: false, errorCode: 'bad_request', error: 'source, target, and envelope are required objects' } };
   }
-  if (target.kind !== 'turn' && target.kind !== 'workflow') {
-    return { ok: false, status: 400, body: { ok: false, errorCode: 'target_required', error: 'target.kind must be turn or workflow' } };
+  if (target.kind !== 'turn') {
+    return { ok: false, status: 400, body: { ok: false, errorCode: 'target_required', error: 'target.kind must be turn' } };
   }
   const options = isRecord(raw.options) ? raw.options : {};
   const waitForFinalOutput = options.waitForFinalOutput === true;
   const asyncReturnSessionId = options.asyncReturnSessionId === true;
   if (target.kind === 'turn' && !waitForFinalOutput && !asyncReturnSessionId && typeof target.chatId !== 'string' && typeof target.sessionId !== 'string') {
     return { ok: false, status: 400, body: { ok: false, errorCode: 'target_required', error: 'turn target requires chatId or sessionId' } };
-  }
-  if (target.kind === 'workflow' && typeof target.workflowId !== 'string') {
-    return { ok: false, status: 400, body: { ok: false, errorCode: 'target_required', error: 'workflow target requires workflowId' } };
   }
   if (typeof envelope.sourceName !== 'string' || envelope.trusted !== false) {
     return { ok: false, status: 400, body: { ok: false, errorCode: 'bad_request', error: 'envelope.sourceName is required and envelope.trusted must be false' } };

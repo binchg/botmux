@@ -15,7 +15,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc && cp src/setup/lark-scopes.json dist/setup/ && node scripts/build-dashboard.mjs && chmod +x dist/cli.js",
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc && cp src/setup/lark-scopes.json dist/setup/ && node scripts/build-dashboard.mjs && chmod +x dist/cli.js",
     "dashboard:bundle": "node scripts/build-dashboard.mjs",
     "daemon": "tsx src/index-daemon.ts",
     "daemon:start": "node dist/cli.js start",

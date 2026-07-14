@@ -155,12 +155,18 @@ export function ensureWhiteboardSkill(cliId: string, skillsDir: string | undefin
  * or removed in a later version) are deleted from the directory so the CLI
  * doesn't keep surfacing stale entries alongside their replacements.
  */
-export function ensureSkills(cliId: string, skillsDir: string | undefined): void {
+export function ensureSkills(
+  cliId: string,
+  skillsDir: string | undefined,
+  selectedNames?: readonly string[],
+): void {
   if (!skillsDir) return;
   const dir = expandHome(skillsDir);
   try { mkdirSync(dir, { recursive: true }); } catch { /* ignore */ }
 
+  const selected = selectedNames ? new Set(selectedNames) : undefined;
   for (const skill of BUILTIN_SKILLS) {
+    if (selected && !selected.has(skill.name)) continue;
     const skillDir = join(dir, skill.name);
     const skillFile = join(skillDir, 'SKILL.md');
     try {

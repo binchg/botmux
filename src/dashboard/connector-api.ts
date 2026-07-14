@@ -97,7 +97,7 @@ function normalizeConnectorInput(
   const targetMode = typeof target.mode === 'string' ? target.mode : prior?.target.mode ?? 'dynamic';
   if (!['dynamic', 'fixed', 'new-group'].includes(targetMode)) return { ok: false, error: 'bad_target_mode' };
   const targetKind = typeof target.kind === 'string' ? target.kind : prior?.target.kind ?? 'turn';
-  if (!['turn', 'workflow'].includes(targetKind)) return { ok: false, error: 'bad_target_kind' };
+  if (targetKind !== 'turn') return { ok: false, error: 'bad_target_kind' };
   const botId = typeof target.botId === 'string' && target.botId.trim() ? target.botId.trim() : prior?.target.botId;
   if (!botId) return { ok: false, error: 'target_bot_required' };
   const botIds = hasOwn(target, 'botIds')
@@ -106,7 +106,6 @@ function normalizeConnectorInput(
   const chatId = typeof target.chatId === 'string' && target.chatId.trim() ? target.chatId.trim() : prior?.target.chatId;
   if (targetMode === 'fixed' && !chatId) return { ok: false, error: 'fixed_chat_required' };
   const workflowId = typeof target.workflowId === 'string' && target.workflowId.trim() ? target.workflowId.trim() : prior?.target.workflowId;
-  if (targetKind === 'workflow' && !workflowId) return { ok: false, error: 'workflow_id_required' };
   // Dedup is now OPTIONAL for new-group (null = a fresh group per event).
   const lifecycleExtractors = c.lifecycleExtractors === undefined
     ? (prior?.lifecycleExtractors ?? null)

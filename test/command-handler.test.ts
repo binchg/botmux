@@ -1121,7 +1121,6 @@ describe('handleCommand', () => {
         '/revoke',
         '/introduce',
         '/reply-mode',
-        '/workflow',
         '/t',
         '/topic',
       ];

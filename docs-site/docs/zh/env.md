@@ -20,7 +20,6 @@
 | `BOTMUX_DASHBOARD_PORT` | `7891` | dashboard HTTP 端口 |
 | `BOTMUX_DASHBOARD_EXTERNAL_HOST` | `WEB_EXTERNAL_HOST` 或自动探测 | CLI 输出 URL 用的 host |
 | `BOTMUX_DAEMON_IPC_BASE_PORT` | `7892` | 每个 daemon 的 IPC 端口 = base + botIndex |
-| `BOTMUX_WORKFLOW_RUNS_DIR` | `~/.botmux/workflow-runs` | workflow run 存储目录 |
 
 ## 文件位置
 

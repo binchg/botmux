@@ -81,7 +81,6 @@ Each incoming event automatically gets a new group to handle it, and the bot's a
 ## Trigger modes
 
 - **Single-turn conversation**: have the bot respond once to this event.
-- **Workflow**: pass the event as the string parameter `event` to a [Workflow](/en/workflow), whose nodes read and process it.
 
 ## Handling instructions (optional)
 
