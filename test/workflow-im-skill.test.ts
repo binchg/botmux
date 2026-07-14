@@ -141,10 +141,15 @@ describe('parseWorkflowGrillTrigger（/workflow 即兴 grill 入口）', () => {
     expect(parseWorkflowGrillTrigger('帮我做个 workflow')).toBeNull();
   });
 
-  it('buildWorkflowGrillPrompt embeds the goal and nudges the skill', () => {
+  it('buildWorkflowGrillPrompt embeds explicit-only instructions and auto-starts', () => {
     const prompt = buildWorkflowGrillPrompt('调研三家竞品');
     expect(prompt).toContain('botmux-workflow');
     expect(prompt).toContain('调研三家竞品');
+    expect(prompt).toContain('普通自然语言');
+    expect(prompt).toContain('botmux workflow approve-spec');
+    expect(prompt).toContain('botmux workflow approve-dag');
+    expect(prompt).toContain('botmux workflow start');
+    expect(prompt).not.toContain('确认我就');
   });
 });
 

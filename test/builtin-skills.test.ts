@@ -4,7 +4,7 @@
  * Run: pnpm vitest run test/builtin-skills.test.ts
  */
 import { describe, it, expect } from 'vitest';
-import { BUILTIN_SKILLS, RETIRED_SKILL_NAMES, WHITEBOARD_SKILL, WHITEBOARD_SKILL_NAME } from '../src/skills/definitions.js';
+import { BUILTIN_SKILLS, RETIRED_SKILL_NAMES, WHITEBOARD_SKILL, WHITEBOARD_SKILL_NAME, WORKFLOW_V3_SKILL } from '../src/skills/definitions.js';
 
 describe('built-in botmux-send skill', () => {
   it('teaches safe multiline sends across Unix and Windows shells', () => {
@@ -71,6 +71,9 @@ describe('built-in botmux-workflow-create skill', () => {
   it('exists and teaches validate + current workflow binding constraints', () => {
     const skill = BUILTIN_SKILLS.find(s => s.name === 'botmux-workflow-create');
     expect(skill).toBeDefined();
+    expect(skill!.content).toContain('普通编码任务');
+    expect(skill!.content).toContain('默认自治完成设计、写入和校验');
+    expect(skill!.content).not.toContain('等用户明确确认后再写文件');
     expect(skill!.content).toContain('botmux workflow validate');
     expect(skill!.content).toContain('botmux bots list');
     expect(skill!.content).toContain('description');
@@ -106,30 +109,35 @@ describe('built-in botmux-workflow-create skill', () => {
   });
 });
 
-describe('built-in botmux-workflow skill (v3 grill → 编排 → 跑)', () => {
-  it('注册了，且教全套 host 命令序 + spec 契约 + 防误触发确认', () => {
+describe('explicit-only botmux-workflow instructions', () => {
+  it('不全局注册，只为显式 /workflow 提供自动开跑规范', () => {
     const skill = BUILTIN_SKILLS.find(s => s.name === 'botmux-workflow');
-    expect(skill).toBeDefined();
+    expect(skill).toBeUndefined();
+    expect(RETIRED_SKILL_NAMES).toContain('botmux-workflow');
     // 全套 host 命令序
-    expect(skill!.content).toContain('botmux workflow new');
-    expect(skill!.content).toContain('botmux workflow spec-finalize');
-    expect(skill!.content).toContain('botmux workflow approve-spec');
-    expect(skill!.content).toContain('botmux workflow architect');
-    expect(skill!.content).toContain('botmux workflow approve-dag');
-    expect(skill!.content).toContain('botmux v3 run');
+    expect(WORKFLOW_V3_SKILL).toContain('botmux workflow new');
+    expect(WORKFLOW_V3_SKILL).toContain('botmux workflow spec-finalize');
+    expect(WORKFLOW_V3_SKILL).toContain('botmux workflow approve-spec');
+    expect(WORKFLOW_V3_SKILL).toContain('botmux workflow architect');
+    expect(WORKFLOW_V3_SKILL).toContain('botmux workflow approve-dag');
+    expect(WORKFLOW_V3_SKILL).toContain('botmux workflow start');
+    expect(WORKFLOW_V3_SKILL).toContain('botmux v3 run');
     // spec 契约：7 字段 + input_needs 自由文本铁律
-    expect(skill!.content).toContain('"schemaVersion": 1');
-    expect(skill!.content).toContain('input_needs');
-    expect(skill!.content).toContain('绝不要写成上游 sketchId 列表');
-    expect(skill!.content).toContain('risk_gate');
-    // 防误触发 + 两道 gate
-    expect(skill!.content).toContain('Gate-1');
-    expect(skill!.content).toContain('Gate-2');
+    expect(WORKFLOW_V3_SKILL).toContain('"schemaVersion": 1');
+    expect(WORKFLOW_V3_SKILL).toContain('input_needs');
+    expect(WORKFLOW_V3_SKILL).toContain('绝不要写成上游 sketchId 列表');
+    expect(WORKFLOW_V3_SKILL).toContain('risk_gate');
+    // 普通消息禁止误触发，显式命令无确认门
+    expect(WORKFLOW_V3_SKILL).toContain('普通自然语言');
+    expect(WORKFLOW_V3_SKILL).toContain('自动批准需求');
+    expect(WORKFLOW_V3_SKILL).toContain('自动批准 DAG 并开跑');
+    expect(WORKFLOW_V3_SKILL).not.toContain('Gate-1');
+    expect(WORKFLOW_V3_SKILL).not.toContain('Gate-2');
     // 跟 v0.2 / workflow-create 区分（v2 模板入口已改名 /template）
-    expect(skill!.content).toContain('/template run <id>');
-    expect(skill!.content).toContain('botmux-workflow-create');
+    expect(WORKFLOW_V3_SKILL).toContain('/template run <id>');
+    expect(WORKFLOW_V3_SKILL).toContain('botmux-workflow-create');
     // 转义没出 bug：description 里不该出现裸反斜杠-反引号
-    expect(skill!.content).not.toContain('\\`');
+    expect(WORKFLOW_V3_SKILL).not.toContain('\\`');
   });
 });
 

@@ -559,7 +559,7 @@ EOF
 
 const WORKFLOW_CREATE_SKILL = `---
 name: botmux-workflow-create
-description: 根据用户自然语言描述生成 botmux workflow JSON 定义文件。触发场景：用户说"我想做个流程"、"创建 workflow"、"把 X 拆成自动化"、"编排"、"orchestrate"、"自动化跑这几步"；或显式提到 botmux workflow create。必须先用 botmux bots list 查看可用 bot，先给用户确认设计，再写 $HOME/.botmux/workflows/<workflowId>.workflow.json，并用 botmux workflow validate 校验。
+description: 仅当用户明确要求创建或保存“可复用的 Botmux workflow 模板/JSON”，或点名 botmux-workflow-create 时使用。普通编码任务以及仅出现“流程”“workflow”“编排”“orchestrate”“自动化”“多步”等词都禁止触发。使用时先查 bot 清单，直接生成并校验定义；不把设计确认设为默认门禁。
 ---
 
 # botmux-workflow-create — Workflow 编排助手
@@ -568,11 +568,11 @@ description: 根据用户自然语言描述生成 botmux workflow JSON 定义文
 
 ## 硬规则
 
-1. 不要在用户确认设计稿前写文件。
+1. 默认自治完成设计、写入和校验，不等待设计确认；用户后续消息作为纠偏。只有不可逆、高风险或未授权外部写入才暂停。
 2. 必须先跑 \`botmux bots list\`，按输出里的 **\`larkAppId\`**（形如 \`cli_xxxxxxxxxxxxxxxx\`）填 \`subagent.bot\`。**不要填 \`name\`**——\`name\` 是 Lark 群里的 displayName（admin 可改、可能带后缀），跨 daemon 必然解析失败。larkAppId 是 bot 的全局唯一 ID。
 3. 写到 \`$HOME/.botmux/workflows/<workflowId>.workflow.json\`（**绝对路径**，daemon 的全局位置）。不要写到当前 cwd 的 \`./workflows/\`——CLI agent 和 daemon 进程的 cwd 不一定一致。\`workflowId\` 推荐 kebab-case。
 4. 写完必须跑 \`botmux workflow validate $HOME/.botmux/workflows/<workflowId>.workflow.json\`，失败就按错误修到通过。
-5. 高风险节点主动建议 \`humanGate\`：发消息、写文件、外部 API、git push、删除/覆盖。纯读、草稿、纯计算通常不加 gate。
+5. \`humanGate\` 仅用于不可逆、高风险或未授权外部写入。普通读取、任务范围内写文件、测试、构建以及用户已授权的 push/MR/部署默认不加 gate。
 6. 数据流有两套语法：**整字段 \`$ref\` 替换** 和 **字符串内 \`\${...}\` 内嵌引用**。**不要**写 \`{{...}}\` 期望 runtime 展开——支持的是 \`\${...}\`，不是双花括号。
 7. 两套语法的边界：
    - **整字段 \`$ref\`**（值可以是任意类型，含对象/数组）：
@@ -588,7 +588,7 @@ description: 根据用户自然语言描述生成 botmux workflow JSON 定义文
 
 ### Step 1 — 理解需求
 
-先复述你理解的流程拆分，必要时问 1-3 个澄清问题。不要直接写 JSON。
+根据用户目标和可查询信息自行完成流程拆分；非阻塞缺口采用安全默认值，不为复述或确认暂停。
 
 ### Step 2 — 查 bot 清单
 
@@ -598,7 +598,7 @@ botmux bots list
 
 输出每个 bot 的 \`name\`（人类可读 displayName，仅供你判断哪个 bot 适合做什么）和 \`larkAppId\`（形如 \`cli_xxxxxxxxxxxxxxxx\`，**这是真正要填进 workflow.subagent.bot 的值**）。
 
-### Step 3 — 给用户确认设计草案
+### Step 3 — 后台检查设计草案
 
 用表格展示节点设计（"bot" 列用人类可读名字给用户看，但实际写进 JSON 是 larkAppId）：
 
@@ -612,7 +612,7 @@ botmux bots list
 - 哪些字段从上游 output 通过 \`$ref\` 传递；
 - 哪些节点需要 humanGate，以及原因。
 
-等用户明确确认后再写文件。
+检查依赖、数据流、bot 身份和真正需要的 humanGate 后直接写文件，不等待用户确认。设计摘要仅作为进度或留档。
 
 ### Step 4 — 生成 JSON
 
@@ -1186,29 +1186,22 @@ botmux dispatch --title "<子项目标题>" --bot "<coder_open_id>:名字:coder"
 - 失败别硬重试同一招 ≥3 次；上报用户。
 `;
 
-const WORKFLOW_V3_SKILL = `---
+export const WORKFLOW_V3_SKILL = `---
 name: botmux-workflow
-description: 把一个「模糊的、一次性的、需要拆成多步的目标」交给系统：先 grill 把需求问清楚 → 自动编排成 DAG 流程 → 跑完。触发场景：用户给一个复合/探索性任务且没指定具体步骤，如"帮我调研X出报告"、"把这事拆成几步自动跑完"、"做个 workflow 处理…"、"帮我把 A/B/C 串起来自动做"；用户显式发 \`/workflow new <目标>\` 或裸 \`/workflow <目标>\` 也会路由到本 skill。区别：跑已存好的固定流程模板用 \`/template run <id>\`（不是本 skill）；设计可复用模板用 botmux-workflow-create；本 skill 是一次性即兴 workflow。简单单步请求/普通问答/改代码不要触发；进入前先跟用户确认一句。
+description: 仅处理 Botmux daemon 在用户显式发送 \`/workflow new <目标>\` 或 \`/workflow <目标>\` 后注入的即兴 DAG 请求。普通自然语言中的“长任务”“复杂任务”“工作流”“编排”“多步”以及一般编码任务都禁止触发；这些任务由当前 AI 直接持续执行到最终交付。
 ---
 
-# botmux-workflow — v3 即兴 workflow（grill → 编排 → 跑）
+# botmux-workflow — 显式 /workflow 的后台编排
 
-把用户一句模糊的复合目标，通过「拷问澄清 → 自动编排 DAG → 人确认 → 自动执行」一条龙做完。整个过程在当前飞书话题里**一问一答**进行（用 botmux send 跟用户对话）。
+仅当当前 prompt 以 \`[/workflow new]\` 明确标记用户发送了 \`/workflow\` 命令时使用。规格和 DAG 是后台执行档案，默认自行收敛、校验、批准并开跑，不停下来索要需求确认或 DAG 确认。
 
-用户可以两种方式进入本流程：① 直接用大白话描述模糊复合目标（模型判断触发本 skill）；② 显式发 \`/workflow new <目标>\` 或裸 \`/workflow <目标>\`（daemon 已把它转成触发本 skill 的 prompt，目标在消息里）。
+## 触发边界
 
-## 何时用 / 不用
-- ✅ 用户有一个**一次性、需要拆成多步**的目标，但没给出具体步骤（"调研三家竞品出对比报告"、"把日志拉下来分析再生成图表"）。
-- ❌ 跑**已存好的固定模板** → 让用户用 \`/template run <id>\`。
-- ❌ **设计可复用模板** → botmux-workflow-create。
-- ❌ 单步请求 / 普通问答 / 改代码 → 别触发，正常回答。
-
-## 0. 先确认（防误触发）
-真正进入 grill 前先发一句确认：
-
-> 我理解你想让我做一整套 workflow：先问你几个问题把需求弄清楚，再自动编排成流程跑完。对吗？
-
-用户确认了再往下。（用户已经很明确要做 workflow——比如通过 \`/workflow new\` 显式发起——时可省略此步，直接开始 grill。）
+- ✅ prompt 含 daemon 注入的 \`[/workflow new]\` 显式标记。
+- ❌ 用户只说“长任务”“复杂任务”“工作流”“编排”“多步”或描述普通编码交付：直接执行，不建 Botmux workflow。
+- ❌ 跑已存模板：使用 \`/template run <id>\`。
+- ❌ 设计可复用模板：使用 botmux-workflow-create。
+- 用户已用命令显式授权创建即兴 workflow；不再询问是否进入，不设置规格确认或 DAG 确认。
 
 ## 1. 建 run
 \`\`\`bash
@@ -1216,14 +1209,10 @@ botmux workflow new "<把用户目标浓缩成一句话>"
 \`\`\`
 记下返回的 \`runId\`（和 \`specPath\`）——后面**每个**命令都要带这个 runId。
 
-## 2. Grill：一次只问一个问题
-遵循 grill-me 方法：
-- **一次一个问题**，每个都给出你的**推荐默认答案**（不是开放式"你想怎样"）。
-- 沿决策树走，先父决策再子决策。
-- 能从代码/文件查到的**别问，直接查**。
-- 目标：能为**每个**预想节点凑齐五件套 \`goal / input_needs / expected_outputs / acceptance / risk_gate\`，否则继续问。
-- **逃生阀**：用户随时可说"够了 / 用默认 / 别问了"——立即收尾，用推荐默认填满缺口，把没定的写进该节点 \`unknowns\`。
-- 别把用户问烦：五件套是上限不是下限，能合并的问题合并。
+## 2. 自治收敛需求
+- 优先从用户原始消息、代码、文件和平台状态补齐需求，不向用户重复询问可自行查明或可采用安全默认值的信息。
+- 为每个预想节点补齐 \`goal / input_needs / expected_outputs / acceptance / risk_gate\`；不确定但不阻塞的内容写入 \`unknowns\`，继续执行。
+- 只有缺少权限、凭据、不可逆动作授权或必须由人选择且会实质改变目标时才暂停。
 
 ## 3. 写 spec.md
 往第 1 步返回的 \`specPath\` 写文件 = 人读叙事 + **唯一一个** fenced json 块（机器读的 canonical Spec）。
@@ -1272,12 +1261,12 @@ botmux workflow spec-finalize <runId>
 \`\`\`
 成功 → 下一步。失败（命令打印 problems）→ 按 problems 修 spec.md 的 json 块再跑。**校验不过不能往下走。**
 
-## 5. Gate-1：确认需求
-给用户简明摘要（做哪几步、各自产出、验收、不做什么），问：
-
-> 这是我理解的需求和拆解，对吗？确认我就编排成可执行流程。
-
-用户确认 → \`botmux workflow approve-spec <runId>\`；要改 → 直接改 spec.md 再 \`botmux workflow spec-finalize <runId>\` 重新校验（spec_ready 状态可原地重定稿，不用退回）。
+## 5. 自动批准需求
+校验通过后立即执行，不等待用户回复：
+\`\`\`bash
+botmux workflow approve-spec <runId>
+\`\`\`
+用户后续追加干预时再按新要求修订；不得把规格确认作为开工门禁。
 
 ## 6. 编排 DAG
 \`\`\`bash
@@ -1285,17 +1274,19 @@ botmux workflow architect <runId>
 \`\`\`
 系统自动把 spec 编译成 dag.json 并**由 host 校验**。成功 → 命令打印 \`dagPath\`/\`notesPath\`，进下一步。失败（退回 spec_approved + 打印 problems）→ 多半是 spec 还有问题：\`botmux workflow revise-spec <runId>\` 退回 grilling，按 problems 改 spec.md，再 spec-finalize → approve-spec → architect。（若判断只是 architect 偶发失败、spec 没问题，可直接重跑 architect。）
 
-## 7. Gate-2：确认流程
-读 architect 产出的 dag.json + architect-notes.md（用第 6 步打印的路径），给用户讲清楚流程：有哪些节点、依赖顺序、哪些节点执行期会停下等人批。问：
-
-> 编排好的流程是这样，对吗？确认就开跑。
-
-用户确认 → \`botmux workflow approve-dag <runId>\`，然后 \`botmux workflow start <runId>\` 交 daemon 驱动开跑（**别用 \`botmux v3 run\`**——那是 dev 终端路径，没有飞书审批卡）。daemon 路径下，节点的 \`risk_gate\`（humanGate）执行期会在本话题**弹审批卡**，用户点「通过/拒绝」才继续；daemon 重启也能恢复待审批的卡。要改：需求要改 → \`botmux workflow revise-spec <runId>\`（退回 grilling，原 DAG 作废）重走 grill→spec→architect；需求没变、只是流程不满意 → \`botmux workflow revise-dag <runId>\`（退回 spec_approved）重跑 architect 重编。
+## 7. 自动批准 DAG 并开跑
+host 校验 DAG 成功后立即执行：
+\`\`\`bash
+botmux workflow approve-dag <runId>
+botmux workflow start <runId>
+\`\`\`
+使用 daemon 驱动，别用 \`botmux v3 run\`。只有节点确实涉及不可逆、高风险或未授权外部写入时才设置 \`risk_gate\`；普通研发、读取、修改、测试、构建、已授权 push/MR/部署不得设置人工门禁。用户后续追加干预时按新要求调整，不停止其它可继续节点。
 
 ## 关键纪律
-- 全程飞书一问一答，用 botmux send 对话。
+- 从创建 run 到启动执行连续完成；spec/DAG 仅后台留档，不把过程材料推给用户审批。
+- 只输出正常 assistant 进度，由 Botmux 后台投递；不调用 \`botmux send\`。
 - \`runId\` 是贯穿全程的钥匙，每个命令都带对。
-- 三道确认别省：进入前确认 + Gate-1 需求 + Gate-2 流程。
+- 默认持续运行到最终交付；用户会通过追加消息纠偏，不因“任务很长”或阶段完成而暂停。
 - 任何 \`botmux workflow\` 命令报错，把人话版原因告诉用户，别闷头重试。
 `;
 
@@ -1435,7 +1426,6 @@ export const BUILTIN_SKILLS: SkillDef[] = [
   { name: 'botmux-bots', content: BOTS_SKILL },
   { name: 'botmux-handoff', content: HANDOFF_SKILL },
   { name: 'botmux-workflow-create', content: WORKFLOW_CREATE_SKILL },
-  { name: 'botmux-workflow', content: WORKFLOW_V3_SKILL },
   { name: 'botmux-goal-ask', content: GOAL_ASK_SKILL },
   { name: 'botmux-orchestrate', content: ORCHESTRATE_SKILL },
 ];
@@ -1444,6 +1434,9 @@ export const BUILTIN_SKILLS: SkillDef[] = [
  *  installer cleans these up so renamed skills don't linger as duplicates
  *  in the CLI's skills directory. */
 export const RETIRED_SKILL_NAMES: string[] = [
+  // /workflow is explicit-command only. Its instructions are injected into
+  // that command's prompt instead of being globally visible to every agent.
+  'botmux-workflow',
   'botmux-thread-messages',
   // Folded into botmux-send as the `--attention` flag. Installer prunes the old
   // standalone skill dir.

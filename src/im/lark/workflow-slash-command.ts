@@ -19,10 +19,11 @@ export { coerceWorkflowParams };
 import type { BotSnapshot } from '../../workflows/events/payloads.js';
 import type { WorkflowRuntimeContext, WorkerSpawnFn } from '../../workflows/runtime.js';
 import { t, localeForBot, type Locale } from '../../i18n/index.js';
+import { WORKFLOW_V3_SKILL } from '../../skills/definitions.js';
 
 // v3 即兴 grill 引擎占用 /workflow 主语义。
 export const WORKFLOW_USAGE =
-  '用法：/workflow new <目标>（或直接 /workflow <目标>）——我会先拷问澄清需求，再自动编排成流程跑完。\n跑已存好的模板用 /template run <id>。';
+  '用法：/workflow new <目标>（或直接 /workflow <目标>）——我会自行收敛需求、编排并直接开跑，规格与 DAG 只在后台留档。\n跑已存好的模板用 /template run <id>。';
 // 旧 /workflow run|cancel 软降级：仍能跑，但提示已改名（迁移期友好，不直接断老用户）。
 export const WORKFLOW_V2_RENAME_NOTICE =
   '⚠️ /workflow run|cancel 已改名为 /template run|cancel（/workflow 现用于即兴 workflow）。本次仍照旧执行，请尽快改用 /template。';
@@ -37,8 +38,8 @@ export type WorkflowCommand =
   | { kind: 'cancel'; runId: string }
   | { kind: 'invalid'; error: string; usage: string };
 
-/** v3 grill 触发结果（仅 `/workflow` 命名空间，不含 run/cancel 那套 v2 子命令）。
- *  `goal` = 用户描述的模糊目标，daemon 会转成触发 botmux-workflow skill 的 prompt。 */
+/** v3 workflow 触发结果（仅显式 `/workflow` 命名空间）。
+ *  `goal` 会连同执行规范一起注入当前命令的 prompt；普通消息不会触发。 */
 export type WorkflowGrillTrigger =
   | { kind: 'goal'; goal: string }
   | { kind: 'usage' };
@@ -136,15 +137,15 @@ export function parseWorkflowGrillTrigger(content: string): WorkflowGrillTrigger
 }
 
 /**
- * 把用户 `/workflow new <目标>` 的目标包成一条触发 `botmux-workflow` skill 的
- * prompt。daemon 用它改写消息内容后 fall-through 到正常 session 创建，让本话题
- * 的 agent 接管整条 grill→编排→执行链路（daemon 自己不会拷问）。
+ * 把显式 `/workflow new <目标>` 包成自包含 prompt。workflow 执行规范不再作为
+ * 全局 Skill 安装，避免普通长任务被自然语言误触发；只有这条命令承担注入成本。
  */
 export function buildWorkflowGrillPrompt(goal: string): string {
   return [
     '[/workflow new] 用户通过 `/workflow new` 显式发起了一个即兴 workflow。',
-    '请使用 `botmux-workflow` skill 处理下面这个目标：直接进入 grill（用户已显式发起，"确认意图"那步可省略），',
-    '在当前飞书话题里一问一答澄清需求，然后自动编排成 DAG 流程并跑完。',
+    '按以下本次命令专用规范自行收敛需求、编排并直接开跑；不要等待规格或 DAG 确认。',
+    '',
+    WORKFLOW_V3_SKILL,
     '',
     `目标：${goal}`,
   ].join('\n');
