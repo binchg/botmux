@@ -23,10 +23,12 @@ describe('codex-app runner steering', () => {
     expect(source).toContain('clearInterval(turn.progressTimer)');
   });
 
-  it('asks the model for concise, verifiable phase decisions rather than hidden reasoning', () => {
-    expect(source).toContain('直接写已确认的进展、结果或等待原因');
-    expect(source).toContain('不要添加“正在执行”“处理中”或耗时心跳等固定前缀');
+  it('asks the model for concise evidence-based checkpoints without elapsed-time heartbeats', () => {
+    expect(source).toContain('连续执行最多 8 次工具调用后');
+    expect(source).toContain('直接写已确认的结果或等待原因');
+    expect(source).toContain('不添加“正在执行”“处理中”等固定前缀');
     expect(source).toContain('不输出隐藏思维链');
+    expect(source).toContain('默认输出预算控制在约 4000 tokens');
   });
 
   it('starts a new progress epoch when busy follow-up guidance arrives', () => {

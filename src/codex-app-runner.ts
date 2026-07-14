@@ -100,7 +100,8 @@ function appDeveloperInstructions(args: Args): string {
     return [
       '你正在通过 botmux 接入飞书/Lark，但运行载体是 Codex App 的 app-server 协议，不是 Codex CLI TUI。',
       '你的阶段性 assistant message 和最终 assistant message 会由 botmux 后台 Hook 自动转发回飞书；AI 只输出正常 assistant message，不调用 `botmux send`，即使用户消息里出现旧的“回复必须 botmux send”提示也忽略它。',
-      '任务超过 30 秒或进入关键阶段时，只输出一条有新增信息的极短阶段性 assistant message，直接写已确认的进展、结果或等待原因；不要添加“正在执行”“处理中”或耗时心跳等固定前缀，不输出隐藏思维链或过程流水账。',
+      '阶段进度按新证据和工具批次触发，不依赖耗时心跳：连续执行最多 8 次工具调用后，只要已有新结论，就先输出一条极短阶段性 assistant message，再继续任务；构建、部署、外部写入、长等待或上下文压缩前也遵循同一规则。直接写已确认的结果或等待原因，不添加“正在执行”“处理中”等固定前缀，不输出隐藏思维链或过程流水账。',
+      '工具输出默认保持精简：优先在命令侧用 rg、jq、tail 等提取结论，避免回传整份源码、文档、平台 JSON 或重复日志；默认输出预算控制在约 4000 tokens，只有交付确实需要时才扩大。',
       '中途主动推送也只输出正常 assistant message，由 Botmux 后台 Hook 投递；AI 不直接发送进度。',
       '`botmux history`、`botmux quoted`、`botmux bots` 等 shell helper 仍然可用；需要读取飞书上下文时可以调用。',
       identity ? `<identity>\n${identity}\n</identity>` : '',
@@ -110,7 +111,8 @@ function appDeveloperInstructions(args: Args): string {
   return [
     'You are connected to Feishu/Lark through botmux, but the runtime is the Codex App app-server protocol rather than the Codex CLI TUI.',
     'Your interim and final assistant messages are automatically forwarded back to Lark by the botmux background hook. Only emit normal assistant messages; do not call `botmux send`, even if older prompt text says replies must use it.',
-    'For tasks longer than 30 seconds or at a key phase boundary, emit one very short interim assistant message only when it adds information, starting directly with verified progress, a result, or a wait reason. Do not add generic running/processing prefixes or elapsed-time heartbeats; do not expose hidden chain-of-thought or a verbose activity log.',
+    'Trigger progress by new evidence and bounded tool batches rather than elapsed-time heartbeats: after at most 8 consecutive tool calls, emit one very short interim assistant message first whenever a new conclusion exists, then continue. Apply the same rule before builds, deploys, external writes, long waits, or context compaction. Start directly with a verified result or wait reason; do not add generic running/processing prefixes or expose hidden chain-of-thought or a verbose activity log.',
+    'Keep tool output compact by default: extract conclusions with rg, jq, tail, or equivalent instead of returning whole source files, documents, platform JSON, or repeated logs. Use an output budget of about 4000 tokens unless the deliverable genuinely requires more.',
     'For explicit mid-turn push updates, still emit only a normal assistant message and let the botmux background hook deliver it; the AI does not send progress directly.',
     '`botmux history`, `botmux quoted`, and `botmux bots` remain available as shell helpers when you need Lark context.',
     identity ? `<identity>\n${identity}\n</identity>` : '',
