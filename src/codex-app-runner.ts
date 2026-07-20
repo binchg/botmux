@@ -276,6 +276,8 @@ try {
 const client = new AppServerClient(args.codexBin, args.cwd);
 let threadId = args.threadId;
 let threadReady = false;
+let defaultThreadModel: string | undefined;
+let defaultThreadModelProvider: string | undefined;
 let activeTurn: ActiveTurn | null = null;
 const queue: string[] = [];
 let inputBuffer = '';
@@ -517,6 +519,24 @@ async function currentHookTrustIssue(): Promise<string | undefined> {
   }
 }
 
+/** 读取当前 Codex 有效配置，确保恢复旧线程时同步迁移到现行模型提供方。 */
+async function loadDefaultThreadModel(): Promise<void> {
+  try {
+    const response = await client.request('config/read', { cwd: args.cwd });
+    const config = response?.config ?? {};
+    defaultThreadModel = typeof config.model === 'string' && config.model.trim()
+      ? config.model.trim()
+      : undefined;
+    defaultThreadModelProvider = typeof config.model_provider === 'string' && config.model_provider.trim()
+      ? config.model_provider.trim()
+      : undefined;
+  } catch (err: any) {
+    if (process.env.BOTMUX_CODEX_APP_DEBUG === '1') {
+      writeLine(`[codex-app] default model config unavailable: ${err?.message ?? err}`);
+    }
+  }
+}
+
 async function ensureThread(): Promise<string> {
   if (threadReady && threadId) return threadId;
 
@@ -525,6 +545,8 @@ async function ensureThread(): Promise<string> {
       const resumed = await client.request('thread/resume', {
         threadId,
         cwd: args.cwd,
+        model: defaultThreadModel,
+        modelProvider: defaultThreadModelProvider,
         approvalPolicy: 'never',
         sandbox: 'danger-full-access',
         config: { shell_environment_policy: { inherit: 'all' } },
@@ -548,6 +570,8 @@ async function ensureThread(): Promise<string> {
 
   const started = await client.request('thread/start', {
     cwd: args.cwd,
+    model: defaultThreadModel,
+    modelProvider: defaultThreadModelProvider,
     approvalPolicy: 'never',
     sandbox: 'danger-full-access',
     config: { shell_environment_policy: { inherit: 'all' } },
@@ -740,6 +764,7 @@ async function main(): Promise<void> {
   client.onRequest(handleServerRequest);
   client.onNotification(handleNotification);
   await client.initialize();
+  await loadDefaultThreadModel();
   const hookTrustIssue = await currentHookTrustIssue();
   if (hookTrustIssue) writeLine(`[codex-app] ${hookTrustIssue}`);
   await ensureThread();

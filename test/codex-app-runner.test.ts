@@ -60,4 +60,13 @@ describe('codex-app runner steering', () => {
     expect(source).toContain('codexAppAutoContinuePrompt(args.locale)');
     expect(source).toContain("writeLine(autoContinue ? '[auto continue]' : '[user]')");
   });
+
+  it('overrides resumed legacy threads with the current default provider', () => {
+    expect(source).toContain("client.request('config/read', { cwd: args.cwd })");
+    expect(source).toContain('defaultThreadModel =');
+    expect(source).toContain('defaultThreadModelProvider =');
+    expect(source).toContain('model: defaultThreadModel');
+    expect(source).toContain('modelProvider: defaultThreadModelProvider');
+    expect(source).toContain('await loadDefaultThreadModel()');
+  });
 });
