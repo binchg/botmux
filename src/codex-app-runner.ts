@@ -4,6 +4,12 @@ import { Buffer } from 'node:buffer';
 import { CodexAppProgressThrottler } from './services/codex-app-progress.js';
 import { normalizeCodexAppTimestampMs } from './services/codex-app-activity.js';
 import { codexAppHookFailure, codexAppHookTrustIssue } from './services/codex-app-hook-health.js';
+import {
+  CODEX_APP_RATE_LIMIT_MAX_CONTINUES,
+  codexAppAutoContinueDelayMs,
+  codexAppAutoContinuePrompt,
+  isCodexAppRetryLimit429,
+} from './services/codex-app-auto-continue.js';
 
 type JsonObject = Record<string, any>;
 
@@ -36,6 +42,13 @@ interface ActiveTurn {
   done: Promise<void>;
   resolveDone: () => void;
   criticalHookFailure?: string;
+  rateLimitError?: string;
+}
+
+interface TurnOutcome {
+  turnId?: string;
+  startedAtMs: number;
+  rateLimitError?: string;
 }
 
 const OSC_PREFIX = '\x1b]777;botmux:';
@@ -480,10 +493,13 @@ function handleNotification(msg: JsonObject): void {
   if (msg.method === 'turn/completed') {
     const turn = params.turn;
     if (turn?.id && activeTurn.turnId && turn.id !== activeTurn.turnId) return;
+    const errorMessage = String(turn?.error?.message ?? '').trim();
     if (activeTurn.criticalHookFailure) {
       activeTurn.finalText = activeTurn.criticalHookFailure;
-    } else if (turn?.error?.message && !activeTurn.finalText) {
-      activeTurn.finalText = `Codex App turn failed: ${turn.error.message}`;
+    } else if (isCodexAppRetryLimit429(errorMessage)) {
+      activeTurn.rateLimitError = errorMessage;
+    } else if (errorMessage && !activeTurn.finalText) {
+      activeTurn.finalText = `Codex App turn failed: ${errorMessage}`;
     }
     activeTurn.resolveDone();
   }
@@ -556,7 +572,7 @@ async function ensureThread(): Promise<string> {
   return startedThreadId;
 }
 
-async function runTurn(content: string): Promise<void> {
+async function runSingleTurn(content: string, autoContinue: boolean): Promise<TurnOutcome> {
   const hookTrustIssue = await currentHookTrustIssue();
   if (hookTrustIssue) throw new Error(hookTrustIssue);
   const tid = await ensureThread();
@@ -571,14 +587,16 @@ async function runTurn(content: string): Promise<void> {
   turn.progressTimer.unref();
   try {
     writeLine();
-    writeLine('[user]');
+    writeLine(autoContinue ? '[auto continue]' : '[user]');
     writeLine(content);
-    emitMarker('user', {
-      kind: 'user',
-      content: displayUserContent(content),
-      at: turn.startedAtMs,
-      turnId: turn.turnId,
-    });
+    if (!autoContinue) {
+      emitMarker('user', {
+        kind: 'user',
+        content: displayUserContent(content),
+        at: turn.startedAtMs,
+        turnId: turn.turnId,
+      });
+    }
     writeLine();
 
     const result = await client.request('turn/start', {
@@ -596,7 +614,7 @@ async function runTurn(content: string): Promise<void> {
 
     const finalText = (turn.finalText || turn.allAgentText).trim();
     const completedAtMs = Date.now();
-    if (finalText) {
+    if (!turn.rateLimitError && finalText) {
       emitMarker('final', {
         turnId: turn.turnId ?? `codex-app-${completedAtMs}`,
         content: finalText,
@@ -605,10 +623,56 @@ async function runTurn(content: string): Promise<void> {
       });
     }
     writeLine();
+    return {
+      turnId: turn.turnId,
+      startedAtMs: turn.startedAtMs,
+      rateLimitError: turn.rateLimitError,
+    };
   } finally {
     if (turn.progressTimer) clearInterval(turn.progressTimer);
     queuePendingSteersAsNextTurns(turn);
     if (activeTurn === turn) activeTurn = null;
+  }
+}
+
+async function runTurn(content: string): Promise<void> {
+  let nextContent = content;
+  let autoContinueCount = 0;
+
+  while (true) {
+    const outcome = await runSingleTurn(nextContent, autoContinueCount > 0);
+    if (!outcome.rateLimitError) return;
+
+    if (autoContinueCount >= CODEX_APP_RATE_LIMIT_MAX_CONTINUES) {
+      const message = args.locale === 'zh'
+        ? `Codex App 429 自动继续已达上限（${CODEX_APP_RATE_LIMIT_MAX_CONTINUES} 次）：${outcome.rateLimitError}`
+        : `Codex App 429 auto-continue reached its limit (${CODEX_APP_RATE_LIMIT_MAX_CONTINUES} attempts): ${outcome.rateLimitError}`;
+      writeLine(`[codex-app] ${message}`);
+      const completedAtMs = Date.now();
+      emitMarker('final', {
+        turnId: outcome.turnId ?? `codex-app-rate-limit-${completedAtMs}`,
+        content: message,
+        startedAtMs: outcome.startedAtMs,
+        completedAtMs,
+      });
+      return;
+    }
+
+    autoContinueCount += 1;
+    const delayMs = codexAppAutoContinueDelayMs(autoContinueCount);
+    const delaySeconds = Math.ceil(delayMs / 1_000);
+    const notice = args.locale === 'zh'
+      ? `上游返回 429，${delaySeconds} 秒后自动继续（${autoContinueCount}/${CODEX_APP_RATE_LIMIT_MAX_CONTINUES}）。`
+      : `Upstream returned 429; auto-continuing in ${delaySeconds}s (${autoContinueCount}/${CODEX_APP_RATE_LIMIT_MAX_CONTINUES}).`;
+    writeLine(`[codex-app] ${notice}`);
+    emitMarker('progress', {
+      content: notice,
+      turnId: outcome.turnId,
+      startedAtMs: outcome.startedAtMs,
+      updatedAtMs: Date.now(),
+    });
+    await new Promise(resolve => setTimeout(resolve, delayMs));
+    nextContent = codexAppAutoContinuePrompt(args.locale);
   }
 }
 

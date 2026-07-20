@@ -52,4 +52,12 @@ describe('codex-app runner steering', () => {
     expect(source).toContain("client.request('turn/interrupt'");
     expect(source).toContain('activeTurn.criticalHookFailure');
   });
+
+  it('automatically continues bounded HTTP 429 retry-limit failures', () => {
+    expect(source).toContain('isCodexAppRetryLimit429(errorMessage)');
+    expect(source).toContain('CODEX_APP_RATE_LIMIT_MAX_CONTINUES');
+    expect(source).toContain('codexAppAutoContinueDelayMs(autoContinueCount)');
+    expect(source).toContain('codexAppAutoContinuePrompt(args.locale)');
+    expect(source).toContain("writeLine(autoContinue ? '[auto continue]' : '[user]')");
+  });
 });
