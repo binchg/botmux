@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { existsSync } from 'node:fs';
 import { installStdioEpipeGuard } from './utils/stdio-epipe-guard.js';
+import { resolveDaemonBotIndex } from './utils/daemon-bot-index.js';
 
 // Under pm2 the daemon's stdout/stderr are pipes to the God daemon. A broken
 // pipe (log streaming detaches, God daemon restart) would otherwise emit an
@@ -40,8 +41,9 @@ async function main() {
   const { startDaemon } = await import('./daemon.js');
   const { logger } = await import('./utils/logger.js');
 
-  const botIndexStr = process.env.BOTMUX_BOT_INDEX;
-  const botIndex = botIndexStr !== undefined ? parseInt(botIndexStr, 10) : undefined;
+  // PM2 固定参数优先，防止 `reload --update-env` 把发起会话的环境变量
+  // 覆盖到整组 daemon；环境变量仅兼容旧版配置与直接启动方式。
+  const botIndex = resolveDaemonBotIndex(process.argv.slice(2), process.env.BOTMUX_BOT_INDEX);
 
   logger.info(`Starting botmux daemon...${botIndex !== undefined ? ` (bot index: ${botIndex})` : ''}`);
   await startDaemon(botIndex);

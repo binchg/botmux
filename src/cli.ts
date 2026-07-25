@@ -96,6 +96,7 @@ import { buildBridgeSendMarkerContent } from './services/bridge-fallback-gate.js
 import { writeManualIntentIfAbsentTo } from './services/restart-intent-store.js';
 import { stripLegacyPendingCardFields } from './services/session-store.js';
 import { botmuxVersion } from './utils/install-info.js';
+import { daemonBotIndexArgs } from './utils/daemon-bot-index.js';
 import {
   configuredFileShareRoots,
   localFileShareEnabled,
@@ -360,6 +361,8 @@ function ecosystemConfig(): string {
   const apps: any[] = bots.map((_bot: any, i: number) => ({
     ...baseApp,
     name: botProcessName(_bot, i, PM2_NAME),
+    // 固定参数不受 `pm2 reload --update-env` 影响，确保多机器人实例不会串号。
+    args: daemonBotIndexArgs(i),
     error_file: join(LOG_DIR, `daemon-${i}-error.log`),
     out_file: join(LOG_DIR, `daemon-${i}-out.log`),
     env: {
