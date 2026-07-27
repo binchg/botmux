@@ -35,6 +35,16 @@ describe('codex-app runner steering', () => {
     expect(source).toContain('activeTurn.progress.resetTo(activeTurn.allAgentText)');
   });
 
+  it('reopens progress when guidance races with a completed final answer item', () => {
+    const handler = source.slice(
+      source.indexOf('function handleUserMessage'),
+      source.indexOf('function handleServerRequest'),
+    );
+    expect(handler).toContain("activeTurn.finalText = ''");
+    expect(handler.indexOf("activeTurn.finalText = ''"))
+      .toBeLessThan(handler.indexOf('activeTurn.pendingSteers.push(content)'));
+  });
+
   it('keeps structured item and hook lifecycles internal', () => {
     expect(source).toContain("msg.method === 'hook/started' || msg.method === 'hook/completed'");
     expect(source).not.toContain("emitMarker('activity'");

@@ -377,6 +377,9 @@ function handleUserMessage(content: string): void {
     enqueueNextTurn(content);
     return;
   }
+  // 用户可能在 final_answer 已生成、turn/completed 尚未到达时继续追问。
+  // 清除上一答案的终态闩锁，确保新阶段消息继续进入飞书进度卡，最终回包也采用新答案。
+  activeTurn.finalText = '';
   // A busy follow-up is a new visible progress epoch even though app-server
   // keeps it inside the same turn/steer lifecycle. Do not let the previous
   // assistant text cursor suppress commentary produced for this guidance.
