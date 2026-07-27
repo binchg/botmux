@@ -33,8 +33,11 @@ interface ActiveTurn {
   turnId?: string;
   startedAtMs: number;
   finalText: string;
+  finalItemId?: string;
   allAgentText: string;
   itemText: Map<string, string>;
+  itemEpoch: Map<string, number>;
+  guidanceEpoch: number;
   progress: CodexAppProgressThrottler;
   progressTimer?: ReturnType<typeof setInterval>;
   pendingSteers: string[];
@@ -291,6 +294,8 @@ function makeTurn(): ActiveTurn {
     finalText: '',
     allAgentText: '',
     itemText: new Map(),
+    itemEpoch: new Map(),
+    guidanceEpoch: 0,
     progress: new CodexAppProgressThrottler(),
     pendingSteers: [],
     steerChain: Promise.resolve(),
@@ -379,11 +384,14 @@ function handleUserMessage(content: string): void {
   }
   // 用户可能在 final_answer 已生成、turn/completed 尚未到达时继续追问。
   // 清除上一答案的终态闩锁，确保新阶段消息继续进入飞书进度卡，最终回包也采用新答案。
+  activeTurn.guidanceEpoch += 1;
   activeTurn.finalText = '';
+  activeTurn.finalItemId = undefined;
+  activeTurn.allAgentText = '';
   // A busy follow-up is a new visible progress epoch even though app-server
   // keeps it inside the same turn/steer lifecycle. Do not let the previous
   // assistant text cursor suppress commentary produced for this guidance.
-  activeTurn.progress.resetTo(activeTurn.allAgentText);
+  activeTurn.progress.resetTo();
   activeTurn.pendingSteers.push(content);
   flushSteers(activeTurn);
 }
@@ -460,7 +468,10 @@ function handleNotification(msg: JsonObject): void {
 
   if (msg.method === 'item/started') {
     const item = params.item;
-    if (item?.type === 'commandExecution') {
+    if (item?.type === 'agentMessage' && item.id) {
+      // item 在 steer 前后可能交错完成；记录创建时的 epoch，迟到旧 item 不得污染新回复。
+      activeTurn.itemEpoch.set(String(item.id), activeTurn.guidanceEpoch);
+    } else if (item?.type === 'commandExecution') {
       writeLine(`\n$ ${item.command}`);
     } else if (item?.type === 'fileChange') {
       writeLine('\n[files changed]');
@@ -471,9 +482,16 @@ function handleNotification(msg: JsonObject): void {
   if (msg.method === 'item/agentMessage/delta') {
     const delta = String(params.delta ?? '');
     const itemId = String(params.itemId ?? '');
+    const itemEpoch = activeTurn.itemEpoch.get(itemId) ?? activeTurn.guidanceEpoch;
+    if (!activeTurn.itemEpoch.has(itemId)) activeTurn.itemEpoch.set(itemId, itemEpoch);
     activeTurn.itemText.set(itemId, (activeTurn.itemText.get(itemId) ?? '') + delta);
-    activeTurn.allAgentText += delta;
     process.stdout.write(delta);
+    if (itemEpoch !== activeTurn.guidanceEpoch) return;
+    if (activeTurn.finalText && activeTurn.finalItemId !== itemId) {
+      activeTurn.finalText = '';
+      activeTurn.finalItemId = undefined;
+    }
+    activeTurn.allAgentText += delta;
     maybeEmitProgress(activeTurn);
     return;
   }
@@ -486,8 +504,13 @@ function handleNotification(msg: JsonObject): void {
   if (msg.method === 'item/completed') {
     const item = params.item;
     if (item?.type === 'agentMessage') {
-      if (item.phase === 'final_answer') activeTurn.finalText = String(item.text ?? '');
-      else if (!activeTurn.itemText.has(item.id) && item.text) {
+      const itemId = String(item.id ?? '');
+      const itemEpoch = activeTurn.itemEpoch.get(itemId) ?? activeTurn.guidanceEpoch;
+      if (itemEpoch !== activeTurn.guidanceEpoch) return;
+      if (item.phase === 'final_answer') {
+        activeTurn.finalText = String(item.text ?? '');
+        activeTurn.finalItemId = itemId;
+      } else if (!activeTurn.itemText.has(item.id) && item.text) {
         activeTurn.allAgentText += String(item.text);
         maybeEmitProgress(activeTurn, true);
       }

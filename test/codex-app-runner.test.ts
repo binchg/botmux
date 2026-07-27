@@ -32,7 +32,7 @@ describe('codex-app runner steering', () => {
   });
 
   it('starts a new progress epoch when busy follow-up guidance arrives', () => {
-    expect(source).toContain('activeTurn.progress.resetTo(activeTurn.allAgentText)');
+    expect(source).toContain('activeTurn.progress.resetTo()');
   });
 
   it('reopens progress when guidance races with a completed final answer item', () => {
@@ -40,9 +40,18 @@ describe('codex-app runner steering', () => {
       source.indexOf('function handleUserMessage'),
       source.indexOf('function handleServerRequest'),
     );
+    expect(handler).toContain('activeTurn.guidanceEpoch += 1');
     expect(handler).toContain("activeTurn.finalText = ''");
+    expect(handler).toContain("activeTurn.allAgentText = ''");
     expect(handler.indexOf("activeTurn.finalText = ''"))
       .toBeLessThan(handler.indexOf('activeTurn.pendingSteers.push(content)'));
+  });
+
+  it('ignores an old agent item that completes after newer guidance', () => {
+    expect(source).toContain('itemEpoch: Map<string, number>');
+    expect(source).toContain('activeTurn.itemEpoch.set(String(item.id), activeTurn.guidanceEpoch)');
+    expect(source).toContain('if (itemEpoch !== activeTurn.guidanceEpoch) return');
+    expect(source).toContain('activeTurn.finalItemId = itemId');
   });
 
   it('keeps structured item and hook lifecycles internal', () => {
