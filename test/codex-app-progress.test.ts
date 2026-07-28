@@ -173,6 +173,16 @@ describe('Codex App progress throttling', () => {
       .toBe('入口\n我正在检查；已经完成。');
   });
 
+  it('keeps URL query punctuation atomic and clickable', () => {
+    const url = 'https://10.37.241.56:8789/?tab=live&root=%2Fdata00%2Fhome&base=origin%2Fbase_alpha&target=origin%2Fmerge_alpha&worktree=0';
+    const markdown = `[base alpha → merge alpha](${url})。`;
+
+    expect(selectCodexAppProgressChunk(markdown, 240)?.content).toBe(markdown);
+    expect(selectCodexAppProgressChunk('链接：https://example.', 240)).toBeNull();
+    expect(selectCodexAppProgressChunk('普通问句完成了吗?下一句。', 240)?.content)
+      .toBe('普通问句完成了吗?');
+  });
+
   it('keeps a closing quote attached to the complete sentence', () => {
     expect(selectCodexAppProgressChunk('他说“已经完成。”下一句。', 6)?.content)
       .toBe('他说“已经完成。”');
@@ -256,6 +266,24 @@ describe('Codex App progress throttling', () => {
 
     expect(forwarder.next('turn-1', '我')).toBeNull();
     expect(forwarder.next('turn-1', '正在检查原因。')?.content).toBe('我正在检查原因。');
+  });
+
+  it('keeps a complete URL in the same turn and separates the next message', () => {
+    const forwarder = new CodexAppProgressForwarder();
+    const url = 'https://10.37.241.56:8789/?tab=live&run=live-784343112e&root=%2Fdata00%2Fhome%2Fchenjinbin.i%2Fworkspace%2Fd%2Fxs_fm_android&base=origin%2Fp%2Fchenjinbin.i%2Ffeature_ad_kmp_base_alpha&target=origin%2Fp%2Fchenjinbin.i%2Ffeature_ad_kmp_merge_alpha&fileList=full&diffMode=two&scope=branch&worktree=0';
+
+    expect(forwarder.next('turn-url', `两分支 URL：\n${url}`)).toBeNull();
+    expect(forwarder.next('turn-url', '链接已交付且验证通过。')?.content)
+      .toBe(`两分支 URL：\n${url}\n链接已交付且验证通过。`);
+  });
+
+  it('buffers a URL that is temporarily streamed only through its query marker', () => {
+    const forwarder = new CodexAppProgressForwarder();
+    const prefix = '链接：https://10.37.241.56:8789/?';
+    const completed = `${prefix}tab=live&scope=branch，链接已完成。`;
+
+    expect(forwarder.next('turn-url-stream', prefix)).toBeNull();
+    expect(forwarder.next('turn-url-stream', completed)?.content).toBe(completed);
   });
 
   it('drops a pending partial sentence when the visible turn is reset', () => {

@@ -36,8 +36,23 @@ function normalizeRawProgressText(raw: string, trim = true): string {
   return trim ? normalized.trim() : normalized;
 }
 
+// 判断指定字符是否属于 HTTP(S) URL；末尾字符也保留为 URL，等待后续流式内容补全。
+function isInsideHttpUrl(text: string, index: number): boolean {
+  const urlPattern = /https?:\/\/[^\s<>"'`]+/giu;
+  for (const match of text.matchAll(urlPattern)) {
+    const start = match.index ?? 0;
+    const end = start + match[0].length;
+    if (index >= start && index < end) return true;
+    if (start > index) break;
+  }
+  return false;
+}
+
 function isNaturalBoundary(text: string, index: number): boolean {
   const ch = text[index];
+  // URL 内的 ASCII 问号、感叹号和点号都可能是尚未流完的路径或查询字符；
+  // 即使暂时位于末尾也不能分句，否则会破坏查询串和飞书可点击链接。
+  if ((ch === '?' || ch === '!' || ch === '.') && isInsideHttpUrl(text, index)) return false;
   // A progress card must end at a complete sentence. Commas, enumeration
   // separators, colons, semicolons and line breaks are clause/formatting
   // boundaries and used to produce bad cases such as "我" or "入口".
@@ -139,6 +154,24 @@ interface ForwardedProgressState {
   lastRaw: string;
   pending: string;
   sequence: number;
+}
+
+// 判断待发送内容是否以具备有效 host、且不悬空在查询分隔符后的 URL 收尾。
+function hasCompleteTrailingHttpUrl(text: string): boolean {
+  const trailing = /https?:\/\/[^\s<>"'`]+$/iu.exec(text.trimEnd())?.[0]
+    ?.replace(/[)\]}>，。；：！？.,;:]+$/u, '');
+  if (!trailing || /[?&#=]$/u.test(trailing)) return false;
+  return /^https?:\/\/[^/?#\s]+/iu.test(trailing);
+}
+
+// 判断同一 turn 的新 payload 是否应换行追加，避免完整 URL 与后续正文粘连。
+function shouldSeparateProgressPayloads(pending: string, incoming: string): boolean {
+  if (!pending || !hasCompleteTrailingHttpUrl(pending)) return false;
+  const normalizedIncoming = incoming.trim();
+  if (!normalizedIncoming || /^[?&#=]/u.test(normalizedIncoming)) return false;
+  // 已完整成句的下一段属于新的 runner 消息，不是 URL 的流式尾部；
+  // 换行追加可让飞书把上一段 URL 作为完整原子自动识别。
+  return endsAtNaturalBoundary(normalizedIncoming, normalizedIncoming.length);
 }
 
 export function selectCodexAppProgressChunk(
@@ -312,7 +345,11 @@ export class CodexAppProgressForwarder {
 
     if (normalized !== state.lastRaw) {
       const cumulative = !!state.lastRaw && normalized.startsWith(state.lastRaw);
-      state.pending += cumulative ? normalized.slice(state.lastRaw.length) : normalized;
+      const delta = cumulative ? normalized.slice(state.lastRaw.length) : normalized;
+      if (!cumulative && shouldSeparateProgressPayloads(state.pending, delta)) {
+        state.pending += '\n';
+      }
+      state.pending += delta;
       state.lastRaw = normalized;
     }
 
