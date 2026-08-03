@@ -378,7 +378,12 @@ describe('codex-app buildArgs', () => {
   const adapter = createCodexAppAdapter('/usr/bin/codex');
 
   it('spawns the node runner and passes the Codex binary', () => {
-    const args = adapter.buildArgs({ sessionId: 'sess-app', resume: false, workingDir: '/repo/root' });
+    const args = adapter.buildArgs({
+      sessionId: 'sess-app',
+      resume: false,
+      workingDir: '/repo/root',
+      sessionTitle: '080301 修改 botmux',
+    });
     expect(adapter.resolvedBin).toBe(process.execPath);
     expect(args[0]).toMatch(/codex-app-runner\.js$/);
     expect(args).toContain('--session-id');
@@ -387,6 +392,8 @@ describe('codex-app buildArgs', () => {
     expect(args).toContain('/usr/bin/codex');
     expect(args).toContain('--cwd');
     expect(args).toContain('/repo/root');
+    expect(args).toContain('--title');
+    expect(args).toContain('080301 修改 botmux');
   });
 
   it('resumes with the persisted Codex App thread id', () => {

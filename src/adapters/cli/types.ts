@@ -71,6 +71,8 @@ export interface CliAdapter {
     /** CLI-native session id used for resume when it differs from botmux's session id. */
     resumeSessionId?: string;
     initialPrompt?: string;
+    /** Botmux 已在本地生成的会话标题；仅支持原生标题接口的适配器使用。 */
+    sessionTitle?: string;
     botName?: string;
     botOpenId?: string;
     /** UI / response language for prompts injected into the CLI (e.g. zh / en). */

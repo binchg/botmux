@@ -4320,6 +4320,7 @@ function spawnCli(cfg: Extract<DaemonToWorker, { type: 'init' }>): void {
     workingDir: cfg.workingDir,
     resumeSessionId: effectiveCliSessionId,
     initialPrompt: deferInitialPrompt ? undefined : (cfg.prompt || undefined),
+    sessionTitle: cfg.sessionTitle,
     botName: cfg.botName,
     botOpenId: cfg.botOpenId,
     locale: cfg.locale,

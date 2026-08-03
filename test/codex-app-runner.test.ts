@@ -65,6 +65,13 @@ describe('codex-app runner steering', () => {
     expect(source).toContain('Codex App resumed the existing conversation');
   });
 
+  it('uses the local Botmux title through app-server without adding a naming prompt', () => {
+    expect(source).toContain("else if (key === '--title'");
+    expect(source).toContain("client.request('thread/name/set'");
+    expect(source).toContain('name: args.title?.trim()');
+    expect(source).not.toContain('请生成会话标题');
+  });
+
   it('checks hook trust before each turn and fails critical hooks visibly', () => {
     expect(source).toContain("client.request('hooks/list'");
     expect(source).toContain('codexAppHookTrustIssue(response, args.cwd)');

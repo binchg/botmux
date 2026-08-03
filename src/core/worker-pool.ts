@@ -58,6 +58,7 @@ import {
 } from '../services/local-file-share.js';
 import { usageLimitStateKey, type CliUsageLimitState } from '../utils/cli-usage-limit.js';
 import { shouldSuppressAfterTerminalSend, terminalSendDecision } from '../services/terminal-send-barrier.js';
+import { allocateCodexAppThreadTitle } from '../services/codex-app-thread-title.js';
 
 type WindowsForkOptions = ForkOptions & { windowsHide?: boolean };
 
@@ -1682,6 +1683,14 @@ export function forkWorker(ds: DaemonSession, prompt: string, resumeOrTurnId: bo
   if (!ds.initConfig?.adoptMode && !ds.adoptedFrom) reclaimParkedCrashDiagnostic(ds);
 
   const agentCfg = sessionAgentConfig(ds, botCfg);
+  if (agentCfg.cliId === 'codex-app' && !resume && !ds.session.codexAppThreadTitle) {
+    try {
+      ds.session.codexAppThreadTitle = allocateCodexAppThreadTitle(ds.session.title, config.session.dataDir);
+      sessionStore.updateSession(ds.session);
+    } catch (error) {
+      logger.warn(`[${t}] Codex App 标题序号分配失败，将使用原始会话标题：${(error as Error)?.message ?? error}`);
+    }
+  }
   ensureCliEnv(agentCfg.cliId, agentCfg.cliPathOverride);
   // Claude Code blocks on the interactive folder-trust dialog the first time
   // it runs in an untrusted workingDir; pre-accept it so the spawn doesn't hang.
@@ -1792,6 +1801,7 @@ export function forkWorker(ds: DaemonSession, prompt: string, resumeOrTurnId: bo
     sandboxNetwork: ds.session.sandboxNetwork !== false,
     backendType: botCfg.backendType ?? config.daemon.backendType,
     prompt,
+    sessionTitle: ds.session.codexAppThreadTitle ?? ds.session.title,
     resume,
     cliSessionId: ds.session.cliSessionId,
     ownerOpenId: ds.ownerOpenId,

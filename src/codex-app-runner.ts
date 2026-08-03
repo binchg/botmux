@@ -18,6 +18,7 @@ interface Args {
   codexBin: string;
   cwd: string;
   threadId?: string;
+  title?: string;
   botName?: string;
   botOpenId?: string;
   locale?: string;
@@ -75,6 +76,7 @@ function parseArgs(argv: string[]): Args {
     else if (key === '--codex-bin' && val !== undefined) { out.codexBin = val; i++; }
     else if (key === '--cwd' && val !== undefined) { out.cwd = val; i++; }
     else if (key === '--thread-id' && val !== undefined) { out.threadId = val; i++; }
+    else if (key === '--title' && val !== undefined) { out.title = val; i++; }
     else if (key === '--bot-name' && val !== undefined) { out.botName = val; i++; }
     else if (key === '--bot-open-id' && val !== undefined) { out.botOpenId = val; i++; }
     else if (key === '--locale' && val !== undefined) { out.locale = val; i++; }
@@ -616,7 +618,7 @@ async function ensureThread(): Promise<string> {
   try {
     await client.request('thread/name/set', {
       threadId: startedThreadId,
-      name: `botmux ${args.sessionId.slice(0, 8)}`,
+      name: args.title?.trim() || `botmux ${args.sessionId.slice(0, 8)}`,
     });
   } catch { /* naming is cosmetic */ }
   return startedThreadId;

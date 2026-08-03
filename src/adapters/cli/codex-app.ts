@@ -55,7 +55,7 @@ export function createCodexAppAdapter(pathOverride?: string): CliAdapter {
       return [(cachedCodexBin ??= resolveCommand(rawCodexBin))];
     },
 
-    buildArgs({ sessionId, resume, resumeSessionId, workingDir, botName, botOpenId, locale }) {
+    buildArgs({ sessionId, resume, resumeSessionId, workingDir, sessionTitle, botName, botOpenId, locale }) {
       const args = [
         runnerPath(),
         '--session-id', sessionId,
@@ -63,6 +63,7 @@ export function createCodexAppAdapter(pathOverride?: string): CliAdapter {
       ];
       if (resume && resumeSessionId) args.push('--thread-id', resumeSessionId);
       pushOpt(args, '--cwd', canonicalCodexAppWorkingDir(workingDir));
+      pushOpt(args, '--title', sessionTitle);
       pushOpt(args, '--bot-name', botName);
       pushOpt(args, '--bot-open-id', botOpenId);
       pushOpt(args, '--locale', locale);
