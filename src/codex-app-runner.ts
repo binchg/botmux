@@ -588,6 +588,15 @@ async function ensureThread(): Promise<string> {
       threadId = resumedThreadId;
       threadReady = true;
       emitMarker('thread', { threadId: resumedThreadId });
+      // 恢复旧 Botmux 会话时同步迁移为本地生成的可读标题，不写入对话上下文。
+      if (args.title?.trim()) {
+        try {
+          await client.request('thread/name/set', {
+            threadId: resumedThreadId,
+            name: args.title.trim(),
+          });
+        } catch { /* 命名失败不阻塞会话恢复 */ }
+      }
       return resumedThreadId;
     } catch (err: any) {
       writeLine(`[codex-app] resume failed, starting a fresh thread: ${err?.message ?? err}`);

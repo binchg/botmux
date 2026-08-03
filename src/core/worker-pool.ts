@@ -1683,7 +1683,8 @@ export function forkWorker(ds: DaemonSession, prompt: string, resumeOrTurnId: bo
   if (!ds.initConfig?.adoptMode && !ds.adoptedFrom) reclaimParkedCrashDiagnostic(ds);
 
   const agentCfg = sessionAgentConfig(ds, botCfg);
-  if (agentCfg.cliId === 'codex-app' && !resume && !ds.session.codexAppThreadTitle) {
+  // 旧版本创建的会话在首次恢复时也补齐标题；持久化后不再重复占用每日序号。
+  if (agentCfg.cliId === 'codex-app' && !ds.session.codexAppThreadTitle) {
     try {
       ds.session.codexAppThreadTitle = allocateCodexAppThreadTitle(ds.session.title, config.session.dataDir);
       sessionStore.updateSession(ds.session);
