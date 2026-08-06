@@ -542,10 +542,21 @@ export function parseAgentTeamResult(content: string): { ok: true; result: Agent
   if (!Array.isArray(value.evidenceRefs) || !value.evidenceRefs.every(item => typeof item === 'string')) {
     return { ok: false, error: 'evidenceRefs_string_array_required' };
   }
-  if (!value.metrics || typeof value.metrics !== 'object' || Array.isArray(value.metrics)
-    || !Object.values(value.metrics).every(item => typeof item === 'number' && Number.isFinite(item))) {
-    return { ok: false, error: 'metrics_number_map_required' };
-  }
+  const metricEntries = Array.isArray(value.metrics)
+    ? value.metrics.every(item => item && typeof item === 'object'
+      && typeof (item as Record<string, unknown>).name === 'string'
+      && typeof (item as Record<string, unknown>).value === 'number'
+      && Number.isFinite((item as Record<string, unknown>).value))
+      ? value.metrics as Array<{ name: string; value: number }>
+      : undefined
+    : undefined;
+  const metricMap = value.metrics && typeof value.metrics === 'object' && !Array.isArray(value.metrics)
+    && Object.values(value.metrics).every(item => typeof item === 'number' && Number.isFinite(item))
+    ? value.metrics as Record<string, number>
+    : metricEntries
+      ? Object.fromEntries(metricEntries.map(item => [item.name, item.value]))
+      : undefined;
+  if (!metricMap) return { ok: false, error: 'metrics_number_map_or_entries_required' };
   return {
     ok: true,
     result: {
@@ -554,7 +565,7 @@ export function parseAgentTeamResult(content: string): { ok: true; result: Agent
       status: value.status as AgentTeamResultStatus,
       summary: value.summary.trim().slice(0, 12_000),
       evidenceRefs: (value.evidenceRefs as string[]).slice(0, 100),
-      metrics: value.metrics as Record<string, number>,
+      metrics: metricMap,
     },
   };
 }

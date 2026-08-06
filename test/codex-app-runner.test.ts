@@ -89,8 +89,7 @@ describe('codex-app runner steering', () => {
   });
 
   it('enables a narrow output schema only for Agent Team turns', () => {
-    expect(source).toContain("content.includes('<botmux_agent_team>')");
-    expect(source).toContain("required: ['attemptId', 'revisionId', 'status', 'summary', 'evidenceRefs', 'metrics']");
+    expect(source).toContain("import { agentTeamOutputSchema }");
     expect(source).toContain('...(outputSchema ? { outputSchema } : {})');
   });
 

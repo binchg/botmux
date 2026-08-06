@@ -152,6 +152,32 @@ describe('agent team store', () => {
     expect(invalid?.report.status).toBe('invalid');
   });
 
+  it('normalizes strict named metric entries while retaining legacy map compatibility', () => {
+    const strict = parseAgentTeamResult(JSON.stringify({
+      attemptId: 'attempt_strict',
+      revisionId: 'rev_strict',
+      status: 'succeeded',
+      summary: 'strict schema result',
+      evidenceRefs: ['test:strict'],
+      metrics: [{ name: 'tests', value: 1 }, { name: 'duplicates', value: 0 }],
+    }));
+    expect(strict).toEqual({
+      ok: true,
+      result: {
+        attemptId: 'attempt_strict',
+        revisionId: 'rev_strict',
+        status: 'succeeded',
+        summary: 'strict schema result',
+        evidenceRefs: ['test:strict'],
+        metrics: { tests: 1, duplicates: 0 },
+      },
+    });
+    expect(parseAgentTeamResult(JSON.stringify({
+      attemptId: 'attempt_bad', revisionId: 'rev_bad', status: 'succeeded', summary: 'bad', evidenceRefs: [],
+      metrics: [{ name: 'tests', value: 'one' }],
+    }))).toEqual({ ok: false, error: 'metrics_number_map_or_entries_required' });
+  });
+
   it('uses stable reportId, persists outbox across reads, and suppresses duplicate leader effect', () => {
     const dataDir = temporaryDataDir();
     const team = create(dataDir);

@@ -35,7 +35,7 @@ export function buildAgentTeamWorkerPrompt(input: {
     '不要启动 Codex sub-agent，不使用已下线的 Botmux Workflow。',
     '新证据、真实阻塞与最终结果直接作为正常 assistant message 发在本话题；Botmux 会把最终回报同步给 leader。',
     '用户插入纠偏时立即按最新要求调整；新要求使分支、SHA、MR 或构建证据失效时明确作废旧证据。',
-    '最终 assistant message 必须是窄结构化 JSON，字段仅需 attemptId、revisionId、status、summary、evidenceRefs、metrics；status 只能是 succeeded/failed/blocked/interrupted。',
+    '最终 assistant message 必须是窄结构化 JSON，字段仅需 attemptId、revisionId、status、summary、evidenceRefs、metrics；status 只能是 succeeded/failed/blocked/interrupted，metrics 使用 [{"name":"指标名","value":数值}]。',
     '</botmux_agent_team>',
     '',
     '<team_objective>',

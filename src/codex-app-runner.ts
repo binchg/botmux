@@ -4,6 +4,7 @@ import { Buffer } from 'node:buffer';
 import { CodexAppProgressThrottler } from './services/codex-app-progress.js';
 import { normalizeCodexAppTimestampMs } from './services/codex-app-activity.js';
 import { codexAppHookFailure, codexAppHookTrustIssue } from './services/codex-app-hook-health.js';
+import { agentTeamOutputSchema } from './services/agent-team-result-schema.js';
 import {
   CODEX_APP_RATE_LIMIT_MAX_CONTINUES,
   codexAppAutoContinueDelayMs,
@@ -308,24 +309,6 @@ function makeTurn(): ActiveTurn {
 
 function userTextInput(content: string): JsonObject[] {
   return [{ type: 'text', text: content, text_elements: [] }];
-}
-
-/** 仅 Agent Team turn 使用窄结果 schema；普通 Codex App 会话保持原行为。 */
-function agentTeamOutputSchema(content: string): JsonObject | undefined {
-  if (!content.includes('<botmux_agent_team>') && !content.includes('<botmux_agent_team_guidance>')) return undefined;
-  return {
-    type: 'object',
-    additionalProperties: false,
-    required: ['attemptId', 'revisionId', 'status', 'summary', 'evidenceRefs', 'metrics'],
-    properties: {
-      attemptId: { type: 'string', minLength: 1 },
-      revisionId: { type: 'string', minLength: 1 },
-      status: { type: 'string', enum: ['succeeded', 'failed', 'blocked', 'interrupted'] },
-      summary: { type: 'string', minLength: 1 },
-      evidenceRefs: { type: 'array', items: { type: 'string' } },
-      metrics: { type: 'object', additionalProperties: { type: 'number' } },
-    },
-  };
 }
 
 function maybeEmitProgress(turn: ActiveTurn, force = false): void {
