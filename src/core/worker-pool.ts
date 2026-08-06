@@ -76,6 +76,8 @@ export interface WorkerPoolCallbacks {
   getActiveCount: () => number;
   /** Close a stale session (message withdrawn, etc.) */
   closeSession: (ds: DaemonSession) => void;
+  /** 独立 worker 的终态回报钩子；用于通知同 Bot 的 leader，会话投递本身不受影响。 */
+  onSessionFinalOutput?: (ds: DaemonSession, content: string) => void | Promise<void>;
 }
 
 let callbacks: WorkerPoolCallbacks | undefined;
@@ -2567,6 +2569,10 @@ function setupWorkerHandlers(ds: DaemonSession, worker: ChildProcess): void {
             sessionId: ds.session.sessionId,
             patch: sessionLivePatch(ds),
           },
+        });
+        // 先持久化/通知监督会话，再走原话题投递；钩子失败不得吞掉 worker 答案。
+        Promise.resolve(cb.onSessionFinalOutput?.(ds, msg.content)).catch(err => {
+          logger.warn(`[${t}] agent-team final callback failed: ${err instanceof Error ? err.message : String(err)}`);
         });
         deliverFinalOutput(ds, msg, t, 0);
         break;

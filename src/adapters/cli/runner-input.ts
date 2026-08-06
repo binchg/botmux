@@ -44,6 +44,11 @@ export function encodeRunnerInput(content: string): string {
   return Buffer.from(JSON.stringify({ type: 'message', content }), 'utf8').toString('base64');
 }
 
+/** 编码不携带用户正文的 runner 控制指令。 */
+export function encodeRunnerControl(type: 'interrupt'): string {
+  return Buffer.from(JSON.stringify({ type }), 'utf8').toString('base64');
+}
+
 /** Split an ASCII string into <=maxBytes pieces. Safe because the caller only
  *  ever passes `marker + base64`, which is single-byte throughout. */
 export function chunkAscii(line: string, maxBytes: number): string[] {
@@ -80,7 +85,24 @@ export async function writeRunnerInput(
   markerPrefix: string,
   content: string,
 ): Promise<{ submitted: boolean }> {
-  const line = `${markerPrefix}${encodeRunnerInput(content)}`;
+  return writeEncodedRunnerLine(pty, markerPrefix, encodeRunnerInput(content));
+}
+
+/** 向 runner 写入结构化控制指令，复用与大消息相同的分块和缓冲区卫生保证。 */
+export async function writeRunnerControl(
+  pty: PtyHandle,
+  markerPrefix: string,
+  type: 'interrupt',
+): Promise<{ submitted: boolean }> {
+  return writeEncodedRunnerLine(pty, markerPrefix, encodeRunnerControl(type));
+}
+
+async function writeEncodedRunnerLine(
+  pty: PtyHandle,
+  markerPrefix: string,
+  encoded: string,
+): Promise<{ submitted: boolean }> {
+  const line = `${markerPrefix}${encoded}`;
 
   // Non-tmux fallback (raw PTY): a single write is fine — there's no send-keys
   // process to time out, and the PTY write isn't bounded the same way.

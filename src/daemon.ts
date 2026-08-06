@@ -123,6 +123,8 @@ import { replay as replayWorkflow } from './workflows/events/replay.js';
 import { isBotMentioned, probeBotOpenId, startLarkEventDispatcher, writeBotInfoFile, canOperate, evaluateTalk, grantCommandRestriction, isKnownPeerBot, checkRequiredScopes, type RoutingContext, type TalkEvaluation, type DocCommentContext } from './im/lark/event-dispatcher.js';
 import { listAllDocSubscriptions, listDocSubscriptionsForSession, removeDocSubscription } from './services/doc-subs-store.js';
 import { subscribeDocFile, unsubscribeDocFile } from './im/lark/doc-comment.js';
+import { recordAgentTeamWorkerReport } from './services/agent-team-store.js';
+import { buildAgentTeamLeaderReportPrompt } from './core/agent-team-prompts.js';
 import { learnFromMentions, resolveSender, flushIdentityCacheSync } from './im/lark/identity-cache.js';
 import { normalizeBrand } from './im/lark/lark-hosts.js';
 import { renderBufferedSenderBlock } from './core/session-manager.js';
@@ -3684,6 +3686,28 @@ export async function startDaemon(botIndex?: number): Promise<void> {
       // matching the dashboard-driven close.
       void closeSessionHelper(ds.session.sessionId).catch(() => { /* idempotent */ });
       logger.info(`[${ds.session.sessionId.substring(0, 8)}] Session auto-closed (message withdrawn)`);
+    },
+    onSessionFinalOutput(ds: DaemonSession, content: string) {
+      const report = recordAgentTeamWorkerReport(config.session.dataDir, ds.session.sessionId, content);
+      if (!report) return;
+      const leader = [...activeSessions.values()].find(item => item.session.sessionId === report.team.leaderSessionId);
+      if (!leader?.worker || leader.worker.killed) {
+        logger.info(`[agent-team] worker ${report.worker.workerId} reported; leader ${report.team.leaderSessionId.slice(0, 8)} is offline, report persisted`);
+        return;
+      }
+      const prompt = buildAgentTeamLeaderReportPrompt(report.team, report.worker);
+      const title = `Worker 回报：${report.worker.workerId}`;
+      beginNewTurn(leader, title);
+      const wrapped = buildFollowUpContent(prompt, leader.session.sessionId, {
+        cliId: leader.session.cliId,
+        locale: localeForBot(leader.larkAppId),
+        larkAppId: leader.larkAppId,
+        chatId: leader.chatId,
+        whiteboardId: leader.session.whiteboardId,
+      });
+      rememberLastCliInput(leader, prompt, wrapped);
+      leader.worker.send({ type: 'message', content: wrapped });
+      logger.info(`[agent-team] worker ${report.worker.workerId} report injected into leader ${report.team.leaderSessionId.slice(0, 8)}`);
     },
   });
   // Expose the activeSessions Map (owned by daemon) to worker-pool readers,

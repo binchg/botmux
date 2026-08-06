@@ -34,3 +34,9 @@
 | **owner 专属** | `/grant` `/revoke` 授权他人 | owner |
 
 这套分层让你能放心把机器人拉进值班群：所有人能问，但只有 owner 能改会话状态，外部成员误点也不会把会话搞乱。
+
+## 同 Bot Agent Team
+
+一个现有会话可以成为 supervisor，并用 `botmux team` 在同一群里创建多个独立话题会话。它们共享 Bot 身份，但不共享 CLI 上下文：每个 worker 都有自己的 session、Codex App thread、工作目录和可见话题。
+
+Team 关系持久化到 daemon 数据目录。leader 可以查看摘要、追问、打断当前 turn 和回收终态 worker；worker 的最终回复会自动作为精简事件送回 leader。它不是进程内 sub-agent，也不依赖 Workflow。详见 [同 Bot Agent Team](/agent-team)。

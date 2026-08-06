@@ -3,6 +3,8 @@ import {
   writeRunnerInput,
   chunkAscii,
   encodeRunnerInput,
+  encodeRunnerControl,
+  writeRunnerControl,
   RUNNER_INPUT_CHUNK_BYTES,
 } from '../src/adapters/cli/runner-input.js';
 import type { PtyHandle } from '../src/adapters/cli/types.js';
@@ -187,6 +189,18 @@ describe('writeRunnerInput — raw PTY fallback', () => {
     const { pty } = fakeRawPty({ throwOnWrite: true });
     const res = await writeRunnerInput(pty, MARKER, 'x');
     expect(res).toEqual({ submitted: false });
+  });
+});
+
+describe('writeRunnerControl', () => {
+  it('encodes and submits a native interrupt control line', async () => {
+    const { pty, textChunks } = fakeTmuxPty();
+    const result = await writeRunnerControl(pty, MARKER, 'interrupt');
+
+    expect(result).toEqual({ submitted: true });
+    expect(textChunks.join('')).toBe(MARKER + encodeRunnerControl('interrupt'));
+    const decoded = JSON.parse(Buffer.from(textChunks.join('').slice(MARKER.length), 'base64').toString('utf8'));
+    expect(decoded).toEqual({ type: 'interrupt' });
   });
 });
 

@@ -6024,6 +6024,21 @@ process.on('message', async (raw: unknown) => {
       break;
     }
 
+    case 'interrupt': {
+      if (!backend || !cliAdapter) break;
+      if (cliAdapter.interrupt) {
+        const result = await cliAdapter.interrupt(backend as unknown as PtyHandle);
+        log(`Native turn interrupt requested (submitted=${result?.submitted !== false})`);
+      } else if ('sendSpecialKeys' in backend) {
+        (backend as any).sendSpecialKeys('C-c');
+        log('Turn interrupt requested via Ctrl-C fallback');
+      } else {
+        backend.write('\x03');
+        log('Turn interrupt requested via PTY Ctrl-C fallback');
+      }
+      break;
+    }
+
     case 'park_diagnostic': {
       // The daemon gave up auto-restarting (crash loop) and wants the last
       // terminal output preserved. Park the diagnostic shell now — deferred from

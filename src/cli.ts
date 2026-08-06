@@ -65,6 +65,7 @@ import { logger } from './utils/logger.js';
 import { expandHomePath, invalidWorkingDirs } from './utils/working-dir.js';
 import { firstPositional } from './cli/arg-utils.js';
 import { dispatchPrimaryMessage, findStdinAliasAttachment, sendFileAttachments } from './cli/send-dispatch.js';
+import { runAgentTeamCommand } from './cli/agent-team-command.js';
 import { buildPm2SpawnCommand } from './cli/pm2-command.js';
 import { callDashboard, type DashboardEndpoint, type DashboardResult } from './cli/dashboard-endpoint.js';
 import { loadDashboardSecret } from './dashboard/auth.js';
@@ -3342,6 +3343,11 @@ botmux v${getVersion()} — IM ↔ AI 编程 CLI 桥接
                                        thread 会话里可用 --scope ambient 读取 thread 外的群聊上下文
   quoted <message_id>                  拉取被引用的单条消息 (JSON)，message_id 取自 daemon 注入的引用提示行
 
+同 Bot 独立会话团队（在 leader CLI 会话内使用）:
+  team create|list|status              创建、查看持久 Agent Team
+  team spawn|send|interrupt|reap       派生独立话题会话、纠偏、中断与回收
+                                       详见 botmux team help
+
 新建飞书群:
   create-group --bot <name> [--bot ...] [--name "群名"]
                                        用指定 bot 起新群；详见 \`botmux create-group --help\`
@@ -6337,6 +6343,20 @@ switch (command) {
   case 'send':     await cmdSend(process.argv.slice(3)); break;
   case 'dispatch': await cmdDispatch(process.argv.slice(3)); break;
   case 'report': await cmdReport(process.argv.slice(3)); break;
+  case 'team': {
+    const teamArgs = process.argv.slice(3);
+    const sessionId = argValue(teamArgs, '--session-id') ?? findAncestorSessionId() ?? undefined;
+    const session = sessionId ? loadSessions().get(sessionId) : undefined;
+    const daemon = session?.larkAppId ? findDaemon(session.larkAppId) : null;
+    const code = await runAgentTeamCommand(
+      teamArgs,
+      sessionId && session?.larkAppId && daemon
+        ? { sessionId, larkAppId: session.larkAppId, ipcPort: daemon.ipcPort }
+        : undefined,
+    );
+    process.exitCode = code;
+    break;
+  }
   case 'create-group': await cmdCreateGroup(process.argv.slice(3)); break;
   case 'bots':     await cmdBots(process.argv[3] ?? 'list', process.argv.slice(4)); break;
   case 'preset':   await cmdPreset(process.argv[3] ?? '', process.argv.slice(4)); break;

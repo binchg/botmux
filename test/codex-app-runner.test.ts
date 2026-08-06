@@ -81,6 +81,12 @@ describe('codex-app runner steering', () => {
     expect(source).toContain('activeTurn.criticalHookFailure');
   });
 
+  it('accepts the structured same-bot team interrupt control line', () => {
+    expect(source).toContain("decoded?.type === 'interrupt'");
+    expect(source).toContain('void interruptActiveTurn()');
+    expect(source).toContain("client.request('turn/interrupt', { threadId, turnId: turn.turnId })");
+  });
+
   it('automatically continues bounded HTTP 429 retry-limit failures', () => {
     expect(source).toContain('isCodexAppRetryLimit429(errorMessage)');
     expect(source).toContain('CODEX_APP_RATE_LIMIT_MAX_CONTINUES');

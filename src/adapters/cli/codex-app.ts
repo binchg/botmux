@@ -3,7 +3,7 @@ import { existsSync, realpathSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { resolveCommand } from './registry.js';
 import type { CliAdapter, PtyHandle } from './types.js';
-import { writeRunnerInput } from './runner-input.js';
+import { writeRunnerControl, writeRunnerInput } from './runner-input.js';
 
 function runnerPath(): string {
   const here = dirname(fileURLToPath(import.meta.url));
@@ -82,6 +82,10 @@ export function createCodexAppAdapter(pathOverride?: string): CliAdapter {
       // (potentially ~20KB) control line overruns the pane pty input buffer and
       // gets dropped. See runner-input.ts.
       return writeRunnerInput(pty, '::botmux-codex-app:', content);
+    },
+
+    async interrupt(pty: PtyHandle) {
+      return writeRunnerControl(pty, '::botmux-codex-app:', 'interrupt');
     },
 
     completionPattern: undefined,

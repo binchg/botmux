@@ -398,6 +398,21 @@ function handleUserMessage(content: string): void {
   flushSteers(activeTurn);
 }
 
+/** 通过 app-server 真正中断当前 turn；线程本身保留，可继续发新指令。 */
+async function interruptActiveTurn(): Promise<void> {
+  const turn = activeTurn;
+  if (!threadId || !turn?.turnId) {
+    writeLine('[codex-app] no active turn to interrupt');
+    return;
+  }
+  try {
+    await client.request('turn/interrupt', { threadId, turnId: turn.turnId });
+    writeLine(`[codex-app] interrupted turn ${turn.turnId}`);
+  } catch (err: any) {
+    writeLine(`[codex-app] interrupt failed: ${err?.message ?? err}`);
+  }
+}
+
 function handleServerRequest(msg: JsonObject): boolean {
   const method = msg.method;
   if (method === 'item/commandExecution/requestApproval') {
@@ -771,6 +786,8 @@ function enqueueLine(line: string): void {
       const decoded = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'));
       if (decoded?.type === 'message' && typeof decoded.content === 'string') {
         handleUserMessage(decoded.content);
+      } else if (decoded?.type === 'interrupt') {
+        void interruptActiveTurn();
       }
     } catch (err: any) {
       writeLine(`[codex-app] bad botmux input: ${err?.message ?? err}`);

@@ -9,7 +9,7 @@ import { expandHome } from './working-dir.js';
 import { config } from '../config.js';
 import * as sessionStore from '../services/session-store.js';
 import * as messageQueue from '../services/message-queue.js';
-import { downloadMessageResource, listChatBotMembers, UserTokenMissingError } from '../im/lark/client.js';
+import { downloadMessageResource, listChatBotMembers, sendMessage, UserTokenMissingError } from '../im/lark/client.js';
 import { logger } from '../utils/logger.js';
 import { forkWorker, forkAdoptWorker, killStalePids, getCurrentCliVersion, restoreUsageLimitRuntimeState, setActiveSessionSafe, isRelayableRealSession, closeSession, getActiveSessionsRegistry } from './worker-pool.js';
 import { createCliAdapterSync } from '../adapters/cli/registry.js';
@@ -44,6 +44,7 @@ import { t, localeForBot, type Locale } from '../i18n/index.js';
 import { parseWorkingDirList } from '../utils/working-dir.js';
 import { resolveRole } from './role-resolver.js';
 import { ensureDefaultWhiteboard, getWhiteboard, whiteboardEnabled } from '../services/whiteboard-store.js';
+import { buildAgentTeamWorkerPrompt } from './agent-team-prompts.js';
 
 function sessionCreatedAtMs(session: { createdAt?: string }): number {
   return session.createdAt ? (Date.parse(session.createdAt) || Date.now()) : Date.now();
@@ -1606,6 +1607,104 @@ export async function spawnDashboardSession(
   await forkOrShowRepoCard(ds, userContent);
   logger.info(`[createSession] spawned session ${session.sessionId.substring(0, 8)} (bot=${larkAppId}, chat=${chatId}, role=${role}, pendingRepo=${!!ds.pendingRepo})`);
   return { ok: true, sessionId: session.sessionId };
+}
+
+export interface SpawnAgentTeamWorkerArgs {
+  larkAppId: string;
+  chatId: string;
+  chatType: 'group' | 'p2p';
+  teamId: string;
+  teamName: string;
+  objective: string;
+  leaderSessionId: string;
+  workerId: string;
+  title: string;
+  assignment: string;
+  dependsOn?: string[];
+  workingDir?: string;
+  ownerOpenId?: string;
+  ownerUnionId?: string;
+}
+
+/**
+ * 在同一个飞书群中为同一 Bot 直接创建独立 thread session。
+ *
+ * Bot 自己发出的 @ 消息不会再次触发自己的 Lark 事件，因此不能复用跨 Bot 的
+ * `dispatch` 自唤醒链路；这里先发可见的话题种子，再直接登记 session 并 fork。
+ */
+export async function spawnAgentTeamWorker(
+  activeSessions: Map<string, DaemonSession>,
+  args: SpawnAgentTeamWorkerArgs,
+): Promise<{ ok: true; sessionId: string; rootMessageId: string } | { ok: false; error: string }> {
+  let bot: ReturnType<typeof getBot>;
+  try { bot = getBot(args.larkAppId); } catch { return { ok: false, error: 'bot_not_found' }; }
+  const workingDir = args.workingDir ? expandHome(args.workingDir) : undefined;
+  if (workingDir && (!existsSync(workingDir) || !statSync(workingDir).isDirectory())) {
+    return { ok: false, error: 'working_dir_invalid' };
+  }
+
+  const visibleTask = [
+    `【Agent Team · ${args.workerId}】${args.title}`,
+    `团队：${args.teamName}`,
+    `任务：${args.assignment}`,
+  ].join('\n');
+  let rootMessageId: string;
+  try {
+    rootMessageId = await sendMessage(args.larkAppId, args.chatId, visibleTask, 'text');
+  } catch (err: any) {
+    return { ok: false, error: `topic_create_failed:${err?.message ?? err}` };
+  }
+
+  const anchor = rootMessageId;
+  if (activeSessions.has(sessionKey(anchor, args.larkAppId))) return { ok: false, error: 'session_exists' };
+  const session = sessionStore.createSession(args.chatId, rootMessageId, args.title, args.chatType);
+  const now = Date.now();
+  session.larkAppId = args.larkAppId;
+  session.scope = 'thread';
+  session.ownerOpenId = args.ownerOpenId ?? getOwnerOpenId(args.larkAppId);
+  session.creatorOpenId = session.ownerOpenId;
+  session.ownerUnionId = args.ownerUnionId;
+  session.lastMessageAt = new Date(now).toISOString();
+  session.workingDir = workingDir;
+  session.agentTeam = {
+    teamId: args.teamId,
+    role: 'worker',
+    workerId: args.workerId,
+    leaderSessionId: args.leaderSessionId,
+  };
+  sessionStore.updateSession(session);
+  messageQueue.ensureQueue(anchor);
+
+  const ds: DaemonSession = {
+    session,
+    worker: null,
+    workerPort: null,
+    workerToken: null,
+    larkAppId: args.larkAppId,
+    chatId: args.chatId,
+    chatType: args.chatType,
+    scope: 'thread',
+    spawnedAt: now,
+    cliVersion: getCurrentCliVersion(),
+    lastMessageAt: now,
+    hasHistory: false,
+    workingDir,
+    ownerOpenId: session.ownerOpenId,
+    currentTurnTitle: args.title,
+  };
+  activeSessions.set(sessionKey(anchor, args.larkAppId), ds);
+
+  const prompt = buildAgentTeamWorkerPrompt({
+    teamId: args.teamId,
+    teamName: args.teamName,
+    objective: args.objective,
+    workerId: args.workerId,
+    assignment: args.assignment,
+    dependsOn: args.dependsOn,
+  });
+  await forkOrShowRepoCard(ds, prompt);
+  logger.info(`[agent-team] spawned worker ${args.workerId} session=${session.sessionId.slice(0, 8)} team=${args.teamId}`);
+  return { ok: true, sessionId: session.sessionId, rootMessageId };
 }
 
 /** 激活一条 parked（待办池）会话：把暂存的 queuedPrompt 当首轮发给 CLI，清掉 queued

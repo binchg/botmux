@@ -35,7 +35,7 @@ import { listActiveSessions, findActiveBySessionId, closeSession, getActiveSessi
 import { listOnlineDaemons } from '../utils/daemon-discovery.js';
 import { getChatMode, replyMessage, sendMessage, resolveUnionIdFromOpenId, listThreadMessages, listChatMessages, getUserProfile } from '../im/lark/client.js';
 import { parseApiMessage, cardContentHasUpgradeFallback, resolveMergedCardContent } from '../im/lark/message-parser.js';
-import { resumeSession, spawnDashboardSession, activateQueuedSession, closeCliMismatchedSessionsForBot } from './session-manager.js';
+import { buildFollowUpContent, rememberLastCliInput, resumeSession, spawnAgentTeamWorker, spawnDashboardSession, activateQueuedSession, closeCliMismatchedSessionsForBot } from './session-manager.js';
 import { parseSpawnRequest } from './session-create.js';
 import { getCliDisplayName } from '../im/lark/card-builder.js';
 import { locateLimiter } from './dashboard-locate.js';
@@ -59,6 +59,14 @@ import type { TriggerInput, TriggerResult } from '../workflows/trigger-run.js';
 import { validateTriggerRequest, type TriggerResponse } from '../services/trigger-types.js';
 import { resolveCliSelection, selectionKeyForBot } from '../setup/cli-selection.js';
 import { cancelTerminalSend, commitTerminalSend, prepareTerminalSend, resolveTerminalTurnId } from '../services/terminal-send-barrier.js';
+import {
+  addAgentTeamWorker,
+  closeAgentTeam,
+  createAgentTeam,
+  getAgentTeam,
+  listAgentTeams,
+  updateAgentTeamWorker,
+} from '../services/agent-team-store.js';
 
 // Workflow runner is wired by the daemon (it owns the heavy triggerWorkflowRun
 // deps). Until set, workflow-targeted triggers report not-implemented.
@@ -210,6 +218,175 @@ ipcRoute('GET', '/api/sessions/:sessionId', (_req, res, params) => {
   const closed = sessionStore.listSessions().find(s => s.sessionId === params.sessionId);
   if (closed) return jsonRes(res, 200, { session: composeRowFromClosed(closed) });
   jsonRes(res, 404, { error: 'not_found' });
+});
+
+function agentTeamActor(teamId: string, actorSessionId: unknown): { ok: true; team: NonNullable<ReturnType<typeof getAgentTeam>> } | { ok: false; error: string } {
+  const team = getAgentTeam(config.session.dataDir, teamId);
+  if (!team) return { ok: false, error: 'team_not_found' };
+  if (typeof actorSessionId !== 'string' || team.leaderSessionId !== actorSessionId) {
+    return { ok: false, error: 'leader_session_required' };
+  }
+  return { ok: true, team };
+}
+
+/** 创建 team 时把当前 session 固定为唯一 leader；不创建任何 worker。 */
+ipcRoute('POST', '/api/agent-teams', async (req, res) => {
+  let body: Record<string, unknown>;
+  try { body = await readJsonBody(req) as Record<string, unknown>; } catch { return jsonRes(res, 400, { ok: false, error: 'invalid_json' }); }
+  const leaderSessionId = typeof body.leaderSessionId === 'string' ? body.leaderSessionId : '';
+  const leader = findActiveBySessionId(leaderSessionId);
+  const name = typeof body.name === 'string' ? body.name.trim().slice(0, 120) : '';
+  const objective = typeof body.objective === 'string' ? body.objective.trim().slice(0, 20_000) : '';
+  if (!leader || !name || !objective) return jsonRes(res, 400, { ok: false, error: 'leader_name_objective_required' });
+  if (leader.larkAppId !== cachedLarkAppId) return jsonRes(res, 409, { ok: false, error: 'wrong_daemon' });
+  const team = createAgentTeam(config.session.dataDir, {
+    name,
+    objective,
+    larkAppId: leader.larkAppId,
+    chatId: leader.chatId,
+    leaderSessionId,
+  });
+  leader.session.agentTeam = { teamId: team.teamId, role: 'leader', leaderSessionId };
+  sessionStore.updateSession(leader.session);
+  jsonRes(res, 200, { ok: true, team });
+});
+
+ipcRoute('GET', '/api/agent-teams', (req, res) => {
+  const url = new URL(req.url ?? '/', 'http://localhost');
+  const leaderSessionId = url.searchParams.get('leaderSessionId') ?? undefined;
+  jsonRes(res, 200, { ok: true, teams: listAgentTeams(config.session.dataDir, { leaderSessionId, larkAppId: cachedLarkAppId }) });
+});
+
+/** 状态读回合并持久关系与当前 worker 活动，leader 不必进入子话题看日志。 */
+ipcRoute('GET', '/api/agent-teams/:teamId', (_req, res, params) => {
+  const team = getAgentTeam(config.session.dataDir, params.teamId);
+  if (!team || team.larkAppId !== cachedLarkAppId) return jsonRes(res, 404, { ok: false, error: 'team_not_found' });
+  const workers = team.workers.map(worker => {
+    const ds = findActiveBySessionId(worker.sessionId);
+    return {
+      ...worker,
+      runtime: {
+        sessionStatus: ds?.session.status ?? sessionStore.getSession(worker.sessionId)?.status ?? 'missing',
+        workerAlive: !!ds?.worker && !ds.worker.killed,
+        screenStatus: ds?.lastScreenStatus ?? 'unknown',
+        latestEvents: (ds?.liveEvents ?? []).slice(-3),
+      },
+    };
+  });
+  const counts = workers.reduce<Record<string, number>>((acc, worker) => {
+    acc[worker.status] = (acc[worker.status] ?? 0) + 1;
+    return acc;
+  }, {});
+  jsonRes(res, 200, { ok: true, team: { ...team, workers }, counts });
+});
+
+/** 扩容：同一 Bot 在 leader 所在群新开独立话题并直接拉起 Codex App session。 */
+ipcRoute('POST', '/api/agent-teams/:teamId/workers', async (req, res, params) => {
+  let body: Record<string, unknown>;
+  try { body = await readJsonBody(req) as Record<string, unknown>; } catch { return jsonRes(res, 400, { ok: false, error: 'invalid_json' }); }
+  const actor = agentTeamActor(params.teamId, body.actorSessionId);
+  if (!actor.ok) return jsonRes(res, actor.error === 'team_not_found' ? 404 : 403, { ok: false, error: actor.error });
+  const workerId = typeof body.workerId === 'string' ? body.workerId.trim().slice(0, 80) : '';
+  const title = typeof body.title === 'string' ? body.title.trim().slice(0, 160) : '';
+  const assignment = typeof body.assignment === 'string' ? body.assignment.trim().slice(0, 30_000) : '';
+  const workingDir = typeof body.workingDir === 'string' ? body.workingDir.trim() : undefined;
+  const dependsOn = Array.isArray(body.dependsOn) ? body.dependsOn.filter((item): item is string => typeof item === 'string').slice(0, 20) : [];
+  if (!workerId || !title || !assignment) return jsonRes(res, 400, { ok: false, error: 'worker_id_title_assignment_required' });
+  if (actor.team.workers.some(worker => worker.workerId === workerId)) return jsonRes(res, 409, { ok: false, error: 'worker_exists' });
+  const leader = findActiveBySessionId(actor.team.leaderSessionId);
+  if (!leader) return jsonRes(res, 409, { ok: false, error: 'leader_not_active' });
+  const activeSessions = getActiveSessionsRegistry();
+  if (!activeSessions) return jsonRes(res, 503, { ok: false, error: 'registry_unavailable' });
+  const spawned = await spawnAgentTeamWorker(activeSessions, {
+    larkAppId: actor.team.larkAppId,
+    chatId: actor.team.chatId,
+    chatType: leader.chatType,
+    teamId: actor.team.teamId,
+    teamName: actor.team.name,
+    objective: actor.team.objective,
+    leaderSessionId: actor.team.leaderSessionId,
+    workerId,
+    title,
+    assignment,
+    dependsOn,
+    workingDir: workingDir || leader.workingDir,
+    ownerOpenId: leader.session.ownerOpenId,
+    ownerUnionId: leader.session.ownerUnionId,
+  });
+  if (!spawned.ok) return jsonRes(res, 500, spawned);
+  const worker = addAgentTeamWorker(config.session.dataDir, actor.team.teamId, {
+    workerId,
+    sessionId: spawned.sessionId,
+    rootMessageId: spawned.rootMessageId,
+    title,
+    assignment,
+    workingDir: workingDir || leader.workingDir,
+    dependsOn,
+  });
+  if (!worker) {
+    await closeSession(spawned.sessionId);
+    return jsonRes(res, 409, { ok: false, error: 'worker_register_conflict' });
+  }
+  jsonRes(res, 200, { ok: true, teamId: actor.team.teamId, worker });
+});
+
+/** leader 的纠偏/追问既显示在 worker 话题，也直接 steer 到对应 session。 */
+ipcRoute('POST', '/api/agent-teams/:teamId/workers/:workerId/message', async (req, res, params) => {
+  let body: Record<string, unknown>;
+  try { body = await readJsonBody(req) as Record<string, unknown>; } catch { return jsonRes(res, 400, { ok: false, error: 'invalid_json' }); }
+  const actor = agentTeamActor(params.teamId, body.actorSessionId);
+  if (!actor.ok) return jsonRes(res, 403, { ok: false, error: actor.error });
+  const worker = actor.team.workers.find(item => item.workerId === params.workerId);
+  const content = typeof body.content === 'string' ? body.content.trim().slice(0, 30_000) : '';
+  const ds = worker ? findActiveBySessionId(worker.sessionId) : undefined;
+  if (!worker || !ds) return jsonRes(res, 404, { ok: false, error: 'worker_not_active' });
+  if (!content || !ds.worker || ds.worker.killed) return jsonRes(res, 409, { ok: false, error: 'worker_unavailable' });
+  await replyMessage(actor.team.larkAppId, worker.rootMessageId, `【Leader 指令】\n${content}`, 'text', true).catch(() => undefined);
+  const wrapped = buildFollowUpContent(content, ds.session.sessionId, {
+    cliId: ds.session.cliId,
+    locale: localeForBot(ds.larkAppId),
+    larkAppId: ds.larkAppId,
+    chatId: ds.chatId,
+    whiteboardId: ds.session.whiteboardId,
+  });
+  rememberLastCliInput(ds, content, wrapped);
+  ds.worker.send({ type: 'message', content: wrapped });
+  updateAgentTeamWorker(config.session.dataDir, actor.team.teamId, worker.workerId, { status: 'working' });
+  jsonRes(res, 200, { ok: true, sessionId: worker.sessionId });
+});
+
+ipcRoute('POST', '/api/agent-teams/:teamId/workers/:workerId/interrupt', async (req, res, params) => {
+  let body: Record<string, unknown>;
+  try { body = await readJsonBody(req) as Record<string, unknown>; } catch { return jsonRes(res, 400, { ok: false, error: 'invalid_json' }); }
+  const actor = agentTeamActor(params.teamId, body.actorSessionId);
+  if (!actor.ok) return jsonRes(res, 403, { ok: false, error: actor.error });
+  const worker = actor.team.workers.find(item => item.workerId === params.workerId);
+  const ds = worker ? findActiveBySessionId(worker.sessionId) : undefined;
+  if (!worker || !ds?.worker || ds.worker.killed) return jsonRes(res, 404, { ok: false, error: 'worker_not_active' });
+  ds.worker.send({ type: 'interrupt' });
+  updateAgentTeamWorker(config.session.dataDir, actor.team.teamId, worker.workerId, { status: 'interrupted' });
+  await replyMessage(actor.team.larkAppId, worker.rootMessageId, '【Leader】已请求中断当前 turn；会话保留，可继续追问。', 'text', true).catch(() => undefined);
+  jsonRes(res, 200, { ok: true, sessionId: worker.sessionId });
+});
+
+/** 缩容：只回收已有终态回报/中断/失败的 worker，不误杀仍工作的会话。 */
+ipcRoute('POST', '/api/agent-teams/:teamId/reap', async (req, res, params) => {
+  let body: Record<string, unknown>;
+  try { body = await readJsonBody(req) as Record<string, unknown>; } catch { return jsonRes(res, 400, { ok: false, error: 'invalid_json' }); }
+  const actor = agentTeamActor(params.teamId, body.actorSessionId);
+  if (!actor.ok) return jsonRes(res, 403, { ok: false, error: actor.error });
+  const terminal = new Set(['reported', 'interrupted', 'failed']);
+  const reaped: string[] = [];
+  for (const worker of actor.team.workers) {
+    if (!terminal.has(worker.status)) continue;
+    await closeSession(worker.sessionId);
+    updateAgentTeamWorker(config.session.dataDir, actor.team.teamId, worker.workerId, { status: 'closed' });
+    reaped.push(worker.workerId);
+  }
+  if (body.closeTeam === true && actor.team.workers.every(worker => terminal.has(worker.status) || worker.status === 'closed')) {
+    closeAgentTeam(config.session.dataDir, actor.team.teamId);
+  }
+  jsonRes(res, 200, { ok: true, reaped });
 });
 
 ipcRoute('POST', '/api/sessions/:sessionId/close', async (_req, res, params) => {

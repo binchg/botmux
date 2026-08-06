@@ -42,3 +42,5 @@ session 信息通过祖先进程标记自动推断，agent 直接调：
 | `botmux history [--limit N]` | 拉会话历史（JSON） |
 | `botmux quoted <message_id>` | 拉被引用的单条消息（JSON） |
 | `botmux schedule add/list/remove/pause/resume/run` | 管理定时任务 |
+| `botmux team create/list/status` | 创建并观察同 Bot 的持久独立会话团队 |
+| `botmux team spawn/send/interrupt/reap` | 扩容 worker、追问纠偏、中断当前 turn、回收终态会话 |

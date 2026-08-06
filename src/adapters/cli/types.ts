@@ -146,6 +146,9 @@ export interface CliAdapter {
     recheck?: () => SubmitRecheckResult | Promise<SubmitRecheckResult>;
   }>;
 
+  /** 可选的原生 turn 中断。没有实现时 worker 退化为发送 Ctrl-C。 */
+  interrupt?(pty: PtyHandle): Promise<void | { submitted: boolean }>;
+
   /** Optional: absolute path (with ~ expansion handled by caller) to the CLI's
    *  skill directory.  When set, `ensureSkills` will write/refresh skill files
    *  into `{skillsDir}/<skillName>/SKILL.md`.  Undefined = this CLI does not
