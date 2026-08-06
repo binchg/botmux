@@ -70,7 +70,7 @@ afterEach(async () => {
 });
 
 describe('Agent Team runtime capacity reconciliation', () => {
-  it('allows six workers across Teams, rejects same-Team overflow, and rejects the global seventh', async () => {
+  it('allows eight workers across Teams, rejects same-Team overflow, and rejects the global ninth', async () => {
     const dir = prepare();
     const main = createTeam(dir, 3);
     for (const workerId of ['main-a', 'main-b', 'main-c']) {
@@ -110,7 +110,7 @@ describe('Agent Team runtime capacity reconciliation', () => {
     expect(await startQueuedAgentTeamWorker(small.teamId, 'fourth')).toMatchObject({ ok: true, started: true });
     expect(spawn).toHaveBeenCalledTimes(1);
     expect(getAgentTeamCapacity(dir, small.teamId)).toMatchObject({
-      activeWorkers: 1, globalActiveWorkers: 4, teamAvailable: 0, globalAvailable: 2, available: 0,
+      activeWorkers: 1, globalActiveWorkers: 4, teamAvailable: 0, globalAvailable: 4, available: 0,
     });
 
     addAgentTeamWorker(dir, small.teamId, {
@@ -130,17 +130,27 @@ describe('Agent Team runtime capacity reconciliation', () => {
     expect(await startQueuedAgentTeamWorker(fifthTeam.teamId, 'global-fifth')).toMatchObject({ ok: true, started: true });
     expect(await startQueuedAgentTeamWorker(fifthTeam.teamId, 'global-sixth')).toMatchObject({ ok: true, started: true });
     expect(getAgentTeamCapacity(dir, fifthTeam.teamId)).toMatchObject({
-      activeWorkers: 2, globalActiveWorkers: 6, hardLimit: 6, globalAvailable: 0, available: 0,
+      activeWorkers: 2, globalActiveWorkers: 6, hardLimit: 8, globalAvailable: 2, available: 0,
     });
 
-    const seventhTeam = createTeam(dir, 6);
+    const seventhTeam = createTeam(dir, 2);
     addAgentTeamWorker(dir, seventhTeam.teamId, {
       workerId: 'global-seventh', title: 'seventh', assignment: 'task', dependsOn: [],
     });
-    expect(await startQueuedAgentTeamWorker(seventhTeam.teamId, 'global-seventh')).toMatchObject({
+    addAgentTeamWorker(dir, seventhTeam.teamId, {
+      workerId: 'global-eighth', title: 'eighth', assignment: 'task', dependsOn: [],
+    });
+    expect(await startQueuedAgentTeamWorker(seventhTeam.teamId, 'global-seventh')).toMatchObject({ ok: true, started: true });
+    expect(await startQueuedAgentTeamWorker(seventhTeam.teamId, 'global-eighth')).toMatchObject({ ok: true, started: true });
+
+    const ninthTeam = createTeam(dir, 8);
+    addAgentTeamWorker(dir, ninthTeam.teamId, {
+      workerId: 'global-ninth', title: 'ninth', assignment: 'task', dependsOn: [],
+    });
+    expect(await startQueuedAgentTeamWorker(ninthTeam.teamId, 'global-ninth')).toMatchObject({
       ok: true, started: false, reason: 'capacity_pending',
     });
-    expect(spawn).toHaveBeenCalledTimes(3);
+    expect(spawn).toHaveBeenCalledTimes(5);
   });
 
   it('clears a queued worker dependency through configure and starts it without replacing history', async () => {

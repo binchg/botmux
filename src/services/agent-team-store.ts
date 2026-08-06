@@ -11,7 +11,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
 
 export const DEFAULT_AGENT_TEAM_ACTIVE_WORKERS = 3;
-export const MAX_AGENT_TEAM_ACTIVE_WORKERS = 6;
+export const MAX_AGENT_TEAM_ACTIVE_WORKERS = 8;
 
 export type AgentTeamStatus = 'active' | 'completed' | 'closed';
 export type AgentTeamWorkerStatus =
@@ -364,7 +364,7 @@ export type ConfigureAgentTeamResult =
       error:
         | 'team_not_active'
         | 'configuration_action_required'
-        | 'max_active_workers_must_be_1_to_6'
+        | 'max_active_workers_must_be_1_to_8'
         | 'max_active_workers_below_current_active'
         | 'worker_required_for_clear_depends_on'
         | 'worker_not_found';
@@ -397,7 +397,7 @@ export function configureAgentTeam(
     || input.maxActiveWorkers! < 1
     || input.maxActiveWorkers! > MAX_AGENT_TEAM_ACTIVE_WORKERS
   )) {
-    return { ok: false, error: 'max_active_workers_must_be_1_to_6' };
+    return { ok: false, error: 'max_active_workers_must_be_1_to_8' };
   }
   const worker = clearDependsOn
     ? team.workers.find(item => item.workerId === input.workerId)
@@ -459,7 +459,7 @@ export function listAgentTeams(dataDir: string, filter?: { leaderSessionId?: str
  *
  * A small Team must still be able to use its own slot when sibling Teams are
  * below the leader-wide hard limit, while no combination of Teams may create
- * a seventh live worker for the same leader.
+ * a ninth live worker for the same leader.
  */
 export function getAgentTeamCapacity(dataDir: string, teamId: string): {
   activeWorkers: number;

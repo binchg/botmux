@@ -275,7 +275,7 @@ ipcRoute('POST', '/api/agent-teams', async (req, res) => {
   const maxActiveWorkers = typeof body.maxActiveWorkers === 'number' ? body.maxActiveWorkers : undefined;
   if (!leader || !name || !objective) return jsonRes(res, 400, { ok: false, error: 'leader_name_objective_required' });
   if (maxActiveWorkers !== undefined && (!Number.isInteger(maxActiveWorkers) || maxActiveWorkers < 1 || maxActiveWorkers > MAX_AGENT_TEAM_ACTIVE_WORKERS)) {
-    return jsonRes(res, 400, { ok: false, error: 'max_active_workers_must_be_1_to_6' });
+    return jsonRes(res, 400, { ok: false, error: 'max_active_workers_must_be_1_to_8' });
   }
   if (leader.larkAppId !== cachedLarkAppId) return jsonRes(res, 409, { ok: false, error: 'wrong_daemon' });
   const team = createAgentTeam(config.session.dataDir, {

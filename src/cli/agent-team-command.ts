@@ -11,10 +11,10 @@ export interface AgentTeamCliContext {
 const HELP = `botmux team — 同一 Bot 多独立会话的 supervisor 控制面
 
 用法:
-  botmux team create --name <名称> (--objective <目标> | --objective-file <文件>) [--max-active-workers <1..6>]
+  botmux team create --name <名称> (--objective <目标> | --objective-file <文件>) [--max-active-workers <1..8>]
   botmux team list
   botmux team status [--team <team_id>]
-  botmux team configure [--team <team_id>] [--max-active-workers <1..6>]
+  botmux team configure [--team <team_id>] [--max-active-workers <1..8>]
       [--worker <worker_id> --clear-depends-on]
   botmux team spawn [--team <team_id>] --id <worker_id> --title <标题>
       (--assignment <任务> | --assignment-file <文件>) [--repo <目录>] [--depends-on <worker_id> ...]
@@ -31,7 +31,7 @@ const HELP = `botmux team — 同一 Bot 多独立会话的 supervisor 控制面
 
 说明:
   - leader 只负责编排；spawn 出来的每个 worker 都是同一飞书 Bot 的独立 Codex App session。
-  - 默认最多 3 个额外活跃 worker，create/configure 可调到 1..6，leader 全局硬上限 6；queued 不占配额，status 显示双层容量。
+  - 默认最多 3 个额外活跃 worker，create/configure 可调到 1..8，leader 全局硬上限 8；queued 不占配额，status 显示双层容量。
   - configure 持久写入审计事件；重复配置幂等，禁止缩到当前 Team 活跃数以下，清依赖不删除 attempt/history。
   - depends-on 未满足时只登记 queued，不创建 session；只有依赖当前 attempt succeeded 才启动。
   - reuse-key 或同 --repo 的 --writer 命中时不重复 spawn，返回已有 worker 并引导 team send。

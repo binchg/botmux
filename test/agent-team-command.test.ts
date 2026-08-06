@@ -7,7 +7,7 @@ describe('botmux team CLI help', () => {
     try {
       expect(await runAgentTeamCommand(['help'])).toBe(0);
       const help = String(log.mock.calls[0]?.[0] ?? '');
-      expect(help).toContain('--max-active-workers <1..6>');
+      expect(help).toContain('--max-active-workers <1..8>');
       expect(help).toContain('botmux team configure');
       expect(help).toContain('--clear-depends-on');
       expect(help).toContain('--reuse-key <稳定任务坐标>');
