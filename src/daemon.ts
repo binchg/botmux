@@ -1528,8 +1528,9 @@ async function deliverPendingAgentTeamMilestones(): Promise<number> {
       pending.milestone.summary,
       pending.milestone.url,
     ].filter((item): item is string => !!item).join('\n');
+    let visibleMessageId: string;
     try {
-      await replyMessage(
+      visibleMessageId = await replyMessage(
         pending.team.larkAppId,
         leader.session.rootMessageId,
         visible,
@@ -1544,7 +1545,13 @@ async function deliverPendingAgentTeamMilestones(): Promise<number> {
     // Keep the durable outbox pending when the leader runner is unavailable;
     // the same Feishu uuid makes the next visible retry harmless.
     if (!leader.worker || leader.worker.killed) continue;
-    const consumed = markAgentTeamMilestoneLeaderSeen(config.session.dataDir, pending.team.teamId, pending.milestone.milestoneId);
+    const consumed = markAgentTeamMilestoneLeaderSeen(
+      config.session.dataDir,
+      pending.team.teamId,
+      pending.milestone.milestoneId,
+      new Date(),
+      visibleMessageId,
+    );
     if (!consumed?.firstSeen) continue;
     const prompt = buildAgentTeamLeaderMilestonePrompt(consumed.team, worker, consumed.milestone);
     beginNewTurn(leader, `Worker 里程碑：${worker.workerId}`);

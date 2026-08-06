@@ -237,8 +237,11 @@ describe('agent team store', () => {
       bitsUrlToBuildTerminalMs: [120_000],
       duplicateMilestones: 1,
     });
-    expect(markAgentTeamMilestoneLeaderSeen(dataDir, team.teamId, bits.milestone.milestoneId)?.firstSeen).toBe(true);
+    expect(markAgentTeamMilestoneLeaderSeen(
+      dataDir, team.teamId, bits.milestone.milestoneId, new Date('2026-08-06T00:03:01.000Z'), 'om_visible_bits',
+    )?.firstSeen).toBe(true);
     expect(markAgentTeamMilestoneLeaderSeen(dataDir, team.teamId, bits.milestone.milestoneId)?.firstSeen).toBe(false);
+    expect(getAgentTeam(dataDir, team.teamId)?.milestones.find(item => item.milestoneId === bits.milestone.milestoneId)?.visibleMessageId).toBe('om_visible_bits');
     expect(getAgentTeam(dataDir, team.teamId)?.metrics.duplicateMilestoneLeaderSuppressions).toBe(1);
   });
 

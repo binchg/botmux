@@ -111,6 +111,7 @@ export interface AgentTeamMilestone {
   evidenceRefs: string[];
   createdAt: string;
   deliveryState: 'pending' | 'leader-seen' | 'quarantined';
+  visibleMessageId?: string;
   leaderAckAt?: string;
   quarantineReason?: string;
 }
@@ -718,6 +719,7 @@ export function markAgentTeamMilestoneLeaderSeen(
   teamId: string,
   milestoneId: string,
   now = new Date(),
+  visibleMessageId?: string,
 ): { team: AgentTeam; milestone: AgentTeamMilestone; firstSeen: boolean } | undefined {
   const teams = readStore(dataDir);
   const team = teams[teamId];
@@ -731,9 +733,14 @@ export function markAgentTeamMilestoneLeaderSeen(
   const stamp = now.toISOString();
   team.leaderSeenMilestoneIds.push(milestoneId);
   milestone.deliveryState = 'leader-seen';
+  milestone.visibleMessageId = visibleMessageId ?? milestone.visibleMessageId;
   milestone.leaderAckAt = stamp;
   const outbox = team.milestoneOutbox.find(item => item.milestoneId === milestoneId);
-  if (outbox) { outbox.deliveryState = 'leader-seen'; outbox.leaderAckAt = stamp; }
+  if (outbox) {
+    outbox.deliveryState = 'leader-seen';
+    outbox.visibleMessageId = visibleMessageId ?? outbox.visibleMessageId;
+    outbox.leaderAckAt = stamp;
+  }
   team.updatedAt = stamp;
   writeStore(dataDir, teams);
   return { team, milestone, firstSeen: true };
