@@ -1,6 +1,6 @@
 /** Agent Team P0 revision/attempt/result/可靠回收状态机回归。 */
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -221,6 +221,63 @@ describe('agent team store', () => {
     expect(current.workers[0].attempts.find(item => item.attemptId === oldAttemptId)?.status).toBe('superseded');
   });
 
+  it('keeps an old accepted final for audit but removes it from delivery after a newer revision', () => {
+    const dataDir = temporaryDataDir();
+    const team = create(dataDir);
+    const worker = addRunning(dataDir, team.teamId, 'diff-topology');
+    const oldAttemptId = worker.currentAttemptId!;
+    const oldRevisionId = worker.currentRevisionId!;
+    const accepted = recordAgentTeamWorkerReport(dataDir, worker.sessionId!, {
+      content: JSON.stringify({
+        attemptId: oldAttemptId,
+        revisionId: oldRevisionId,
+        status: 'succeeded',
+        summary: 'old diff report',
+        evidenceRefs: ['report_332e'],
+        metrics: {},
+      }),
+      lastUuid: 'report-332e',
+      turnId: 'turn-old-report',
+    })!;
+    const correction = appendAgentTeamGuidance(dataDir, team.teamId, worker.workerId, {
+      type: 'correction', lifetime: 'task-scoped', content: 'review current MR 8303603',
+    })!;
+
+    expect(accepted.disposition).toBe('accepted');
+    expect(listPendingAgentTeamReports(dataDir)).toHaveLength(0);
+    let persisted = getAgentTeam(dataDir, team.teamId)!;
+    expect(persisted.reports.find(item => item.reportId === accepted.report.reportId)).toMatchObject({
+      deliveryState: 'quarantined',
+      invalidReason: 'attempt_superseded_before_delivery',
+    });
+    expect(persisted.workers[0]).toMatchObject({
+      currentAttemptId: correction.attempt!.attemptId,
+      currentRevisionId: correction.revision.revisionId,
+      status: 'queued',
+    });
+
+    const late = recordAgentTeamWorkerReport(dataDir, worker.sessionId!, {
+      content: JSON.stringify({
+        attemptId: oldAttemptId,
+        revisionId: oldRevisionId,
+        status: 'succeeded',
+        summary: 'late old revision must not win',
+        evidenceRefs: [],
+        metrics: {},
+      }),
+      lastUuid: 'late-old-report',
+      turnId: 'turn-late-old-report',
+    })!;
+    persisted = getAgentTeam(dataDir, team.teamId)!;
+    expect(late.disposition).toBe('stale');
+    expect(late.report.deliveryState).toBe('quarantined');
+    expect(persisted.workers[0]).toMatchObject({
+      currentAttemptId: correction.attempt!.attemptId,
+      currentRevisionId: correction.revision.revisionId,
+      status: 'queued',
+    });
+  });
+
   it('rejects malformed and mismatched finals instead of recording success', () => {
     const dataDir = temporaryDataDir();
     const team = create(dataDir);
@@ -385,6 +442,106 @@ describe('agent team store', () => {
     expect(stale.ok && stale.milestone.deliveryState).toBe('quarantined');
     expect(listPendingAgentTeamMilestones(dataDir)).toHaveLength(0);
     expect(getAgentTeam(dataDir, team.teamId)?.metrics.quarantinedStaleMilestones).toBe(1);
+  });
+
+  it('never replays build_started after a terminal event for the same artifact', () => {
+    const dataDir = temporaryDataDir();
+    const team = create(dataDir);
+    const worker = addRunning(dataDir, team.teamId);
+    const base = { attemptId: worker.currentAttemptId!, revisionId: worker.currentRevisionId! };
+    const started = recordAgentTeamMilestone(dataDir, team.teamId, worker.workerId, {
+      ...base,
+      type: 'build_started',
+      summary: 'MR 8303593 build started sha abcdef1',
+      url: 'https://bits.bytedance.net/bytebus/devops/code/detail/8303593?tab=changes&sha=abcdef1',
+    });
+    const terminal = recordAgentTeamMilestone(dataDir, team.teamId, worker.workerId, {
+      ...base,
+      type: 'build_terminal',
+      summary: 'MR 8303593 build passed sha abcdef1',
+    });
+    if (!started.ok || !terminal.ok) throw new Error('expected accepted milestones');
+
+    expect(started.disposition).toBe('accepted');
+    expect(terminal.disposition).toBe('accepted');
+    expect(listPendingAgentTeamMilestones(dataDir).map(item => item.milestone.milestoneId)).toEqual([
+      terminal.milestone.milestoneId,
+    ]);
+    expect(getAgentTeam(dataDir, team.teamId)?.milestones.find(
+      item => item.milestoneId === started.milestone.milestoneId,
+    )).toMatchObject({
+      deliveryState: 'quarantined',
+      quarantineReason: 'build_terminal_superseded_progress',
+    });
+  });
+
+  it('repairs persisted stale v0.0.42 outboxes before list or leader claim', () => {
+    const dataDir = temporaryDataDir();
+    const team = create(dataDir);
+    const worker = addRunning(dataDir, team.teamId);
+    const oldAttemptId = worker.currentAttemptId!;
+    const oldRevisionId = worker.currentRevisionId!;
+    const milestone = recordAgentTeamMilestone(dataDir, team.teamId, worker.workerId, {
+      attemptId: oldAttemptId,
+      revisionId: oldRevisionId,
+      type: 'build_started',
+      summary: 'legacy pending build_started',
+    });
+    const report = recordAgentTeamWorkerReport(dataDir, worker.sessionId!, {
+      content: JSON.stringify({
+        attemptId: oldAttemptId,
+        revisionId: oldRevisionId,
+        status: 'succeeded',
+        summary: 'legacy pending final',
+        evidenceRefs: [],
+        metrics: {},
+      }),
+      lastUuid: 'legacy-pending-final',
+      turnId: 'legacy-turn',
+    })!;
+    appendAgentTeamGuidance(dataDir, team.teamId, worker.workerId, {
+      type: 'correction', lifetime: 'task-scoped', content: 'current revision',
+    });
+    if (!milestone.ok) throw new Error('expected accepted milestone');
+
+    // Recreate the persisted v0.0.42 defect: superseded coordinates remained pending.
+    const path = join(dataDir, 'agent-teams.json');
+    const raw = JSON.parse(readFileSync(path, 'utf8')) as Record<string, any>;
+    for (const item of [
+      ...raw[team.teamId].milestones,
+      ...raw[team.teamId].milestoneOutbox,
+      ...raw[team.teamId].reports,
+      ...raw[team.teamId].reportOutbox,
+    ]) {
+      if (item.milestoneId === milestone.milestone.milestoneId || item.reportId === report.report.reportId) {
+        item.deliveryState = 'pending';
+        delete item.quarantineReason;
+        delete item.invalidReason;
+      }
+    }
+    writeFileSync(path, `${JSON.stringify(raw, null, 2)}\n`);
+
+    expect(markAgentTeamMilestoneLeaderSeen(
+      dataDir,
+      team.teamId,
+      milestone.milestone.milestoneId,
+    )?.firstSeen).toBe(false);
+    expect(markAgentTeamReportLeaderSeen(
+      dataDir,
+      team.teamId,
+      report.report.reportId,
+    )?.firstSeen).toBe(false);
+    expect(listPendingAgentTeamMilestones(dataDir)).toHaveLength(0);
+    expect(listPendingAgentTeamReports(dataDir)).toHaveLength(0);
+    const persisted = getAgentTeam(dataDir, team.teamId)!;
+    expect(persisted.milestones.find(item => item.milestoneId === milestone.milestone.milestoneId)).toMatchObject({
+      deliveryState: 'quarantined',
+      quarantineReason: 'attempt_or_revision_stale_before_delivery',
+    });
+    expect(persisted.reports.find(item => item.reportId === report.report.reportId)).toMatchObject({
+      deliveryState: 'quarantined',
+      invalidReason: 'attempt_or_revision_stale_before_delivery',
+    });
   });
 
   it('does not enter interrupted from a final and waits for App Server ack', () => {

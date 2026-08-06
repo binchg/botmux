@@ -307,20 +307,106 @@ function workerStatusFromAttempt(status: AgentTeamAttemptStatus): AgentTeamWorke
   return status;
 }
 
-function quarantinePendingMilestonesForAttempt(team: AgentTeam, workerId: string, attemptId: string): void {
+function quarantinePendingMilestonesForAttempt(
+  team: AgentTeam,
+  workerId: string,
+  attemptId: string,
+  reason = 'attempt_superseded_before_delivery',
+  types?: ReadonlySet<AgentTeamMilestoneType>,
+): boolean {
   let quarantined = 0;
+  let changed = false;
   for (const milestone of team.milestones) {
-    if (milestone.workerId !== workerId || milestone.attemptId !== attemptId || milestone.deliveryState !== 'pending') continue;
+    if (milestone.workerId !== workerId
+      || milestone.attemptId !== attemptId
+      || milestone.deliveryState !== 'pending'
+      || (types && !types.has(milestone.type))) continue;
     milestone.deliveryState = 'quarantined';
-    milestone.quarantineReason = 'attempt_superseded_before_delivery';
+    milestone.quarantineReason = reason;
     quarantined += 1;
+    changed = true;
   }
   for (const milestone of team.milestoneOutbox) {
-    if (milestone.workerId !== workerId || milestone.attemptId !== attemptId || milestone.deliveryState !== 'pending') continue;
+    if (milestone.workerId !== workerId
+      || milestone.attemptId !== attemptId
+      || milestone.deliveryState !== 'pending'
+      || (types && !types.has(milestone.type))) continue;
     milestone.deliveryState = 'quarantined';
-    milestone.quarantineReason = 'attempt_superseded_before_delivery';
+    milestone.quarantineReason = reason;
+    changed = true;
   }
   team.metrics.quarantinedStaleMilestones += quarantined;
+  return changed;
+}
+
+function quarantinePendingReportsForAttempt(
+  team: AgentTeam,
+  workerId: string,
+  attemptId: string,
+  reason = 'attempt_superseded_before_delivery',
+): boolean {
+  let quarantined = 0;
+  let changed = false;
+  for (const report of team.reports) {
+    if (report.workerId !== workerId || report.attemptId !== attemptId || report.deliveryState !== 'pending') continue;
+    report.deliveryState = 'quarantined';
+    report.invalidReason = reason;
+    quarantined += 1;
+    changed = true;
+  }
+  for (const report of team.reportOutbox) {
+    if (report.workerId !== workerId || report.attemptId !== attemptId || report.deliveryState !== 'pending') continue;
+    report.deliveryState = 'quarantined';
+    report.invalidReason = reason;
+    changed = true;
+  }
+  team.metrics.quarantinedStaleResults += quarantined;
+  return changed;
+}
+
+function hasCurrentDeliveryCoordinates(
+  team: AgentTeam,
+  item: Pick<AgentTeamMilestone | AgentTeamReport, 'workerId' | 'attemptId' | 'revisionId'>,
+): boolean {
+  const worker = team.workers.find(candidate => candidate.workerId === item.workerId);
+  const attempt = worker ? currentAttempt(worker) : undefined;
+  return !!worker
+    && !!attempt
+    && worker.currentAttemptId === item.attemptId
+    && worker.currentRevisionId === item.revisionId
+    && attempt.attemptId === item.attemptId
+    && attempt.revisionId === item.revisionId;
+}
+
+/** Lazily upgrades v0.0.42 outboxes so a daemon restart cannot replay old revisions. */
+function quarantineStalePendingOutboxes(teams: AgentTeamFile, now = new Date()): boolean {
+  let changed = false;
+  for (const team of Object.values(teams)) {
+    let teamChanged = false;
+    for (const milestone of [...team.milestoneOutbox]) {
+      if (milestone.deliveryState !== 'pending' || hasCurrentDeliveryCoordinates(team, milestone)) continue;
+      teamChanged = quarantinePendingMilestonesForAttempt(
+        team,
+        milestone.workerId,
+        milestone.attemptId,
+        'attempt_or_revision_stale_before_delivery',
+      ) || teamChanged;
+    }
+    for (const report of [...team.reportOutbox]) {
+      if (report.deliveryState !== 'pending' || hasCurrentDeliveryCoordinates(team, report)) continue;
+      teamChanged = quarantinePendingReportsForAttempt(
+        team,
+        report.workerId,
+        report.attemptId,
+        'attempt_or_revision_stale_before_delivery',
+      ) || teamChanged;
+    }
+    if (teamChanged) {
+      team.updatedAt = now.toISOString();
+      changed = true;
+    }
+  }
+  return changed;
 }
 
 /** 创建一支由现有会话担任 leader 的团队。 */
@@ -676,8 +762,11 @@ export function appendAgentTeamGuidance(
   let attempt: AgentTeamAttempt | undefined;
   if (input.lifetime === 'revoked' && input.revokesRevisionId === worker.currentRevisionId) {
     const revokedAttempt = currentAttempt(worker);
-    if (revokedAttempt && ['queued', 'starting', 'running', 'interrupting'].includes(revokedAttempt.status)) {
+    if (revokedAttempt) {
       quarantinePendingMilestonesForAttempt(team, worker.workerId, revokedAttempt.attemptId);
+      quarantinePendingReportsForAttempt(team, worker.workerId, revokedAttempt.attemptId);
+    }
+    if (revokedAttempt && ['queued', 'starting', 'running', 'interrupting'].includes(revokedAttempt.status)) {
       revokedAttempt.status = 'superseded';
       revokedAttempt.supersededAt = stamp;
       revokedAttempt.terminalAt = stamp;
@@ -690,8 +779,11 @@ export function appendAgentTeamGuidance(
   if (createsAttempt && attemptId) {
     const canContinueLiveSession = !!worker.sessionId && activeWorkerStatus(worker.status);
     const previous = currentAttempt(worker);
-    if (previous && ['queued', 'starting', 'running', 'interrupting'].includes(previous.status)) {
+    if (previous) {
       quarantinePendingMilestonesForAttempt(team, worker.workerId, previous.attemptId);
+      quarantinePendingReportsForAttempt(team, worker.workerId, previous.attemptId);
+    }
+    if (previous && ['queued', 'starting', 'running', 'interrupting'].includes(previous.status)) {
       previous.status = 'superseded';
       previous.supersededAt = stamp;
       previous.terminalAt = stamp;
@@ -924,6 +1016,13 @@ export function recordAgentTeamMilestone(
       team.metrics.guidanceToBitsUrlMs.push(Math.max(0, now.getTime() - guidanceAt));
     }
     if (input.type === 'build_terminal') {
+      quarantinePendingMilestonesForAttempt(
+        team,
+        worker.workerId,
+        input.attemptId,
+        'build_terminal_superseded_progress',
+        new Set<AgentTeamMilestoneType>(['build_started']),
+      );
       const bits = [...acceptedForAttempt]
         .filter(item => item.type === 'bits_mr_ready')
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
@@ -937,7 +1036,9 @@ export function recordAgentTeamMilestone(
 }
 
 export function listPendingAgentTeamMilestones(dataDir: string, larkAppId?: string): Array<{ team: AgentTeam; milestone: AgentTeamMilestone }> {
-  return Object.values(readStore(dataDir))
+  const teams = readStore(dataDir);
+  if (quarantineStalePendingOutboxes(teams)) writeStore(dataDir, teams);
+  return Object.values(teams)
     .filter(team => !larkAppId || team.larkAppId === larkAppId)
     .flatMap(team => team.milestoneOutbox
       .filter(milestone => milestone.deliveryState === 'pending')
@@ -957,6 +1058,17 @@ export function markAgentTeamMilestoneLeaderSeen(
   const team = teams[teamId];
   const milestone = team?.milestones.find(item => item.milestoneId === milestoneId);
   if (!team || !milestone) return undefined;
+  if (milestone.deliveryState === 'pending' && !hasCurrentDeliveryCoordinates(team, milestone)) {
+    quarantinePendingMilestonesForAttempt(
+      team,
+      milestone.workerId,
+      milestone.attemptId,
+      'attempt_or_revision_stale_before_delivery',
+    );
+    team.updatedAt = now.toISOString();
+    writeStore(dataDir, teams);
+    return { team, milestone, firstSeen: false };
+  }
   if (team.leaderSeenMilestoneIds.includes(milestoneId)) {
     team.metrics.duplicateMilestoneLeaderSuppressions += 1;
     writeStore(dataDir, teams);
@@ -1040,6 +1152,13 @@ export function recordAgentTeamWorkerReport(
       attempt.terminalAt = stamp;
       worker.status = workerStatusFromAttempt(parsed.result.status);
       worker.lastResult = parsed.result.summary;
+      quarantinePendingMilestonesForAttempt(
+        team,
+        worker.workerId,
+        attempt.attemptId,
+        'terminal_report_superseded_progress',
+        new Set<AgentTeamMilestoneType>(['build_started']),
+      );
     }
 
     if (disposition === 'invalid') {
@@ -1071,8 +1190,11 @@ export function recordAgentTeamWorkerReport(
     };
     team.reports.push(report);
     if (report.deliveryState === 'pending') team.reportOutbox.push(report);
-    worker.lastReportAt = stamp;
-    worker.updatedAt = team.updatedAt = stamp;
+    if (disposition !== 'stale') {
+      worker.lastReportAt = stamp;
+      worker.updatedAt = stamp;
+    }
+    team.updatedAt = stamp;
     writeStore(dataDir, teams);
     return { team, worker, report, disposition };
   }
@@ -1080,7 +1202,9 @@ export function recordAgentTeamWorkerReport(
 }
 
 export function listPendingAgentTeamReports(dataDir: string, larkAppId?: string): Array<{ team: AgentTeam; report: AgentTeamReport }> {
-  return Object.values(readStore(dataDir))
+  const teams = readStore(dataDir);
+  if (quarantineStalePendingOutboxes(teams)) writeStore(dataDir, teams);
+  return Object.values(teams)
     .filter(team => !larkAppId || team.larkAppId === larkAppId)
     .flatMap(team => team.reportOutbox.filter(report => report.deliveryState === 'pending').map(report => ({ team, report })));
 }
@@ -1097,6 +1221,17 @@ export function markAgentTeamReportLeaderSeen(
   const team = teams[teamId];
   const report = team?.reports.find(item => item.reportId === reportId);
   if (!team || !report) return undefined;
+  if (report.deliveryState === 'pending' && !hasCurrentDeliveryCoordinates(team, report)) {
+    quarantinePendingReportsForAttempt(
+      team,
+      report.workerId,
+      report.attemptId,
+      'attempt_or_revision_stale_before_delivery',
+    );
+    team.updatedAt = now.toISOString();
+    writeStore(dataDir, teams);
+    return { team, report, firstSeen: false };
+  }
   if (team.leaderSeenReportIds.includes(reportId)) {
     team.metrics.duplicateLeaderSuppressions += 1;
     writeStore(dataDir, teams);
