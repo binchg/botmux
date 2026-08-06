@@ -33,6 +33,11 @@ export function agentTeamReportDeliveryPolicy(status: AgentTeamReport['status'])
   return { userVisible: status === 'blocked', injectLeader: true };
 }
 
+/** Worker 话题总能看到已校验终态摘要；leader 卡片仍沿用独立 allowlist。 */
+export function agentTeamWorkerFinalDeliveryPolicy(status: AgentTeamReport['status']): AgentTeamDeliveryPolicy {
+  return { userVisible: status !== 'invalid' && status !== 'stale', injectLeader: true };
+}
+
 function compactLine(value: string, maxChars = MAX_DETAIL_CHARS): string {
   const line = value.replace(HTTP_URL_RE, ' ').replace(/\s+/gu, ' ').trim();
   const chars = Array.from(line);

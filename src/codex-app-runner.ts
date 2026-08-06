@@ -5,6 +5,7 @@ import { CodexAppProgressThrottler } from './services/codex-app-progress.js';
 import { normalizeCodexAppTimestampMs } from './services/codex-app-activity.js';
 import { codexAppHookFailure, codexAppHookTrustIssue } from './services/codex-app-hook-health.js';
 import { agentTeamOutputSchema } from './services/agent-team-result-schema.js';
+import { isAgentTeamMachineOutput } from './services/agent-team-output-filter.js';
 import {
   CODEX_APP_RATE_LIMIT_MAX_CONTINUES,
   codexAppAutoContinueDelayMs,
@@ -39,6 +40,7 @@ interface ActiveTurn {
   allAgentText: string;
   itemText: Map<string, string>;
   itemEpoch: Map<string, number>;
+  emittedProgressItemIds: Set<string>;
   guidanceEpoch: number;
   progress: CodexAppProgressThrottler;
   progressTimer?: ReturnType<typeof setInterval>;
@@ -301,6 +303,7 @@ function makeTurn(structuredOutput = false): ActiveTurn {
     allAgentText: '',
     itemText: new Map(),
     itemEpoch: new Map(),
+    emittedProgressItemIds: new Set(),
     guidanceEpoch: 0,
     progress: new CodexAppProgressThrottler(),
     pendingSteers: [],
@@ -326,6 +329,19 @@ function maybeEmitProgress(turn: ActiveTurn, force = false): void {
     force,
   });
   for (const snapshot of snapshots) emitMarker('progress', snapshot);
+}
+
+function emitCompletedStructuredMessage(turn: ActiveTurn, itemId: string, content: string): void {
+  const text = content.trim();
+  if (!text || turn.emittedProgressItemIds.has(itemId) || isAgentTeamMachineOutput(text)) return;
+  turn.emittedProgressItemIds.add(itemId);
+  emitMarker('progress', {
+    content: text,
+    turnId: turn.turnId,
+    startedAtMs: turn.startedAtMs,
+    updatedAtMs: Date.now(),
+    complete: true,
+  });
 }
 
 function enqueueNextTurn(content: string): void {
@@ -538,6 +554,13 @@ function handleNotification(msg: JsonObject): void {
       const itemId = String(item.id ?? '');
       const itemEpoch = activeTurn.itemEpoch.get(itemId) ?? activeTurn.guidanceEpoch;
       if (itemEpoch !== activeTurn.guidanceEpoch) return;
+      const completedText = String(item.text ?? activeTurn.itemText.get(itemId) ?? '');
+      if (activeTurn.structuredOutput && item.phase !== 'final_answer') {
+        // Structured Outputs applies to the terminal item, not commentary.
+        // Buffer the complete item so split result JSON cannot escape, then
+        // forward only content that is strictly not a machine result.
+        emitCompletedStructuredMessage(activeTurn, itemId, completedText);
+      }
       if (item.phase === 'final_answer') {
         activeTurn.finalText = String(item.text ?? '');
         activeTurn.finalItemId = itemId;

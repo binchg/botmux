@@ -28,6 +28,7 @@ import { claudeJsonlPathForSession } from '../adapters/cli/claude-code.js';
 import { findUniqueClaudeSessionByCwd } from './session-discovery.js';
 import { buildMarkdownCard, buildContextualReplyCard, buildTitledMarkdownCard } from '../im/lark/md-card.js';
 import { CodexAppProgressForwarder, codexAppProgressCardTitle } from '../services/codex-app-progress.js';
+import { AgentTeamProgressGate } from '../services/agent-team-output-filter.js';
 import { replyToDocComment, chunkCommentText, unsubscribeDocFile } from '../im/lark/doc-comment.js';
 import { listDocSubscriptionsForSession, removeDocSubscription } from '../services/doc-subs-store.js';
 import { TmuxBackend } from '../adapters/backend/tmux-backend.js';
@@ -67,6 +68,7 @@ const __dirname = dirname(__filename);
 const WORKER_SIGTERM_BACKSTOP_MS = 2_000;
 const WORKER_SIGKILL_BACKSTOP_MS = 7_000;
 const codexAppProgressForwarders = new WeakMap<DaemonSession, CodexAppProgressForwarder>();
+const agentTeamProgressGates = new WeakMap<DaemonSession, AgentTeamProgressGate>();
 
 // ─── Callbacks set by daemon at startup ─────────────────────────────────────
 
@@ -121,8 +123,18 @@ function codexAppProgressForwarderFor(ds: DaemonSession): CodexAppProgressForwar
   return forwarder;
 }
 
+function agentTeamProgressGateFor(ds: DaemonSession): AgentTeamProgressGate {
+  let gate = agentTeamProgressGates.get(ds);
+  if (!gate) {
+    gate = new AgentTeamProgressGate();
+    agentTeamProgressGates.set(ds, gate);
+  }
+  return gate;
+}
+
 export function resetCodexAppProgressForwarder(ds: DaemonSession): void {
   codexAppProgressForwarders.get(ds)?.reset();
+  agentTeamProgressGates.get(ds)?.reset();
 }
 
 /** Mark a real Lark user-turn boundary for sentence segmentation/dedup only.
@@ -2510,15 +2522,26 @@ function setupWorkerHandlers(ds: DaemonSession, worker: ChildProcess): void {
       }
 
       case 'progress_output': {
+        let rawProgress = msg.content;
         if (ds.session.agentTeam?.role === 'worker') {
-          logger.info(`[${t}] Agent Team structured progress suppressed before outbound (turn ${msg.turnId.substring(0, 8)})`);
-          break;
+          if (msg.kind === 'heartbeat' || msg.kind === 'activity') {
+            logger.info(`[${t}] Agent Team automatic activity kept internal (turn ${msg.turnId.substring(0, 8)})`);
+            break;
+          }
+          const decision = agentTeamProgressGateFor(ds).filter(msg.turnId, msg.content, msg.complete === true);
+          if (decision.action !== 'deliver') {
+            logger.info(`[${t}] Agent Team machine progress ${decision.action === 'buffer' ? 'buffered' : 'suppressed'} before outbound (turn ${msg.turnId.substring(0, 8)})`);
+            break;
+          }
+          rawProgress = decision.content;
         }
         if (msg.kind === 'heartbeat' || msg.kind === 'activity') {
           logger.info(`[${t}] Codex App automatic activity kept internal; only AI assistant progress is posted (turn ${msg.turnId.substring(0, 8)})`);
           break;
         }
-        const progresses = codexAppProgressForwarderFor(ds).drain(msg.turnId, msg.content);
+        const progresses = msg.complete === true
+          ? [{ content: rawProgress }]
+          : codexAppProgressForwarderFor(ds).drain(msg.turnId, rawProgress);
         if (progresses.length === 0) {
           logger.info(`[${t}] Codex App progress skipped as duplicate or partial (turn ${msg.turnId.substring(0, 8)})`);
           break;

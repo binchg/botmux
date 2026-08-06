@@ -3,6 +3,7 @@ import { buildTitledMarkdownCard } from '../src/im/lark/md-card.js';
 import {
   agentTeamMilestoneDeliveryPolicy,
   agentTeamReportDeliveryPolicy,
+  agentTeamWorkerFinalDeliveryPolicy,
   agentTeamUrlLabel,
   renderAgentTeamHumanOutput,
 } from '../src/services/agent-team-human-output.js';
@@ -57,6 +58,8 @@ describe('Agent Team human output renderer', () => {
     }
     expect(agentTeamReportDeliveryPolicy('succeeded')).toEqual({ userVisible: false, injectLeader: true });
     expect(agentTeamReportDeliveryPolicy('blocked')).toEqual({ userVisible: true, injectLeader: true });
+    expect(agentTeamWorkerFinalDeliveryPolicy('succeeded')).toEqual({ userVisible: true, injectLeader: true });
+    expect(agentTeamWorkerFinalDeliveryPolicy('invalid')).toEqual({ userVisible: false, injectLeader: true });
   });
 
   it('extracts short semantic labels for supported URL families', () => {

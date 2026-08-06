@@ -3031,6 +3031,7 @@ function handleCodexAppMarker(body: string): void {
       kind: 'assistant',
       content: payload.content,
       turnId,
+      complete: payload.complete === true,
     });
     return;
   }

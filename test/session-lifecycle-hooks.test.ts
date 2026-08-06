@@ -433,11 +433,35 @@ describe('worker-pool lifecycle hook integration', () => {
       type: 'progress_output', kind: 'assistant', turnId: 'team-turn', content: '{"attemptId":"attempt_1",',
     });
     worker.emit('message', {
-      type: 'progress_output', kind: 'assistant', turnId: 'team-turn', content: '"revisionId":"rev_1"}',
+      type: 'progress_output', kind: 'assistant', turnId: 'team-turn',
+      content: '"revisionId":"rev_1","status":"succeeded","summary":"done","evidenceRefs":[],"metrics":[]}',
     });
     await flush();
 
     expect(sessionReplyMock).not.toHaveBeenCalled();
+    expect(updateMessageMock).not.toHaveBeenCalled();
+    expect(deleteMessageMock).not.toHaveBeenCalled();
+  });
+
+  it('forwards completed Team commentary through the normal Markdown card renderer', async () => {
+    const worker = makeFakeWorker();
+    const ds = makeDs({ worker });
+    ds.session.agentTeam = {
+      teamId: 'team_1', role: 'worker', leaderSessionId: 'leader_1', workerId: 'worker_a',
+    };
+    __testOnly_setupWorkerHandlers(ds, worker);
+    const content = '普通中文进度：{这不是 JSON}。\n[MR 8303533](https://bits.bytedance.net/x?id=8303533)\n```ts\nconst limit = 8;\n```';
+
+    worker.emit('message', {
+      type: 'progress_output', kind: 'assistant', turnId: 'team-human', content, complete: true,
+    });
+    await flush();
+
+    expect(sessionReplyMock).toHaveBeenCalledTimes(1);
+    expect(sessionReplyMock.mock.calls[0][2]).toBe('interactive');
+    expect(String(sessionReplyMock.mock.calls[0][1])).toContain('普通中文进度');
+    expect(String(sessionReplyMock.mock.calls[0][1])).toContain('[MR 8303533](');
+    expect(String(sessionReplyMock.mock.calls[0][1])).toContain('const limit = 8;');
     expect(updateMessageMock).not.toHaveBeenCalled();
     expect(deleteMessageMock).not.toHaveBeenCalled();
   });
@@ -468,6 +492,8 @@ describe('worker-pool lifecycle hook integration', () => {
 
     worker.emit('message', { type: 'final_output', turnId: 'team-turn', lastUuid: 'team-final-1', content: raw });
     await flush();
+    await flush();
+    worker.emit('message', { type: 'final_output', turnId: 'team-turn', lastUuid: 'team-final-1', content: raw });
     await flush();
 
     expect(onSessionFinalOutput).toHaveBeenCalledWith(ds, expect.objectContaining({ content: raw }));

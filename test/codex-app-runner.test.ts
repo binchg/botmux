@@ -93,11 +93,14 @@ describe('codex-app runner steering', () => {
     expect(source).toContain('...(outputSchema ? { outputSchema } : {})');
   });
 
-  it('collects Team structured deltas without writing them to terminal or progress markers', () => {
+  it('buffers Team items and forwards only completed non-machine commentary', () => {
     expect(source).toContain('structuredOutput: boolean');
     expect(source).toContain('const turn = makeTurn(!!outputSchema)');
     expect(source).toContain('if (turn.structuredOutput) return');
     expect(source).toContain('if (!activeTurn.structuredOutput) process.stdout.write(delta)');
+    expect(source).toContain('emitCompletedStructuredMessage(activeTurn, itemId, completedText)');
+    expect(source).toContain('isAgentTeamMachineOutput(text)');
+    expect(source).toContain('complete: true');
   });
 
   it('automatically continues bounded HTTP 429 retry-limit failures', () => {

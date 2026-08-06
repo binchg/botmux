@@ -145,6 +145,7 @@ import { buildAgentTeamLeaderMilestonePrompt, buildAgentTeamLeaderReportPrompt }
 import {
   agentTeamMilestoneDeliveryPolicy,
   agentTeamReportDeliveryPolicy,
+  agentTeamWorkerFinalDeliveryPolicy,
   renderAgentTeamHumanOutput,
 } from './services/agent-team-human-output.js';
 import { buildTitledMarkdownCard } from './im/lark/md-card.js';
@@ -3871,7 +3872,7 @@ export async function startDaemon(botIndex?: number): Promise<void> {
           logger.warn(`[agent-team] dependency reconciliation failed: ${err instanceof Error ? err.message : String(err)}`);
         });
       }
-      return agentTeamReportDeliveryPolicy(recorded.report.status).userVisible
+      return agentTeamWorkerFinalDeliveryPolicy(recorded.report.status).userVisible
         ? { action: 'deliver' as const, cardJson: agentTeamHumanCard(human), humanContent: human.markdown }
         : { action: 'suppress' as const };
     },
