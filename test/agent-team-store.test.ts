@@ -215,7 +215,7 @@ describe('agent team store', () => {
       ...base, type: 'bits_mr_ready', summary: 'BITS ready', url: 'https://bits.example/mr/1',
     }, new Date('2026-08-06T00:03:00.000Z'));
     const duplicate = recordAgentTeamMilestone(dataDir, team.teamId, worker.workerId, {
-      ...base, type: 'bits_mr_ready', summary: 'same URL again', url: 'https://bits.example/mr/1',
+      ...base, type: 'bits_mr_ready', summary: 'same URL again', url: 'https://bits.example/mr/1', idempotencyKey: 'different-caller-key',
     }, new Date('2026-08-06T00:03:30.000Z'));
     const terminal = recordAgentTeamMilestone(dataDir, team.teamId, worker.workerId, {
       ...base, type: 'build_terminal', summary: 'build passed',

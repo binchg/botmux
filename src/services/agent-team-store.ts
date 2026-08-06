@@ -646,10 +646,18 @@ export function recordAgentTeamMilestone(
     return { ok: false, error: 'bits_mr_ready_http_url_required' };
   }
   const evidenceRefs = (input.evidenceRefs ?? []).filter(item => typeof item === 'string').map(item => item.slice(0, 2000)).slice(0, 100);
-  const identity = input.idempotencyKey?.trim()
-    || (input.type === 'bits_mr_ready' ? url! : JSON.stringify([summary, url ?? '', evidenceRefs]));
+  // BITS URL is itself the canonical idempotency coordinate. A caller-supplied
+  // key must never allow the same URL to create a second visible event.
+  const identity = input.type === 'bits_mr_ready'
+    ? url!
+    : input.idempotencyKey?.trim() || JSON.stringify([summary, url ?? '', evidenceRefs]);
   const milestoneId = milestoneIdFor(teamId, workerId, input.attemptId, input.type, identity.slice(0, 4000));
-  const duplicate = team.milestones.find(item => item.milestoneId === milestoneId);
+  const duplicate = team.milestones.find(item => item.milestoneId === milestoneId
+    || (input.type === 'bits_mr_ready'
+      && item.workerId === workerId
+      && item.attemptId === input.attemptId
+      && item.type === input.type
+      && item.url === url));
   const stamp = now.toISOString();
   if (duplicate) {
     team.metrics.duplicateMilestones += 1;
