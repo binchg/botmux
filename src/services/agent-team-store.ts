@@ -112,6 +112,7 @@ export interface AgentTeamReport {
   visibleMessageId?: string;
   leaderAckAt?: string;
   invalidReason?: string;
+  quarantineReason?: string;
 }
 
 export interface AgentTeamMilestone {
@@ -344,20 +345,27 @@ function quarantinePendingReportsForAttempt(
   workerId: string,
   attemptId: string,
   reason = 'attempt_superseded_before_delivery',
+  reportId?: string,
 ): boolean {
   let quarantined = 0;
   let changed = false;
   for (const report of team.reports) {
-    if (report.workerId !== workerId || report.attemptId !== attemptId || report.deliveryState !== 'pending') continue;
+    if (report.workerId !== workerId
+      || report.attemptId !== attemptId
+      || report.deliveryState !== 'pending'
+      || (reportId && report.reportId !== reportId)) continue;
     report.deliveryState = 'quarantined';
-    report.invalidReason = reason;
+    report.quarantineReason = reason;
     quarantined += 1;
     changed = true;
   }
   for (const report of team.reportOutbox) {
-    if (report.workerId !== workerId || report.attemptId !== attemptId || report.deliveryState !== 'pending') continue;
+    if (report.workerId !== workerId
+      || report.attemptId !== attemptId
+      || report.deliveryState !== 'pending'
+      || (reportId && report.reportId !== reportId)) continue;
     report.deliveryState = 'quarantined';
-    report.invalidReason = reason;
+    report.quarantineReason = reason;
     changed = true;
   }
   team.metrics.quarantinedStaleResults += quarantined;
@@ -393,12 +401,17 @@ function quarantineStalePendingOutboxes(teams: AgentTeamFile, now = new Date()):
       ) || teamChanged;
     }
     for (const report of [...team.reportOutbox]) {
-      if (report.deliveryState !== 'pending' || hasCurrentDeliveryCoordinates(team, report)) continue;
+      if (report.deliveryState !== 'pending') continue;
+      const reason = report.status === 'invalid'
+        ? 'invalid_result_not_deliverable'
+        : 'attempt_or_revision_stale_before_delivery';
+      if (report.status !== 'invalid' && hasCurrentDeliveryCoordinates(team, report)) continue;
       teamChanged = quarantinePendingReportsForAttempt(
         team,
         report.workerId,
         report.attemptId,
-        'attempt_or_revision_stale_before_delivery',
+        reason,
+        report.status === 'invalid' ? report.reportId : undefined,
       ) || teamChanged;
     }
     if (teamChanged) {
@@ -1111,7 +1124,10 @@ export function recordAgentTeamWorkerReport(
     if (!worker) continue;
     const stamp = now.toISOString();
     const parsed = parseAgentTeamResult(payload.content);
-    const parsedAttemptId = parsed.ok ? parsed.result.attemptId : (worker.currentAttemptId ?? 'unknown');
+    // Malformed finals have no trustworthy coordinates. Never borrow the
+    // worker's current attempt: a late old turn can arrive after correction and
+    // would otherwise invalidate the new attempt or enter its report outbox.
+    const parsedAttemptId = parsed.ok ? parsed.result.attemptId : 'unknown';
     const reportedAttempt = worker.attempts.find(item => item.attemptId === parsedAttemptId);
     const stableId = reportIdFor(team.teamId, worker.workerId, parsedAttemptId, payload.lastUuid);
     const existing = team.reports.find(item => item.reportId === stableId);
@@ -1163,10 +1179,6 @@ export function recordAgentTeamWorkerReport(
 
     if (disposition === 'invalid') {
       team.metrics.invalidResults += 1;
-      if (attempt && attempt.attemptId === worker.currentAttemptId && attempt.status !== 'interrupting') {
-        attempt.status = 'invalid'; attempt.terminalAt = stamp; attempt.invalidReason = invalidReason;
-        worker.status = 'failed'; worker.lastResult = summary;
-      }
     } else if (disposition === 'stale') {
       team.metrics.quarantinedStaleResults += 1;
     }
@@ -1175,7 +1187,7 @@ export function recordAgentTeamWorkerReport(
       reportId: stableId,
       workerId: worker.workerId,
       attemptId: parsedAttemptId,
-      revisionId: parsed.ok ? parsed.result.revisionId : (worker.currentRevisionId ?? 'unknown'),
+      revisionId: parsed.ok ? parsed.result.revisionId : 'unknown',
       turnId: payload.turnId,
       lastUuid: payload.lastUuid,
       status,
@@ -1185,8 +1197,9 @@ export function recordAgentTeamWorkerReport(
       latestArtifacts: reportedAttempt?.latestArtifacts ? { ...reportedAttempt.latestArtifacts } : undefined,
       createdAt: stamp,
       terminalAt: stamp,
-      deliveryState: disposition === 'stale' ? 'quarantined' : 'pending',
+      deliveryState: disposition === 'accepted' ? 'pending' : 'quarantined',
       invalidReason,
+      ...(disposition === 'invalid' ? { quarantineReason: 'invalid_result_not_deliverable' } : {}),
     };
     team.reports.push(report);
     if (report.deliveryState === 'pending') team.reportOutbox.push(report);
@@ -1221,12 +1234,14 @@ export function markAgentTeamReportLeaderSeen(
   const team = teams[teamId];
   const report = team?.reports.find(item => item.reportId === reportId);
   if (!team || !report) return undefined;
-  if (report.deliveryState === 'pending' && !hasCurrentDeliveryCoordinates(team, report)) {
+  if (report.deliveryState === 'pending'
+    && (report.status === 'invalid' || !hasCurrentDeliveryCoordinates(team, report))) {
     quarantinePendingReportsForAttempt(
       team,
       report.workerId,
       report.attemptId,
-      'attempt_or_revision_stale_before_delivery',
+      report.status === 'invalid' ? 'invalid_result_not_deliverable' : 'attempt_or_revision_stale_before_delivery',
+      report.status === 'invalid' ? report.reportId : undefined,
     );
     team.updatedAt = now.toISOString();
     writeStore(dataDir, teams);

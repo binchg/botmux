@@ -248,7 +248,7 @@ describe('agent team store', () => {
     let persisted = getAgentTeam(dataDir, team.teamId)!;
     expect(persisted.reports.find(item => item.reportId === accepted.report.reportId)).toMatchObject({
       deliveryState: 'quarantined',
-      invalidReason: 'attempt_superseded_before_delivery',
+      quarantineReason: 'attempt_superseded_before_delivery',
     });
     expect(persisted.workers[0]).toMatchObject({
       currentAttemptId: correction.attempt!.attemptId,
@@ -278,7 +278,7 @@ describe('agent team store', () => {
     });
   });
 
-  it('rejects malformed and mismatched finals instead of recording success', () => {
+  it('audits malformed finals without changing the current attempt or entering the outbox', () => {
     const dataDir = temporaryDataDir();
     const team = create(dataDir);
     const worker = addRunning(dataDir, team.teamId);
@@ -287,9 +287,93 @@ describe('agent team store', () => {
       content: 'plain success', lastUuid: 'invalid-final', turnId: 'turn-invalid',
     });
     expect(invalid?.disposition).toBe('invalid');
-    expect(invalid?.worker.status).toBe('failed');
+    expect(invalid?.worker.status).toBe('running');
     expect(invalid?.report.status).toBe('invalid');
+    expect(invalid?.report).toMatchObject({
+      attemptId: 'unknown',
+      revisionId: 'unknown',
+      deliveryState: 'quarantined',
+      invalidReason: 'result_json_required',
+      quarantineReason: 'invalid_result_not_deliverable',
+    });
     expect(invalid?.report.summary).not.toContain('plain success');
+    expect(listPendingAgentTeamReports(dataDir)).toHaveLength(0);
+    expect(getAgentTeam(dataDir, team.teamId)?.workers[0]).toMatchObject({
+      currentAttemptId: worker.currentAttemptId,
+      currentRevisionId: worker.currentRevisionId,
+      status: 'running',
+    });
+  });
+
+  it('quarantines two interrupted old invalid finals while current valid output stays exactly-once after restart', () => {
+    const dataDir = temporaryDataDir();
+    const team = create(dataDir);
+    const workerC = addRunning(dataDir, team.teamId, 'bulk-nonad-writer-c');
+    const workerRule = addRunning(dataDir, team.teamId, 'alpha-audit-rule');
+    requestAgentTeamWorkerInterrupt(dataDir, team.teamId, workerC.workerId);
+    requestAgentTeamWorkerInterrupt(dataDir, team.teamId, workerRule.workerId);
+    const correctionC = appendAgentTeamGuidance(dataDir, team.teamId, workerC.workerId, {
+      type: 'correction', lifetime: 'task-scoped', content: 'new C revision',
+    })!;
+    const correctionRule = appendAgentTeamGuidance(dataDir, team.teamId, workerRule.workerId, {
+      type: 'correction', lifetime: 'task-scoped', content: 'new rule revision',
+    })!;
+
+    const invalidC = recordAgentTeamWorkerReport(dataDir, workerC.sessionId!, {
+      content: 'late malformed C final', lastUuid: 'report-eb853', turnId: 'old-turn-c',
+    })!;
+    const invalidRule = recordAgentTeamWorkerReport(dataDir, workerRule.sessionId!, {
+      content: 'late malformed rule final', lastUuid: 'report-786355', turnId: 'old-turn-rule',
+    })!;
+    expect([invalidC, invalidRule].map(item => item.disposition)).toEqual(['invalid', 'invalid']);
+    expect([invalidC, invalidRule].map(item => item.report.deliveryState)).toEqual(['quarantined', 'quarantined']);
+    expect(listPendingAgentTeamReports(dataDir)).toHaveLength(0);
+    let persisted = getAgentTeam(dataDir, team.teamId)!;
+    expect(persisted.workers.find(item => item.workerId === workerC.workerId)).toMatchObject({
+      currentAttemptId: correctionC.attempt!.attemptId,
+      currentRevisionId: correctionC.revision.revisionId,
+      status: 'running',
+    });
+    expect(persisted.workers.find(item => item.workerId === workerRule.workerId)).toMatchObject({
+      currentAttemptId: correctionRule.attempt!.attemptId,
+      currentRevisionId: correctionRule.revision.revisionId,
+      status: 'running',
+    });
+
+    // Simulate a v0.0.43 daemon restart with a misattributed invalid report
+    // still pending under the current coordinates. Listing must repair it
+    // before any Hook/leader consumer can claim it.
+    const path = join(dataDir, 'agent-teams.json');
+    const raw = JSON.parse(readFileSync(path, 'utf8')) as Record<string, any>;
+    const storedInvalid = raw[team.teamId].reports.find((item: any) => item.reportId === invalidC.report.reportId);
+    storedInvalid.attemptId = correctionC.attempt!.attemptId;
+    storedInvalid.revisionId = correctionC.revision.revisionId;
+    storedInvalid.deliveryState = 'pending';
+    delete storedInvalid.quarantineReason;
+    raw[team.teamId].reportOutbox.push({ ...storedInvalid });
+    writeFileSync(path, `${JSON.stringify(raw, null, 2)}\n`);
+    expect(listPendingAgentTeamReports(dataDir)).toHaveLength(0);
+    persisted = getAgentTeam(dataDir, team.teamId)!;
+    expect(persisted.reports.find(item => item.reportId === invalidC.report.reportId)).toMatchObject({
+      status: 'invalid',
+      deliveryState: 'quarantined',
+      quarantineReason: 'invalid_result_not_deliverable',
+    });
+
+    const currentC = persisted.workers.find(item => item.workerId === workerC.workerId)!;
+    const payload = {
+      content: result(currentC as ReturnType<typeof addRunning>),
+      lastUuid: 'current-c-final',
+      turnId: 'current-turn-c',
+    };
+    const valid = recordAgentTeamWorkerReport(dataDir, workerC.sessionId!, payload)!;
+    const duplicate = recordAgentTeamWorkerReport(dataDir, workerC.sessionId!, payload)!;
+    expect(valid.disposition).toBe('accepted');
+    expect(duplicate.disposition).toBe('duplicate');
+    expect(listPendingAgentTeamReports(dataDir).map(item => item.report.reportId)).toEqual([valid.report.reportId]);
+    expect(markAgentTeamReportLeaderSeen(dataDir, team.teamId, valid.report.reportId)?.firstSeen).toBe(true);
+    expect(markAgentTeamReportLeaderSeen(dataDir, team.teamId, valid.report.reportId)?.firstSeen).toBe(false);
+    expect(listPendingAgentTeamReports(dataDir)).toHaveLength(0);
   });
 
   it('normalizes strict named metric entries while retaining legacy map compatibility', () => {
@@ -540,7 +624,7 @@ describe('agent team store', () => {
     });
     expect(persisted.reports.find(item => item.reportId === report.report.reportId)).toMatchObject({
       deliveryState: 'quarantined',
-      invalidReason: 'attempt_or_revision_stale_before_delivery',
+      quarantineReason: 'attempt_or_revision_stale_before_delivery',
     });
   });
 

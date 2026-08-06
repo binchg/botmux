@@ -19,7 +19,7 @@ const MAX_DETAIL_CHARS = 180;
 
 export interface AgentTeamDeliveryPolicy {
   userVisible: boolean;
-  injectLeader: true;
+  injectLeader: boolean;
 }
 
 export function agentTeamMilestoneDeliveryPolicy(type: AgentTeamMilestone['type']): AgentTeamDeliveryPolicy {
@@ -30,12 +30,14 @@ export function agentTeamMilestoneDeliveryPolicy(type: AgentTeamMilestone['type'
 }
 
 export function agentTeamReportDeliveryPolicy(status: AgentTeamReport['status']): AgentTeamDeliveryPolicy {
-  return { userVisible: status === 'blocked', injectLeader: true };
+  const valid = status !== 'invalid' && status !== 'stale';
+  return { userVisible: status === 'blocked', injectLeader: valid };
 }
 
 /** Worker 话题总能看到已校验终态摘要；leader 卡片仍沿用独立 allowlist。 */
 export function agentTeamWorkerFinalDeliveryPolicy(status: AgentTeamReport['status']): AgentTeamDeliveryPolicy {
-  return { userVisible: status !== 'invalid' && status !== 'stale', injectLeader: true };
+  const valid = status !== 'invalid' && status !== 'stale';
+  return { userVisible: valid, injectLeader: valid };
 }
 
 function compactLine(value: string, maxChars = MAX_DETAIL_CHARS): string {

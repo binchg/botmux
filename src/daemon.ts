@@ -3854,8 +3854,8 @@ export async function startDaemon(botIndex?: number): Promise<void> {
     async onSessionFinalOutput(ds: DaemonSession, output) {
       const recorded = recordAgentTeamWorkerReport(config.session.dataDir, ds.session.sessionId, output);
       if (!recorded) return { action: 'suppress' as const };
-      if (recorded.disposition === 'stale') {
-        logger.info(`[agent-team] quarantined stale final from ${recorded.worker.workerId} report=${recorded.report.reportId.slice(0, 16)}`);
+      if (recorded.disposition === 'stale' || recorded.disposition === 'invalid') {
+        logger.info(`[agent-team] quarantined ${recorded.disposition} final from ${recorded.worker.workerId} report=${recorded.report.reportId.slice(0, 16)}`);
         return { action: 'suppress' as const };
       }
       const human = renderAgentTeamHumanOutput({
@@ -3867,7 +3867,7 @@ export async function startDaemon(botIndex?: number): Promise<void> {
       if (delivered === 0) {
         logger.info(`[agent-team] worker ${recorded.worker.workerId} report persisted; leader delivery pending or duplicate`);
       }
-      if (recorded.disposition === 'accepted' || recorded.disposition === 'invalid') {
+      if (recorded.disposition === 'accepted') {
         void reconcileAgentTeamQueuedWorkers(ds.larkAppId).catch(err => {
           logger.warn(`[agent-team] dependency reconciliation failed: ${err instanceof Error ? err.message : String(err)}`);
         });

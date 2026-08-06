@@ -59,7 +59,8 @@ describe('Agent Team human output renderer', () => {
     expect(agentTeamReportDeliveryPolicy('succeeded')).toEqual({ userVisible: false, injectLeader: true });
     expect(agentTeamReportDeliveryPolicy('blocked')).toEqual({ userVisible: true, injectLeader: true });
     expect(agentTeamWorkerFinalDeliveryPolicy('succeeded')).toEqual({ userVisible: true, injectLeader: true });
-    expect(agentTeamWorkerFinalDeliveryPolicy('invalid')).toEqual({ userVisible: false, injectLeader: true });
+    expect(agentTeamReportDeliveryPolicy('invalid')).toEqual({ userVisible: false, injectLeader: false });
+    expect(agentTeamWorkerFinalDeliveryPolicy('invalid')).toEqual({ userVisible: false, injectLeader: false });
   });
 
   it('extracts short semantic labels for supported URL families', () => {
