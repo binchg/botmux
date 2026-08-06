@@ -365,6 +365,8 @@ export type WorkerToDaemon =
   | { type: 'screenshot_uploaded'; imageKey: string; status: ScreenStatus; usageLimit?: CliUsageLimitState }
   | { type: 'user_notify'; message: string; turnId?: string }
   | { type: 'progress_output'; content: string; turnId: string; kind?: 'assistant' | 'heartbeat' | 'activity' }
+  /** Codex App Server 对 turn/interrupt 的真实回执；仅此事件可把 Team attempt 置为 interrupted。 */
+  | { type: 'turn_interrupt_ack'; acknowledged: boolean; turnId?: string; error?: string; at: number }
   | {
       type: 'final_output';
       content: string;

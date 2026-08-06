@@ -61,12 +61,23 @@ import { resolveCliSelection, selectionKeyForBot } from '../setup/cli-selection.
 import { cancelTerminalSend, commitTerminalSend, prepareTerminalSend, resolveTerminalTurnId } from '../services/terminal-send-barrier.js';
 import {
   addAgentTeamWorker,
+  agentTeamDependenciesSatisfied,
+  appendAgentTeamGuidance,
+  attachAgentTeamWorkerSession,
   closeAgentTeam,
   createAgentTeam,
+  failAgentTeamWorkerStart,
+  findReusableAgentTeamWorker,
   getAgentTeam,
+  getAgentTeamCapacity,
   listAgentTeams,
+  markAgentTeamWorkerStarting,
+  requestAgentTeamWorkerInterrupt,
   updateAgentTeamWorker,
+  type AgentTeamGuidanceLifetime,
+  type AgentTeamGuidanceType,
 } from '../services/agent-team-store.js';
+import { buildAgentTeamGuidancePrompt } from './agent-team-prompts.js';
 
 // Workflow runner is wired by the daemon (it owns the heavy triggerWorkflowRun
 // deps). Until set, workflow-targeted triggers report not-implemented.
@@ -237,7 +248,11 @@ ipcRoute('POST', '/api/agent-teams', async (req, res) => {
   const leader = findActiveBySessionId(leaderSessionId);
   const name = typeof body.name === 'string' ? body.name.trim().slice(0, 120) : '';
   const objective = typeof body.objective === 'string' ? body.objective.trim().slice(0, 20_000) : '';
+  const maxActiveWorkers = typeof body.maxActiveWorkers === 'number' ? body.maxActiveWorkers : undefined;
   if (!leader || !name || !objective) return jsonRes(res, 400, { ok: false, error: 'leader_name_objective_required' });
+  if (maxActiveWorkers !== undefined && (!Number.isInteger(maxActiveWorkers) || maxActiveWorkers < 1 || maxActiveWorkers > 4)) {
+    return jsonRes(res, 400, { ok: false, error: 'max_active_workers_must_be_1_to_4' });
+  }
   if (leader.larkAppId !== cachedLarkAppId) return jsonRes(res, 409, { ok: false, error: 'wrong_daemon' });
   const team = createAgentTeam(config.session.dataDir, {
     name,
@@ -245,6 +260,7 @@ ipcRoute('POST', '/api/agent-teams', async (req, res) => {
     larkAppId: leader.larkAppId,
     chatId: leader.chatId,
     leaderSessionId,
+    maxActiveWorkers,
   });
   leader.session.agentTeam = { teamId: team.teamId, role: 'leader', leaderSessionId };
   sessionStore.updateSession(leader.session);
@@ -262,25 +278,98 @@ ipcRoute('GET', '/api/agent-teams/:teamId', (_req, res, params) => {
   const team = getAgentTeam(config.session.dataDir, params.teamId);
   if (!team || team.larkAppId !== cachedLarkAppId) return jsonRes(res, 404, { ok: false, error: 'team_not_found' });
   const workers = team.workers.map(worker => {
-    const ds = findActiveBySessionId(worker.sessionId);
+    const ds = worker.sessionId ? findActiveBySessionId(worker.sessionId) : undefined;
     return {
       ...worker,
       runtime: {
-        sessionStatus: ds?.session.status ?? sessionStore.getSession(worker.sessionId)?.status ?? 'missing',
+        sessionStatus: ds?.session.status ?? (worker.sessionId ? sessionStore.getSession(worker.sessionId)?.status : undefined) ?? 'missing',
         workerAlive: !!ds?.worker && !ds.worker.killed,
         screenStatus: ds?.lastScreenStatus ?? 'unknown',
         latestEvents: (ds?.liveEvents ?? []).slice(-3),
       },
     };
   });
+  const capacity = getAgentTeamCapacity(config.session.dataDir, team.leaderSessionId, team.maxActiveWorkers);
   const counts = workers.reduce<Record<string, number>>((acc, worker) => {
     acc[worker.status] = (acc[worker.status] ?? 0) + 1;
     return acc;
   }, {});
-  jsonRes(res, 200, { ok: true, team: { ...team, workers }, counts });
+  jsonRes(res, 200, { ok: true, team: { ...team, workers }, counts, capacity });
 });
 
-/** 扩容：同一 Bot 在 leader 所在群新开独立话题并直接拉起 Codex App session。 */
+export type AgentTeamStartResult =
+  | { ok: true; started: true; workerId: string; sessionId: string; rootMessageId: string }
+  | { ok: true; started: false; workerId: string; reason: 'dependencies_pending' | 'capacity_pending' | 'leader_not_active' }
+  | { ok: false; workerId: string; error: string };
+
+/** queued → start 的唯一入口；依赖、容量和 session 创建在同一处 fail-closed。 */
+export async function startQueuedAgentTeamWorker(teamId: string, workerId: string): Promise<AgentTeamStartResult> {
+  const team = getAgentTeam(config.session.dataDir, teamId);
+  const worker = team?.workers.find(item => item.workerId === workerId);
+  if (!team || !worker) return { ok: false, workerId, error: 'worker_not_found' };
+  const attempt = worker.attempts.find(item => item.attemptId === worker.currentAttemptId);
+  if (!attempt || attempt.status !== 'queued') return { ok: false, workerId, error: 'attempt_not_queued' };
+  if (!agentTeamDependenciesSatisfied(team, worker)) {
+    return { ok: true, started: false, workerId, reason: 'dependencies_pending' };
+  }
+  const capacity = getAgentTeamCapacity(config.session.dataDir, team.leaderSessionId, team.maxActiveWorkers);
+  if (capacity.available <= 0) return { ok: true, started: false, workerId, reason: 'capacity_pending' };
+  const leader = findActiveBySessionId(team.leaderSessionId);
+  if (!leader) return { ok: true, started: false, workerId, reason: 'leader_not_active' };
+  const activeSessions = getActiveSessionsRegistry();
+  if (!activeSessions) return { ok: false, workerId, error: 'registry_unavailable' };
+  const revision = team.revisions.find(item => item.revisionId === worker.currentRevisionId);
+  if (!revision) return { ok: false, workerId, error: 'current_revision_missing' };
+  if (!markAgentTeamWorkerStarting(config.session.dataDir, teamId, workerId)) {
+    return { ok: false, workerId, error: 'start_race_lost' };
+  }
+  const effectiveAssignment = revision.type === 'assignment'
+    ? worker.assignment
+    : `${worker.assignment}\n\n【最新 guidance · ${revision.type}】\n${revision.content}`;
+  const spawned = await spawnAgentTeamWorker(activeSessions, {
+    larkAppId: team.larkAppId,
+    chatId: team.chatId,
+    chatType: leader.chatType,
+    teamId: team.teamId,
+    teamName: team.name,
+    objective: team.objective,
+    leaderSessionId: team.leaderSessionId,
+    workerId,
+    title: worker.title,
+    assignment: effectiveAssignment,
+    dependsOn: worker.dependsOn,
+    revisionId: revision.revisionId,
+    attemptId: attempt.attemptId,
+    workingDir: worker.workingDir || leader.workingDir,
+    ownerOpenId: leader.session.ownerOpenId,
+    ownerUnionId: leader.session.ownerUnionId,
+  });
+  if (!spawned.ok) {
+    failAgentTeamWorkerStart(config.session.dataDir, teamId, workerId, spawned.error);
+    return { ok: false, workerId, error: spawned.error };
+  }
+  const attached = attachAgentTeamWorkerSession(config.session.dataDir, teamId, workerId, spawned);
+  if (!attached) {
+    await closeSession(spawned.sessionId);
+    failAgentTeamWorkerStart(config.session.dataDir, teamId, workerId, 'worker_attach_conflict');
+    return { ok: false, workerId, error: 'worker_attach_conflict' };
+  }
+  return { ok: true, started: true, workerId, sessionId: spawned.sessionId, rootMessageId: spawned.rootMessageId };
+}
+
+/** daemon 重启与依赖终态事件共用的 reconciliation。 */
+export async function reconcileAgentTeamQueuedWorkers(larkAppId?: string): Promise<AgentTeamStartResult[]> {
+  const outcomes: AgentTeamStartResult[] = [];
+  for (const team of listAgentTeams(config.session.dataDir, { larkAppId }).filter(item => item.status === 'active')) {
+    for (const worker of team.workers.filter(item => item.status === 'queued')) {
+      const outcome = await startQueuedAgentTeamWorker(team.teamId, worker.workerId);
+      outcomes.push(outcome);
+    }
+  }
+  return outcomes;
+}
+
+/** 扩容：先登记 queued，再由依赖闸门事件驱动创建独立 Codex App session。 */
 ipcRoute('POST', '/api/agent-teams/:teamId/workers', async (req, res, params) => {
   let body: Record<string, unknown>;
   try { body = await readJsonBody(req) as Record<string, unknown>; } catch { return jsonRes(res, 400, { ok: false, error: 'invalid_json' }); }
@@ -291,43 +380,53 @@ ipcRoute('POST', '/api/agent-teams/:teamId/workers', async (req, res, params) =>
   const assignment = typeof body.assignment === 'string' ? body.assignment.trim().slice(0, 30_000) : '';
   const workingDir = typeof body.workingDir === 'string' ? body.workingDir.trim() : undefined;
   const dependsOn = Array.isArray(body.dependsOn) ? body.dependsOn.filter((item): item is string => typeof item === 'string').slice(0, 20) : [];
+  const reuseKey = typeof body.reuseKey === 'string' ? body.reuseKey.trim().slice(0, 200) : undefined;
+  const writer = body.writer === true;
   if (!workerId || !title || !assignment) return jsonRes(res, 400, { ok: false, error: 'worker_id_title_assignment_required' });
-  if (actor.team.workers.some(worker => worker.workerId === workerId)) return jsonRes(res, 409, { ok: false, error: 'worker_exists' });
+  if (dependsOn.includes(workerId) || new Set(dependsOn).size !== dependsOn.length
+    || dependsOn.some(depId => !actor.team.workers.some(worker => worker.workerId === depId))) {
+    return jsonRes(res, 400, { ok: false, error: 'depends_on_must_reference_existing_unique_workers' });
+  }
   const leader = findActiveBySessionId(actor.team.leaderSessionId);
   if (!leader) return jsonRes(res, 409, { ok: false, error: 'leader_not_active' });
-  const activeSessions = getActiveSessionsRegistry();
-  if (!activeSessions) return jsonRes(res, 503, { ok: false, error: 'registry_unavailable' });
-  const spawned = await spawnAgentTeamWorker(activeSessions, {
-    larkAppId: actor.team.larkAppId,
-    chatId: actor.team.chatId,
-    chatType: leader.chatType,
-    teamId: actor.team.teamId,
-    teamName: actor.team.name,
-    objective: actor.team.objective,
-    leaderSessionId: actor.team.leaderSessionId,
-    workerId,
-    title,
-    assignment,
-    dependsOn,
-    workingDir: workingDir || leader.workingDir,
-    ownerOpenId: leader.session.ownerOpenId,
-    ownerUnionId: leader.session.ownerUnionId,
+  const effectiveWorkingDir = workingDir || leader.workingDir;
+  const reusable = findReusableAgentTeamWorker(config.session.dataDir, actor.team.leaderSessionId, {
+    reuseKey, workingDir: effectiveWorkingDir, writer,
   });
-  if (!spawned.ok) return jsonRes(res, 500, spawned);
+  if (reusable) {
+    return jsonRes(res, 200, {
+      ok: true,
+      reused: true,
+      matchedBy: reusable.matchedBy,
+      teamId: reusable.team.teamId,
+      worker: reusable.worker,
+      guidance: `复用已有 worker；请运行 botmux team send --team ${reusable.team.teamId} --worker ${reusable.worker.workerId} --kind addition ...`,
+    });
+  }
+  if (actor.team.workers.some(worker => worker.workerId === workerId)) return jsonRes(res, 409, { ok: false, error: 'worker_exists' });
+  const dependenciesReady = dependsOn.every(depId => {
+    const dependency = actor.team.workers.find(item => item.workerId === depId);
+    const attempt = dependency?.attempts.find(item => item.attemptId === dependency.currentAttemptId);
+    return attempt?.status === 'succeeded';
+  });
+  const capacity = getAgentTeamCapacity(config.session.dataDir, actor.team.leaderSessionId, actor.team.maxActiveWorkers);
+  if (dependenciesReady && capacity.available <= 0) {
+    return jsonRes(res, 409, { ok: false, error: 'leader_worker_capacity_exhausted', capacity });
+  }
   const worker = addAgentTeamWorker(config.session.dataDir, actor.team.teamId, {
     workerId,
-    sessionId: spawned.sessionId,
-    rootMessageId: spawned.rootMessageId,
     title,
     assignment,
-    workingDir: workingDir || leader.workingDir,
+    workingDir: effectiveWorkingDir,
     dependsOn,
+    reuseKey,
+    writer,
   });
-  if (!worker) {
-    await closeSession(spawned.sessionId);
-    return jsonRes(res, 409, { ok: false, error: 'worker_register_conflict' });
-  }
-  jsonRes(res, 200, { ok: true, teamId: actor.team.teamId, worker });
+  if (!worker) return jsonRes(res, 409, { ok: false, error: 'worker_register_conflict' });
+  const start = await startQueuedAgentTeamWorker(actor.team.teamId, worker.workerId);
+  const current = getAgentTeam(config.session.dataDir, actor.team.teamId)?.workers.find(item => item.workerId === worker.workerId) ?? worker;
+  const status = start.ok ? 200 : 500;
+  jsonRes(res, status, { ok: start.ok, teamId: actor.team.teamId, worker: current, start, queued: start.ok && !start.started });
 });
 
 /** leader 的纠偏/追问既显示在 worker 话题，也直接 steer 到对应 session。 */
@@ -338,21 +437,123 @@ ipcRoute('POST', '/api/agent-teams/:teamId/workers/:workerId/message', async (re
   if (!actor.ok) return jsonRes(res, 403, { ok: false, error: actor.error });
   const worker = actor.team.workers.find(item => item.workerId === params.workerId);
   const content = typeof body.content === 'string' ? body.content.trim().slice(0, 30_000) : '';
-  const ds = worker ? findActiveBySessionId(worker.sessionId) : undefined;
-  if (!worker || !ds) return jsonRes(res, 404, { ok: false, error: 'worker_not_active' });
-  if (!content || !ds.worker || ds.worker.killed) return jsonRes(res, 409, { ok: false, error: 'worker_unavailable' });
-  await replyMessage(actor.team.larkAppId, worker.rootMessageId, `【Leader 指令】\n${content}`, 'text', true).catch(() => undefined);
-  const wrapped = buildFollowUpContent(content, ds.session.sessionId, {
+  if (!worker || !content) return jsonRes(res, 400, { ok: false, error: 'worker_and_content_required' });
+  const guidanceTypes = new Set<Exclude<AgentTeamGuidanceType, 'assignment'>>(['correction', 'replacement', 'addition', 'status_query']);
+  const lifetimes = new Set<AgentTeamGuidanceLifetime>(['task-scoped', 'one-shot', 'revoked']);
+  const guidanceType = typeof body.guidanceType === 'string' && guidanceTypes.has(body.guidanceType as any)
+    ? body.guidanceType as Exclude<AgentTeamGuidanceType, 'assignment'>
+    : 'addition';
+  const lifetime = typeof body.lifetime === 'string' && lifetimes.has(body.lifetime as any)
+    ? body.lifetime as AgentTeamGuidanceLifetime
+    : 'task-scoped';
+  const revokesRevisionId = typeof body.revokesRevisionId === 'string' ? body.revokesRevisionId.trim() : undefined;
+  const appended = appendAgentTeamGuidance(config.session.dataDir, actor.team.teamId, worker.workerId, {
+    type: guidanceType,
+    lifetime,
+    content,
+    revokesRevisionId,
+  });
+  if (!appended) return jsonRes(res, 400, { ok: false, error: 'guidance_invalid_or_revoke_target_missing' });
+
+  // status_query / revoked 只追加 ledger，不创建 attempt，也不唤醒或改变 worker。
+  if (!appended.attempt) {
+    return jsonRes(res, 200, {
+      ok: true,
+      queried: guidanceType === 'status_query',
+      revoked: lifetime === 'revoked',
+      revision: appended.revision,
+      worker: appended.worker,
+    });
+  }
+
+  // 从未创建过 session 的 queued worker：更新后的 revision 由真实依赖闸门决定何时启动。
+  if (!appended.worker.sessionId) {
+    const start = await startQueuedAgentTeamWorker(actor.team.teamId, worker.workerId);
+    const current = getAgentTeam(config.session.dataDir, actor.team.teamId)?.workers.find(item => item.workerId === worker.workerId);
+    return jsonRes(res, start.ok ? 200 : 500, {
+      ok: start.ok,
+      queued: start.ok && !start.started,
+      revision: appended.revision,
+      attempt: appended.attempt,
+      worker: current,
+      start,
+    });
+  }
+
+  const registry = getActiveSessionsRegistry();
+  if (!registry) {
+    failAgentTeamWorkerStart(config.session.dataDir, actor.team.teamId, worker.workerId, 'registry_unavailable');
+    return jsonRes(res, 503, { ok: false, error: 'registry_unavailable', revision: appended.revision, attempt: appended.attempt });
+  }
+  let ds = findActiveBySessionId(appended.worker.sessionId);
+  let recovered = false;
+  if (!ds) {
+    const stored = sessionStore.getSession(appended.worker.sessionId);
+    if (!stored) {
+      failAgentTeamWorkerStart(config.session.dataDir, actor.team.teamId, worker.workerId, 'session_not_found');
+      return jsonRes(res, 409, { ok: false, error: 'worker_session_not_found', revision: appended.revision, attempt: appended.attempt });
+    }
+    if (stored.status !== 'closed') {
+      failAgentTeamWorkerStart(config.session.dataDir, actor.team.teamId, worker.workerId, 'session_active_but_unregistered');
+      return jsonRes(res, 409, { ok: false, error: 'worker_session_active_but_unregistered', revision: appended.revision, attempt: appended.attempt });
+    }
+    const resumed = await resumeSession(appended.worker.sessionId, registry);
+    if (!resumed.ok) {
+      failAgentTeamWorkerStart(config.session.dataDir, actor.team.teamId, worker.workerId, `session_resume_failed:${resumed.error}`);
+      return jsonRes(res, 409, {
+        ok: false,
+        error: `worker_session_resume_failed:${resumed.error}`,
+        activeSessionId: resumed.activeSessionId,
+        revision: appended.revision,
+        attempt: appended.attempt,
+      });
+    }
+    ds = resumed.ds;
+    recovered = true;
+  }
+
+  const capacity = getAgentTeamCapacity(config.session.dataDir, actor.team.leaderSessionId, actor.team.maxActiveWorkers);
+  const alreadyLive = !!ds.worker && !ds.worker.killed;
+  if (!alreadyLive && capacity.available <= 0) {
+    return jsonRes(res, 409, { ok: false, error: 'leader_worker_capacity_exhausted', capacity, revision: appended.revision, attempt: appended.attempt });
+  }
+  const guidance = buildAgentTeamGuidancePrompt(appended.revision);
+  const wrapped = buildFollowUpContent(guidance, ds.session.sessionId, {
     cliId: ds.session.cliId,
     locale: localeForBot(ds.larkAppId),
     larkAppId: ds.larkAppId,
     chatId: ds.chatId,
     whiteboardId: ds.session.whiteboardId,
   });
-  rememberLastCliInput(ds, content, wrapped);
-  ds.worker.send({ type: 'message', content: wrapped });
-  updateAgentTeamWorker(config.session.dataDir, actor.team.teamId, worker.workerId, { status: 'working' });
-  jsonRes(res, 200, { ok: true, sessionId: worker.sessionId });
+  try {
+    rememberLastCliInput(ds, guidance, wrapped);
+    if (alreadyLive) ds.worker!.send({ type: 'message', content: wrapped });
+    else forkWorker(ds, wrapped, ds.hasHistory);
+    const activeWorker = ds.worker && !ds.worker.killed;
+    if (!activeWorker) throw new Error('worker_refork_not_started');
+    const attached = appended.attempt.status === 'running'
+      ? getAgentTeam(config.session.dataDir, actor.team.teamId)?.workers.find(item => item.workerId === worker.workerId)
+      : attachAgentTeamWorkerSession(config.session.dataDir, actor.team.teamId, worker.workerId, {
+          sessionId: ds.session.sessionId,
+          rootMessageId: ds.session.rootMessageId,
+        });
+    if (!attached) throw new Error('attempt_attach_failed');
+    if (worker.rootMessageId) {
+      await replyMessage(actor.team.larkAppId, worker.rootMessageId, `【Leader · ${guidanceType}】\n${content}`, 'text', true).catch(() => undefined);
+    }
+    return jsonRes(res, 200, {
+      ok: true,
+      recovered: recovered || !alreadyLive,
+      sessionId: ds.session.sessionId,
+      rootMessageId: ds.session.rootMessageId,
+      revision: appended.revision,
+      attempt: appended.attempt,
+    });
+  } catch (err: any) {
+    const reason = `worker_delivery_failed:${err?.message ?? err}`;
+    failAgentTeamWorkerStart(config.session.dataDir, actor.team.teamId, worker.workerId, reason);
+    return jsonRes(res, 409, { ok: false, error: reason, revision: appended.revision, attempt: appended.attempt });
+  }
 });
 
 ipcRoute('POST', '/api/agent-teams/:teamId/workers/:workerId/interrupt', async (req, res, params) => {
@@ -361,12 +562,18 @@ ipcRoute('POST', '/api/agent-teams/:teamId/workers/:workerId/interrupt', async (
   const actor = agentTeamActor(params.teamId, body.actorSessionId);
   if (!actor.ok) return jsonRes(res, 403, { ok: false, error: actor.error });
   const worker = actor.team.workers.find(item => item.workerId === params.workerId);
-  const ds = worker ? findActiveBySessionId(worker.sessionId) : undefined;
+  const ds = worker?.sessionId ? findActiveBySessionId(worker.sessionId) : undefined;
   if (!worker || !ds?.worker || ds.worker.killed) return jsonRes(res, 404, { ok: false, error: 'worker_not_active' });
+  if (!['codex-app', 'mira', 'mir'].includes(ds.session.cliId ?? '')) {
+    return jsonRes(res, 409, { ok: false, error: 'interrupt_ack_unsupported_for_cli' });
+  }
+  const interrupting = requestAgentTeamWorkerInterrupt(config.session.dataDir, actor.team.teamId, worker.workerId);
+  if (!interrupting) return jsonRes(res, 409, { ok: false, error: 'worker_attempt_not_running' });
   ds.worker.send({ type: 'interrupt' });
-  updateAgentTeamWorker(config.session.dataDir, actor.team.teamId, worker.workerId, { status: 'interrupted' });
-  await replyMessage(actor.team.larkAppId, worker.rootMessageId, '【Leader】已请求中断当前 turn；会话保留，可继续追问。', 'text', true).catch(() => undefined);
-  jsonRes(res, 200, { ok: true, sessionId: worker.sessionId });
+  if (worker.rootMessageId) {
+    await replyMessage(actor.team.larkAppId, worker.rootMessageId, '【Leader】已请求中断当前 turn；等待 Codex App Server 回执后才进入 interrupted。', 'text', true).catch(() => undefined);
+  }
+  jsonRes(res, 200, { ok: true, status: 'interrupting', sessionId: worker.sessionId });
 });
 
 /** 缩容：只回收已有终态回报/中断/失败的 worker，不误杀仍工作的会话。 */
@@ -375,18 +582,19 @@ ipcRoute('POST', '/api/agent-teams/:teamId/reap', async (req, res, params) => {
   try { body = await readJsonBody(req) as Record<string, unknown>; } catch { return jsonRes(res, 400, { ok: false, error: 'invalid_json' }); }
   const actor = agentTeamActor(params.teamId, body.actorSessionId);
   if (!actor.ok) return jsonRes(res, 403, { ok: false, error: actor.error });
-  const terminal = new Set(['reported', 'interrupted', 'failed']);
+  const terminal = new Set(['reported', 'succeeded', 'blocked', 'interrupted', 'failed', 'superseded']);
   const reaped: string[] = [];
   for (const worker of actor.team.workers) {
     if (!terminal.has(worker.status)) continue;
-    await closeSession(worker.sessionId);
+    if (worker.sessionId) await closeSession(worker.sessionId);
     updateAgentTeamWorker(config.session.dataDir, actor.team.teamId, worker.workerId, { status: 'closed' });
     reaped.push(worker.workerId);
   }
   if (body.closeTeam === true && actor.team.workers.every(worker => terminal.has(worker.status) || worker.status === 'closed')) {
     closeAgentTeam(config.session.dataDir, actor.team.teamId);
   }
-  jsonRes(res, 200, { ok: true, reaped });
+  const reconciliation = await reconcileAgentTeamQueuedWorkers(actor.team.larkAppId);
+  jsonRes(res, 200, { ok: true, reaped, reconciliation });
 });
 
 ipcRoute('POST', '/api/sessions/:sessionId/close', async (_req, res, params) => {

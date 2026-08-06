@@ -67,7 +67,16 @@ import {
   resetCodexAppProgressForwarder,
   beginCodexAppProgressTurn,
 } from './core/worker-pool.js';
-import { ipcRoute, jsonRes, readJsonBody, setBotName, setLarkAppId, startIpcServer, setBotRenamer } from './core/dashboard-ipc-server.js';
+import {
+  ipcRoute,
+  jsonRes,
+  readJsonBody,
+  reconcileAgentTeamQueuedWorkers,
+  setBotName,
+  setLarkAppId,
+  startIpcServer,
+  setBotRenamer,
+} from './core/dashboard-ipc-server.js';
 import { saveFrozenCards, deleteFrozenCards } from './services/frozen-card-store.js';
 import { DAEMON_COMMANDS, SESSIONLESS_DAEMON_COMMANDS, resolvePassthroughCommands, resolveAdapterDefaultPassthroughCommands, handleCommand, handleCardCommand, handleTermLinkCommand, parseSlashCommandInvocation, parseForceTopicInvocation } from './core/command-handler.js';
 import { SLASH_COMMAND_SHAPE } from './core/passthrough-commands.js';
@@ -123,7 +132,12 @@ import { replay as replayWorkflow } from './workflows/events/replay.js';
 import { isBotMentioned, probeBotOpenId, startLarkEventDispatcher, writeBotInfoFile, canOperate, evaluateTalk, grantCommandRestriction, isKnownPeerBot, checkRequiredScopes, type RoutingContext, type TalkEvaluation, type DocCommentContext } from './im/lark/event-dispatcher.js';
 import { listAllDocSubscriptions, listDocSubscriptionsForSession, removeDocSubscription } from './services/doc-subs-store.js';
 import { subscribeDocFile, unsubscribeDocFile } from './im/lark/doc-comment.js';
-import { recordAgentTeamWorkerReport } from './services/agent-team-store.js';
+import {
+  acknowledgeAgentTeamWorkerInterrupt,
+  listPendingAgentTeamReports,
+  markAgentTeamReportLeaderSeen,
+  recordAgentTeamWorkerReport,
+} from './services/agent-team-store.js';
 import { buildAgentTeamLeaderReportPrompt } from './core/agent-team-prompts.js';
 import { learnFromMentions, resolveSender, flushIdentityCacheSync } from './im/lark/identity-cache.js';
 import { normalizeBrand } from './im/lark/lark-hosts.js';
@@ -1461,6 +1475,33 @@ function beginNewTurn(ds: DaemonSession, title: string): void {
   ds.currentTurnTitle = title.substring(0, 50);
   ds.currentImageKey = undefined;
   persistStreamCardState(ds);
+}
+
+/** outbox → leader 的幂等 consumer；reportId 在持久 seen 集合中只认领一次。 */
+function deliverPendingAgentTeamReports(): number {
+  let delivered = 0;
+  for (const pending of listPendingAgentTeamReports(config.session.dataDir, selfV3LarkAppId)) {
+    const leader = [...activeSessions.values()].find(item => item.session.sessionId === pending.team.leaderSessionId);
+    if (!leader?.worker || leader.worker.killed) continue;
+    const consumed = markAgentTeamReportLeaderSeen(config.session.dataDir, pending.team.teamId, pending.report.reportId);
+    if (!consumed?.firstSeen) continue;
+    const worker = consumed.team.workers.find(item => item.workerId === consumed.report.workerId);
+    if (!worker) continue;
+    const prompt = buildAgentTeamLeaderReportPrompt(consumed.team, worker, consumed.report);
+    beginNewTurn(leader, `Worker 回报：${worker.workerId}`);
+    const wrapped = buildFollowUpContent(prompt, leader.session.sessionId, {
+      cliId: leader.session.cliId,
+      locale: localeForBot(leader.larkAppId),
+      larkAppId: leader.larkAppId,
+      chatId: leader.chatId,
+      whiteboardId: leader.session.whiteboardId,
+    });
+    rememberLastCliInput(leader, prompt, wrapped);
+    leader.worker.send({ type: 'message', content: wrapped });
+    delivered += 1;
+    logger.info(`[agent-team] report ${consumed.report.reportId.slice(0, 16)} injected into leader ${consumed.team.leaderSessionId.slice(0, 8)}`);
+  }
+  return delivered;
 }
 
 // Dependencies passed to command-handler
@@ -3687,27 +3728,36 @@ export async function startDaemon(botIndex?: number): Promise<void> {
       void closeSessionHelper(ds.session.sessionId).catch(() => { /* idempotent */ });
       logger.info(`[${ds.session.sessionId.substring(0, 8)}] Session auto-closed (message withdrawn)`);
     },
-    onSessionFinalOutput(ds: DaemonSession, content: string) {
-      const report = recordAgentTeamWorkerReport(config.session.dataDir, ds.session.sessionId, content);
-      if (!report) return;
-      const leader = [...activeSessions.values()].find(item => item.session.sessionId === report.team.leaderSessionId);
-      if (!leader?.worker || leader.worker.killed) {
-        logger.info(`[agent-team] worker ${report.worker.workerId} reported; leader ${report.team.leaderSessionId.slice(0, 8)} is offline, report persisted`);
+    onSessionFinalOutput(ds: DaemonSession, output) {
+      const recorded = recordAgentTeamWorkerReport(config.session.dataDir, ds.session.sessionId, output);
+      if (!recorded) return;
+      if (recorded.disposition === 'stale') {
+        logger.info(`[agent-team] quarantined stale final from ${recorded.worker.workerId} report=${recorded.report.reportId.slice(0, 16)}`);
         return;
       }
-      const prompt = buildAgentTeamLeaderReportPrompt(report.team, report.worker);
-      const title = `Worker 回报：${report.worker.workerId}`;
-      beginNewTurn(leader, title);
-      const wrapped = buildFollowUpContent(prompt, leader.session.sessionId, {
-        cliId: leader.session.cliId,
-        locale: localeForBot(leader.larkAppId),
-        larkAppId: leader.larkAppId,
-        chatId: leader.chatId,
-        whiteboardId: leader.session.whiteboardId,
-      });
-      rememberLastCliInput(leader, prompt, wrapped);
-      leader.worker.send({ type: 'message', content: wrapped });
-      logger.info(`[agent-team] worker ${report.worker.workerId} report injected into leader ${report.team.leaderSessionId.slice(0, 8)}`);
+      const delivered = deliverPendingAgentTeamReports();
+      if (delivered === 0) {
+        logger.info(`[agent-team] worker ${recorded.worker.workerId} report persisted; leader delivery pending or duplicate`);
+      }
+      if (recorded.disposition === 'accepted' || recorded.disposition === 'invalid') {
+        void reconcileAgentTeamQueuedWorkers(ds.larkAppId).catch(err => {
+          logger.warn(`[agent-team] dependency reconciliation failed: ${err instanceof Error ? err.message : String(err)}`);
+        });
+      }
+    },
+    onSessionInterruptAck(ds: DaemonSession, ack) {
+      const acknowledged = acknowledgeAgentTeamWorkerInterrupt(config.session.dataDir, ds.session.sessionId, ack.acknowledged);
+      if (!acknowledged) return;
+      logger.info(`[agent-team] worker ${acknowledged.worker.workerId} interrupt ack=${ack.acknowledged}${ack.error ? ` error=${ack.error}` : ''}`);
+      if (ack.acknowledged) {
+        void reconcileAgentTeamQueuedWorkers(ds.larkAppId).catch(err => {
+          logger.warn(`[agent-team] post-interrupt reconciliation failed: ${err instanceof Error ? err.message : String(err)}`);
+        });
+      }
+    },
+    onSessionReady(ds: DaemonSession) {
+      if (ds.session.agentTeam?.role !== 'leader') return;
+      deliverPendingAgentTeamReports();
     },
   });
   // Expose the activeSessions Map (owned by daemon) to worker-pool readers,
@@ -3906,6 +3956,17 @@ export async function startDaemon(botIndex?: number): Promise<void> {
 
   // Restore active sessions from previous run
   await restoreActiveSessions(activeSessions);
+
+  // Agent Team crash reconciliation：先恢复 session registry，再重放 queued 依赖节点
+  // 与持久 report outbox。两步都是幂等的，旧/重复 reportId 不会产生第二次 leader 效果。
+  try {
+    const starts = await reconcileAgentTeamQueuedWorkers(cfg.larkAppId);
+    const delivered = deliverPendingAgentTeamReports();
+    const started = starts.filter(item => item.ok && item.started).length;
+    if (started || delivered) logger.info(`[agent-team] reconciliation started=${started} delivered=${delivered}`);
+  } catch (err) {
+    logger.warn(`[agent-team] startup reconciliation failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
 
   // Second global-skills sweep, AFTER restore has settled. The early
   // cleanupGlobalBotmuxSkillsOnce() pass (in the startup ensureCliEnv above)

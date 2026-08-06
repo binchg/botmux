@@ -10,6 +10,8 @@ import * as groupsStore from '../src/services/groups-store.js';
 import * as oncallStore from '../src/services/oncall-store.js';
 import * as sessionStore from '../src/services/session-store.js';
 import * as workerPool from '../src/core/worker-pool.js';
+import * as larkClient from '../src/im/lark/client.js';
+import { addAgentTeamWorker, createAgentTeam, getAgentTeam, updateAgentTeamWorker } from '../src/services/agent-team-store.js';
 import { __testOnly_resetBotRegistry, loadBotConfigs, registerBot } from '../src/bot-registry.js';
 import { config } from '../src/config.js';
 import { sessionKey } from '../src/core/types.js';
@@ -98,6 +100,75 @@ describe('dashboard IPC server', () => {
     handle = await startIpcServer({ port: 0, host: '127.0.0.1' });
     const res = await fetch(`http://127.0.0.1:${handle.port}/api/nope`);
     expect(res.status).toBe(404);
+  });
+});
+
+describe('Agent Team cold session reuse', () => {
+  it('team send resumes the original closed session/thread and re-forks before guidance delivery', async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'dashboard-agent-team-reuse-'));
+    const previousDataDir = config.session.dataDir;
+    const send = vi.fn();
+    const forkSpy = vi.spyOn(workerPool, 'forkWorker').mockImplementation((ds: any) => {
+      ds.worker = { send, killed: false };
+      return undefined as any;
+    });
+    const replySpy = vi.spyOn(larkClient, 'replyMessage').mockResolvedValue('om_reply');
+    try {
+      config.session.dataDir = dataDir;
+      sessionStore.init();
+      setLarkAppId('cli_team');
+
+      const leader = {
+        session: { sessionId: 'leader-team', status: 'active', rootMessageId: 'om_leader', chatId: 'oc_team', cliId: 'codex-app' },
+        worker: { send: vi.fn(), killed: false },
+        larkAppId: 'cli_team', chatId: 'oc_team', chatType: 'group', scope: 'thread', hasHistory: true,
+      } as any;
+      const registry = new Map<string, any>([[sessionKey('om_leader', 'cli_team'), leader]]);
+      workerPool.setActiveSessionsRegistry(registry);
+
+      const session = sessionStore.createSession('oc_team', 'om_worker_original', 'Reusable worker', 'group');
+      session.larkAppId = 'cli_team';
+      session.scope = 'thread';
+      session.cliId = 'codex-app';
+      session.workingDir = '/tmp/reuse-worktree';
+      session.lastCliInput = 'old task';
+      sessionStore.updateSession(session);
+      sessionStore.closeSession(session.sessionId);
+
+      const team = createAgentTeam(dataDir, {
+        name: 'reuse', objective: 'reuse original session', larkAppId: 'cli_team', chatId: 'oc_team', leaderSessionId: 'leader-team',
+      });
+      addAgentTeamWorker(dataDir, team.teamId, {
+        workerId: 'worker-reuse', sessionId: session.sessionId, rootMessageId: 'om_worker_original',
+        title: 'Reusable worker', assignment: 'old task', workingDir: '/tmp/reuse-worktree', dependsOn: [], reuseKey: 'same-task', writer: true,
+      });
+      updateAgentTeamWorker(dataDir, team.teamId, 'worker-reuse', { status: 'closed' });
+
+      handle = await startIpcServer({ port: 0, host: '127.0.0.1' });
+      const response = await fetch(`http://127.0.0.1:${handle.port}/api/agent-teams/${team.teamId}/workers/worker-reuse/message`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ actorSessionId: 'leader-team', content: 'continue on same worktree', guidanceType: 'addition' }),
+      });
+      const body = await response.json() as any;
+
+      expect(response.status).toBe(200);
+      expect(body).toMatchObject({ ok: true, recovered: true, sessionId: session.sessionId, rootMessageId: 'om_worker_original' });
+      expect(forkSpy).toHaveBeenCalledWith(expect.objectContaining({ session: expect.objectContaining({ sessionId: session.sessionId }) }), expect.any(String), true);
+      expect(send).not.toHaveBeenCalled(); // prompt is passed directly to cold re-fork, not double-sent
+      expect(sessionStore.getSession(session.sessionId)?.status).toBe('active');
+      expect(getAgentTeam(dataDir, team.teamId)?.workers[0]).toMatchObject({
+        sessionId: session.sessionId, rootMessageId: 'om_worker_original', status: 'running',
+      });
+      expect(getAgentTeam(dataDir, team.teamId)?.workers[0].attempts).toHaveLength(2);
+    } finally {
+      forkSpy.mockRestore();
+      replySpy.mockRestore();
+      workerPool.setActiveSessionsRegistry(new Map());
+      sessionStore.init();
+      config.session.dataDir = previousDataDir;
+      rmSync(dataDir, { recursive: true, force: true });
+    }
   });
 });
 

@@ -1621,6 +1621,8 @@ export interface SpawnAgentTeamWorkerArgs {
   title: string;
   assignment: string;
   dependsOn?: string[];
+  revisionId: string;
+  attemptId: string;
   workingDir?: string;
   ownerOpenId?: string;
   ownerUnionId?: string;
@@ -1701,6 +1703,8 @@ export async function spawnAgentTeamWorker(
     workerId: args.workerId,
     assignment: args.assignment,
     dependsOn: args.dependsOn,
+    revisionId: args.revisionId,
+    attemptId: args.attemptId,
   });
   await forkOrShowRepoCard(ds, prompt);
   logger.info(`[agent-team] spawned worker ${args.workerId} session=${session.sessionId.slice(0, 8)} team=${args.teamId}`);

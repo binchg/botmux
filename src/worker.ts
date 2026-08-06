@@ -2962,6 +2962,17 @@ function handleCodexAppMarker(body: string): void {
     return;
   }
 
+  if (kind === 'interrupt_ack' && typeof payload.acknowledged === 'boolean') {
+    send({
+      type: 'turn_interrupt_ack',
+      acknowledged: payload.acknowledged,
+      turnId: typeof payload.turnId === 'string' ? payload.turnId : undefined,
+      error: typeof payload.error === 'string' ? payload.error : undefined,
+      at: typeof payload.at === 'number' ? payload.at : Date.now(),
+    });
+    return;
+  }
+
   if (kind === 'user' && typeof payload.content === 'string') {
     emitTerminalUiEvent({
       type: 'user',

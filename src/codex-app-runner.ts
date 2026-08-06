@@ -310,6 +310,24 @@ function userTextInput(content: string): JsonObject[] {
   return [{ type: 'text', text: content, text_elements: [] }];
 }
 
+/** 仅 Agent Team turn 使用窄结果 schema；普通 Codex App 会话保持原行为。 */
+function agentTeamOutputSchema(content: string): JsonObject | undefined {
+  if (!content.includes('<botmux_agent_team>') && !content.includes('<botmux_agent_team_guidance>')) return undefined;
+  return {
+    type: 'object',
+    additionalProperties: false,
+    required: ['attemptId', 'revisionId', 'status', 'summary', 'evidenceRefs', 'metrics'],
+    properties: {
+      attemptId: { type: 'string', minLength: 1 },
+      revisionId: { type: 'string', minLength: 1 },
+      status: { type: 'string', enum: ['succeeded', 'failed', 'blocked', 'interrupted'] },
+      summary: { type: 'string', minLength: 1 },
+      evidenceRefs: { type: 'array', items: { type: 'string' } },
+      metrics: { type: 'object', additionalProperties: { type: 'number' } },
+    },
+  };
+}
+
 function maybeEmitProgress(turn: ActiveTurn, force = false): void {
   if (turn.finalText) return;
   const snapshots = turn.progress.drainSnapshots({
@@ -403,13 +421,21 @@ async function interruptActiveTurn(): Promise<void> {
   const turn = activeTurn;
   if (!threadId || !turn?.turnId) {
     writeLine('[codex-app] no active turn to interrupt');
+    emitMarker('interrupt_ack', { acknowledged: false, error: 'no_active_turn', at: Date.now() });
     return;
   }
   try {
     await client.request('turn/interrupt', { threadId, turnId: turn.turnId });
     writeLine(`[codex-app] interrupted turn ${turn.turnId}`);
+    emitMarker('interrupt_ack', { acknowledged: true, turnId: turn.turnId, at: Date.now() });
   } catch (err: any) {
     writeLine(`[codex-app] interrupt failed: ${err?.message ?? err}`);
+    emitMarker('interrupt_ack', {
+      acknowledged: false,
+      turnId: turn.turnId,
+      error: String(err?.message ?? err),
+      at: Date.now(),
+    });
   }
 }
 
@@ -675,12 +701,14 @@ async function runSingleTurn(content: string, autoContinue: boolean): Promise<Tu
     }
     writeLine();
 
+    const outputSchema = agentTeamOutputSchema(content);
     const result = await client.request('turn/start', {
       threadId: tid,
       input: userTextInput(content),
       cwd: args.cwd,
       approvalPolicy: 'never',
       sandboxPolicy: { type: 'dangerFullAccess' },
+      ...(outputSchema ? { outputSchema } : {}),
     });
     turn.turnId = result.turn?.id ?? turn.turnId;
     flushSteers(turn);

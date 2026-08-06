@@ -77,7 +77,17 @@ export interface WorkerPoolCallbacks {
   /** Close a stale session (message withdrawn, etc.) */
   closeSession: (ds: DaemonSession) => void;
   /** 独立 worker 的终态回报钩子；用于通知同 Bot 的 leader，会话投递本身不受影响。 */
-  onSessionFinalOutput?: (ds: DaemonSession, content: string) => void | Promise<void>;
+  onSessionFinalOutput?: (
+    ds: DaemonSession,
+    output: { content: string; lastUuid: string; turnId: string },
+  ) => void | Promise<void>;
+  /** Codex App Server interrupt 回执；请求写入 PTY 本身不算终态。 */
+  onSessionInterruptAck?: (
+    ds: DaemonSession,
+    ack: { acknowledged: boolean; turnId?: string; error?: string; at: number },
+  ) => void | Promise<void>;
+  /** worker cold-resume/restart 后重新可投递，用于重放持久 leader report outbox。 */
+  onSessionReady?: (ds: DaemonSession) => void | Promise<void>;
 }
 
 let callbacks: WorkerPoolCallbacks | undefined;
@@ -1904,6 +1914,9 @@ function setupWorkerHandlers(ds: DaemonSession, worker: ChildProcess): void {
         const readOnlyUrl = buildTerminalUrl(ds);
         const writeUrl = buildTerminalUrl(ds, { write: true });
         logger.info(`[${t}] Worker ready, terminal at ${readOnlyUrl}`);
+        Promise.resolve(cb.onSessionReady?.(ds)).catch(err => {
+          logger.warn(`[${t}] session-ready callback failed: ${err instanceof Error ? err.message : String(err)}`);
+        });
         if (ds.usageLimit) {
           ds.lastScreenStatus = 'limited';
           armUsageLimitRetryTimer(ds);
@@ -2571,10 +2584,21 @@ function setupWorkerHandlers(ds: DaemonSession, worker: ChildProcess): void {
           },
         });
         // 先持久化/通知监督会话，再走原话题投递；钩子失败不得吞掉 worker 答案。
-        Promise.resolve(cb.onSessionFinalOutput?.(ds, msg.content)).catch(err => {
+        Promise.resolve(cb.onSessionFinalOutput?.(ds, {
+          content: msg.content,
+          lastUuid: msg.lastUuid,
+          turnId: msg.turnId,
+        })).catch(err => {
           logger.warn(`[${t}] agent-team final callback failed: ${err instanceof Error ? err.message : String(err)}`);
         });
         deliverFinalOutput(ds, msg, t, 0);
+        break;
+      }
+
+      case 'turn_interrupt_ack': {
+        Promise.resolve(cb.onSessionInterruptAck?.(ds, msg)).catch(err => {
+          logger.warn(`[${t}] agent-team interrupt ack callback failed: ${err instanceof Error ? err.message : String(err)}`);
+        });
         break;
       }
 

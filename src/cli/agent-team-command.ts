@@ -10,19 +10,27 @@ export interface AgentTeamCliContext {
 const HELP = `botmux team — 同一 Bot 多独立会话的 supervisor 控制面
 
 用法:
-  botmux team create --name <名称> (--objective <目标> | --objective-file <文件>)
+  botmux team create --name <名称> (--objective <目标> | --objective-file <文件>) [--max-active-workers <1..4>]
   botmux team list
   botmux team status [--team <team_id>]
   botmux team spawn [--team <team_id>] --id <worker_id> --title <标题>
       (--assignment <任务> | --assignment-file <文件>) [--repo <目录>] [--depends-on <worker_id> ...]
+      [--reuse-key <稳定任务坐标>] [--writer]
   botmux team send [--team <team_id>] --worker <worker_id> (--content <纠偏> | --content-file <文件>)
+      [--kind correction|replacement|addition|status_query]
+      [--lifetime task-scoped|one-shot|revoked] [--revoke-revision <revision_id>]
   botmux team interrupt [--team <team_id>] --worker <worker_id>
   botmux team reap [--team <team_id>] [--close-team]
 
 说明:
   - leader 只负责编排；spawn 出来的每个 worker 都是同一飞书 Bot 的独立 Codex App session。
-  - worker 过程/结果留在各自飞书话题，final 会自动回报 leader。
-  - interrupt 只中断当前 turn，不删除会话；reap 只回收已有回报/中断/失败的 worker。
+  - 默认最多 3 个额外活跃 worker，create 可调到 1..4，硬上限 4；queued 不占配额，status 显示容量。
+  - depends-on 未满足时只登记 queued，不创建 session；只有依赖当前 attempt succeeded 才启动。
+  - reuse-key 或同 --repo 的 --writer 命中时不重复 spawn，返回已有 worker 并引导 team send。
+  - send 默认 addition/task-scoped；每次可执行 guidance 创建 revision/attempt。status_query 只读，不创建 attempt/恢复 session。
+  - closed/已回报 worker 的 send 会复用原 session/thread 并 cold-resume；失败保持 fail-closed。
+  - worker final 必须含 attemptId/revisionId/status/summary/evidenceRefs/metrics，invalid/旧 attempt 不计成功。
+  - interrupt 只中断当前 turn，不删除会话；必须等 Codex App Server 回执才进入 interrupted；reap 不回收 interrupting。
   - 这是 session federation，不是 Codex sub-agent，也不是已下线的 Botmux Workflow。`;
 
 function value(args: string[], flag: string): string | undefined {
@@ -90,9 +98,14 @@ export async function runAgentTeamCommand(args: string[], ctx?: AgentTeamCliCont
       const name = (value(rest, '--name') ?? '').trim();
       const objective = textArg(rest, '--objective', '--objective-file');
       if (!name || !objective) throw new Error('create 需要 --name 和 --objective/--objective-file');
+      const maxRaw = value(rest, '--max-active-workers');
+      const maxActiveWorkers = maxRaw === undefined ? undefined : Number(maxRaw);
+      if (maxRaw !== undefined && (!Number.isInteger(maxActiveWorkers) || maxActiveWorkers! < 1 || maxActiveWorkers! > 4)) {
+        throw new Error('--max-active-workers 必须是 1..4 的整数');
+      }
       print(await request(ctx, '/api/agent-teams', {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ leaderSessionId: ctx.sessionId, name, objective }),
+        body: JSON.stringify({ leaderSessionId: ctx.sessionId, name, objective, maxActiveWorkers }),
       }));
       return 0;
     }
@@ -119,6 +132,8 @@ export async function runAgentTeamCommand(args: string[], ctx?: AgentTeamCliCont
           assignment,
           workingDir: value(rest, '--repo'),
           dependsOn: values(rest, '--depends-on'),
+          reuseKey: value(rest, '--reuse-key'),
+          writer: rest.includes('--writer'),
         }),
       }));
       return 0;
@@ -129,7 +144,13 @@ export async function runAgentTeamCommand(args: string[], ctx?: AgentTeamCliCont
       if (!workerId || !content) throw new Error('send 需要 --worker 和 --content/--content-file');
       print(await request(ctx, `/api/agent-teams/${encodeURIComponent(teamId)}/workers/${encodeURIComponent(workerId)}/message`, {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ actorSessionId: ctx.sessionId, content }),
+        body: JSON.stringify({
+          actorSessionId: ctx.sessionId,
+          content,
+          guidanceType: value(rest, '--kind'),
+          lifetime: value(rest, '--lifetime'),
+          revokesRevisionId: value(rest, '--revoke-revision'),
+        }),
       }));
       return 0;
     }

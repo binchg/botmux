@@ -85,6 +85,13 @@ describe('codex-app runner steering', () => {
     expect(source).toContain("decoded?.type === 'interrupt'");
     expect(source).toContain('void interruptActiveTurn()');
     expect(source).toContain("client.request('turn/interrupt', { threadId, turnId: turn.turnId })");
+    expect(source).toContain("emitMarker('interrupt_ack', { acknowledged: true");
+  });
+
+  it('enables a narrow output schema only for Agent Team turns', () => {
+    expect(source).toContain("content.includes('<botmux_agent_team>')");
+    expect(source).toContain("required: ['attemptId', 'revisionId', 'status', 'summary', 'evidenceRefs', 'metrics']");
+    expect(source).toContain('...(outputSchema ? { outputSchema } : {})');
   });
 
   it('automatically continues bounded HTTP 429 retry-limit failures', () => {
