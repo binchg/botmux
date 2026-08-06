@@ -19,8 +19,9 @@ const HELP = `botmux team — 同一 Bot 多独立会话的 supervisor 控制面
   botmux team send [--team <team_id>] --worker <worker_id> (--content <纠偏> | --content-file <文件>)
       [--kind correction|replacement|addition|status_query]
       [--lifetime task-scoped|one-shot|revoked] [--revoke-revision <revision_id>]
-  botmux team milestone --team <team_id> --type audit_eligible|commit_pushed|bits_mr_ready|build_started|build_terminal
+  botmux team milestone --team <team_id> --type audit_eligible|commit_pushed|bits_mr_ready|build_started|build_terminal|human_required
       (--summary <摘要> | --summary-file <文件>) [--url <BITS_URL>] [--evidence-ref <引用> ...]
+      [--branch <分支>] [--sha <提交SHA>] [--build-job <构建节点或URL>]
       [--attempt-id <attempt_id>] [--revision-id <revision_id>] [--idempotency-key <稳定键>]
   botmux team interrupt [--team <team_id>] --worker <worker_id>
   botmux team reap [--team <team_id>] [--close-team]
@@ -158,6 +159,9 @@ export async function runAgentTeamCommand(args: string[], ctx?: AgentTeamCliCont
           attemptId: value(rest, '--attempt-id'),
           revisionId: value(rest, '--revision-id'),
           idempotencyKey: value(rest, '--idempotency-key'),
+          branch: value(rest, '--branch'),
+          sha: value(rest, '--sha'),
+          buildJob: value(rest, '--build-job'),
         }),
       }));
       return 0;

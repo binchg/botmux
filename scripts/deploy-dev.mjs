@@ -100,7 +100,9 @@ function main() {
     'test/restart-report.test.ts', 'test/codex-app-progress.test.ts',
     'test/persistent-app-runner-reload.test.ts', 'test/session-lifecycle-hooks.test.ts',
     'test/codex-app-hook-health.test.ts', 'test/codex-app-runner.test.ts',
-    'test/codex-app-thread-title.test.ts', 'test/cli-adapters.test.ts']);
+    'test/codex-app-thread-title.test.ts', 'test/cli-adapters.test.ts',
+    'test/agent-team-store.test.ts', 'test/agent-team-human-output.test.ts',
+    'test/agent-team-command.test.ts', 'test/build-atomic.test.ts']);
   run('corepack', ['pnpm', 'build']);
 
   git(['add', '-A'], false);

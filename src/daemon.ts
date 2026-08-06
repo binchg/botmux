@@ -142,6 +142,12 @@ import {
   recordAgentTeamWorkerReport,
 } from './services/agent-team-store.js';
 import { buildAgentTeamLeaderMilestonePrompt, buildAgentTeamLeaderReportPrompt } from './core/agent-team-prompts.js';
+import {
+  agentTeamMilestoneDeliveryPolicy,
+  agentTeamReportDeliveryPolicy,
+  renderAgentTeamHumanOutput,
+} from './services/agent-team-human-output.js';
+import { buildTitledMarkdownCard } from './im/lark/md-card.js';
 import { learnFromMentions, resolveSender, flushIdentityCacheSync } from './im/lark/identity-cache.js';
 import { normalizeBrand } from './im/lark/lark-hosts.js';
 import { renderBufferedSenderBlock } from './core/session-manager.js';
@@ -1480,18 +1486,57 @@ function beginNewTurn(ds: DaemonSession, title: string): void {
   persistStreamCardState(ds);
 }
 
+function agentTeamHumanCard(output: ReturnType<typeof renderAgentTeamHumanOutput>): string {
+  return buildTitledMarkdownCard({
+    title: output.title,
+    md: output.markdown,
+    brand: '',
+    template: output.template,
+    locale: 'zh',
+  });
+}
+
 /** outbox → leader 的幂等 consumer；reportId 在持久 seen 集合中只认领一次。 */
-function deliverPendingAgentTeamReports(): number {
+async function deliverPendingAgentTeamReports(): Promise<number> {
   let delivered = 0;
   for (const pending of listPendingAgentTeamReports(config.session.dataDir, selfV3LarkAppId)) {
     const leader = [...activeSessions.values()].find(item => item.session.sessionId === pending.team.leaderSessionId);
     if (!leader?.worker || leader.worker.killed) continue;
-    const consumed = markAgentTeamReportLeaderSeen(config.session.dataDir, pending.team.teamId, pending.report.reportId);
-    if (!consumed?.firstSeen) continue;
-    const worker = consumed.team.workers.find(item => item.workerId === consumed.report.workerId);
+    const worker = pending.team.workers.find(item => item.workerId === pending.report.workerId);
     if (!worker) continue;
-    const prompt = buildAgentTeamLeaderReportPrompt(consumed.team, worker, consumed.report);
-    beginNewTurn(leader, `Worker 回报：${worker.workerId}`);
+    const human = renderAgentTeamHumanOutput({ kind: 'report', workerId: worker.workerId, report: pending.report });
+    let visibleMessageId: string | undefined;
+    if (agentTeamReportDeliveryPolicy(pending.report.status).userVisible) {
+      try {
+        visibleMessageId = await replyMessage(
+          pending.team.larkAppId,
+          leader.session.rootMessageId,
+          agentTeamHumanCard(human),
+          'interactive',
+          true,
+          `${pending.report.reportId}:leader`,
+        );
+        logger.info(`[agent-team] report visible payload=${JSON.stringify(human.markdown)}`);
+      } catch (err) {
+        logger.warn(`[agent-team] report ${pending.report.reportId.slice(0, 16)} visible delivery failed: ${err instanceof Error ? err.message : String(err)}`);
+        continue;
+      }
+    } else {
+      logger.info(`[agent-team] report ${pending.report.reportId.slice(0, 16)} internal-only; leader context will still be injected`);
+    }
+    if (!leader.worker || leader.worker.killed) continue;
+    const consumed = markAgentTeamReportLeaderSeen(
+      config.session.dataDir,
+      pending.team.teamId,
+      pending.report.reportId,
+      new Date(),
+      visibleMessageId,
+    );
+    if (!consumed?.firstSeen) continue;
+    const consumedWorker = consumed.team.workers.find(item => item.workerId === consumed.report.workerId);
+    if (!consumedWorker) continue;
+    const prompt = buildAgentTeamLeaderReportPrompt(consumed.team, consumedWorker, consumed.report);
+    beginNewTurn(leader, `Worker 回报：${consumedWorker.workerId}`);
     const wrapped = buildFollowUpContent(prompt, leader.session.sessionId, {
       cliId: leader.session.cliId,
       locale: localeForBot(leader.larkAppId),
@@ -1519,28 +1564,37 @@ async function deliverPendingAgentTeamMilestones(): Promise<number> {
     if (!leader) continue;
     const worker = pending.team.workers.find(item => item.workerId === pending.milestone.workerId);
     if (!worker) continue;
-    const proposer = leader.session.creatorOpenId ?? leader.session.ownerOpenId;
-    const mention = pending.milestone.type === 'bits_mr_ready' && proposer
-      ? `<at user_id="${proposer}"></at> `
-      : '';
-    const visible = [
-      `${mention}【Agent Team · ${pending.milestone.type}】${worker.workerId}`,
-      pending.milestone.summary,
-      pending.milestone.url,
-    ].filter((item): item is string => !!item).join('\n');
-    let visibleMessageId: string;
-    try {
-      visibleMessageId = await replyMessage(
-        pending.team.larkAppId,
-        leader.session.rootMessageId,
-        visible,
-        'text',
-        true,
-        pending.milestone.milestoneId,
-      );
-    } catch (err) {
-      logger.warn(`[agent-team] milestone ${pending.milestone.milestoneId.slice(0, 20)} visible delivery failed: ${err instanceof Error ? err.message : String(err)}`);
-      continue;
+    const human = renderAgentTeamHumanOutput({ kind: 'milestone', workerId: worker.workerId, milestone: pending.milestone });
+    const cardJson = agentTeamHumanCard(human);
+    let visibleMessageId: string | undefined;
+    let workerVisibleMessageId: string | undefined;
+    if (agentTeamMilestoneDeliveryPolicy(pending.milestone.type).userVisible) {
+      try {
+        visibleMessageId = await replyMessage(
+          pending.team.larkAppId,
+          leader.session.rootMessageId,
+          cardJson,
+          'interactive',
+          true,
+          `${pending.milestone.milestoneId}:leader`,
+        );
+        if (worker.rootMessageId && worker.rootMessageId !== leader.session.rootMessageId) {
+          workerVisibleMessageId = await replyMessage(
+            pending.team.larkAppId,
+            worker.rootMessageId,
+            cardJson,
+            'interactive',
+            true,
+            `${pending.milestone.milestoneId}:worker`,
+          );
+        }
+        logger.info(`[agent-team] milestone visible payload=${JSON.stringify(human.markdown)}`);
+      } catch (err) {
+        logger.warn(`[agent-team] milestone ${pending.milestone.milestoneId.slice(0, 20)} visible delivery failed: ${err instanceof Error ? err.message : String(err)}`);
+        continue;
+      }
+    } else {
+      logger.info(`[agent-team] milestone ${pending.milestone.milestoneId.slice(0, 20)} internal-only; leader context will still be injected`);
     }
     // Keep the durable outbox pending when the leader runner is unavailable;
     // the same Feishu uuid makes the next visible retry harmless.
@@ -1551,6 +1605,7 @@ async function deliverPendingAgentTeamMilestones(): Promise<number> {
       pending.milestone.milestoneId,
       new Date(),
       visibleMessageId,
+      workerVisibleMessageId,
     );
     if (!consumed?.firstSeen) continue;
     const prompt = buildAgentTeamLeaderMilestonePrompt(consumed.team, worker, consumed.milestone);
@@ -3795,14 +3850,19 @@ export async function startDaemon(botIndex?: number): Promise<void> {
       void closeSessionHelper(ds.session.sessionId).catch(() => { /* idempotent */ });
       logger.info(`[${ds.session.sessionId.substring(0, 8)}] Session auto-closed (message withdrawn)`);
     },
-    onSessionFinalOutput(ds: DaemonSession, output) {
+    async onSessionFinalOutput(ds: DaemonSession, output) {
       const recorded = recordAgentTeamWorkerReport(config.session.dataDir, ds.session.sessionId, output);
-      if (!recorded) return;
+      if (!recorded) return { action: 'suppress' as const };
       if (recorded.disposition === 'stale') {
         logger.info(`[agent-team] quarantined stale final from ${recorded.worker.workerId} report=${recorded.report.reportId.slice(0, 16)}`);
-        return;
+        return { action: 'suppress' as const };
       }
-      const delivered = deliverPendingAgentTeamReports();
+      const human = renderAgentTeamHumanOutput({
+        kind: 'report',
+        workerId: recorded.worker.workerId,
+        report: recorded.report,
+      });
+      const delivered = await deliverPendingAgentTeamReports();
       if (delivered === 0) {
         logger.info(`[agent-team] worker ${recorded.worker.workerId} report persisted; leader delivery pending or duplicate`);
       }
@@ -3811,6 +3871,9 @@ export async function startDaemon(botIndex?: number): Promise<void> {
           logger.warn(`[agent-team] dependency reconciliation failed: ${err instanceof Error ? err.message : String(err)}`);
         });
       }
+      return agentTeamReportDeliveryPolicy(recorded.report.status).userVisible
+        ? { action: 'deliver' as const, cardJson: agentTeamHumanCard(human), humanContent: human.markdown }
+        : { action: 'suppress' as const };
     },
     onSessionInterruptAck(ds: DaemonSession, ack) {
       const acknowledged = acknowledgeAgentTeamWorkerInterrupt(config.session.dataDir, ds.session.sessionId, ack.acknowledged);
@@ -3824,7 +3887,7 @@ export async function startDaemon(botIndex?: number): Promise<void> {
     },
     onSessionReady(ds: DaemonSession) {
       if (ds.session.agentTeam?.role !== 'leader') return;
-      deliverPendingAgentTeamReports();
+      void deliverPendingAgentTeamReports();
       void deliverPendingAgentTeamMilestones();
     },
   });
@@ -4029,7 +4092,7 @@ export async function startDaemon(botIndex?: number): Promise<void> {
   // 与持久 report outbox。两步都是幂等的，旧/重复 reportId 不会产生第二次 leader 效果。
   try {
     const starts = await reconcileAgentTeamQueuedWorkers(cfg.larkAppId);
-    const delivered = deliverPendingAgentTeamReports();
+    const delivered = await deliverPendingAgentTeamReports();
     const milestones = await deliverPendingAgentTeamMilestones();
     const started = starts.filter(item => item.ok && item.started).length;
     if (started || delivered || milestones) logger.info(`[agent-team] reconciliation started=${started} reports=${delivered} milestones=${milestones}`);

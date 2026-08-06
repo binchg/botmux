@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { build } from 'esbuild';
 
 const webSrc = 'src/dashboard/web';
-const outDir = 'dist/dashboard-web';
+const outDir = join(process.env.BOTMUX_DIST_DIR || 'dist', 'dashboard-web');
 
 async function copyIfExists(from, to, options = {}) {
   if (!existsSync(from)) return;

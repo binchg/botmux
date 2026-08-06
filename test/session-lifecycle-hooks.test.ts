@@ -338,6 +338,36 @@ describe('worker-pool lifecycle hook integration', () => {
     await flush();
 
     expect(sessionReplyMock).not.toHaveBeenCalled();
+    expect(updateMessageMock).not.toHaveBeenCalled();
+    expect(deleteMessageMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps an internal Team final in leader control flow without any user message or retraction', async () => {
+    const onSessionFinalOutput = vi.fn(async () => ({ action: 'suppress' as const }));
+    initWorkerPool({
+      sessionReply: sessionReplyMock,
+      getSessionWorkingDir: () => '/repo',
+      getActiveCount: () => 1,
+      closeSession: vi.fn(),
+      onSessionFinalOutput,
+    });
+    const worker = makeFakeWorker();
+    const ds = makeDs({ worker });
+    ds.session.agentTeam = {
+      teamId: 'team_1', role: 'worker', leaderSessionId: 'leader_1', workerId: 'worker_a',
+    };
+    __testOnly_setupWorkerHandlers(ds, worker);
+
+    worker.emit('message', {
+      type: 'final_output', turnId: 'team-internal', lastUuid: 'team-internal-final',
+      content: '{"attemptId":"attempt_1","revisionId":"rev_1","status":"succeeded","summary":"done","evidenceRefs":[],"metrics":[]}',
+    });
+    await flush();
+
+    expect(onSessionFinalOutput).toHaveBeenCalledTimes(1);
+    expect(sessionReplyMock).not.toHaveBeenCalled();
+    expect(updateMessageMock).not.toHaveBeenCalled();
+    expect(deleteMessageMock).not.toHaveBeenCalled();
   });
 
   it('keeps Codex App heartbeats internal even when the activity changes', async () => {
@@ -387,6 +417,64 @@ describe('worker-pool lifecycle hook integration', () => {
 
     expect(sessionReplyMock).toHaveBeenCalledTimes(1);
     expect(String(sessionReplyMock.mock.calls[0][1])).toContain('建档已完成');
+    expect(updateMessageMock).not.toHaveBeenCalled();
+    expect(deleteMessageMock).not.toHaveBeenCalled();
+  });
+
+  it('never forwards split structured JSON progress from an Agent Team worker', async () => {
+    const worker = makeFakeWorker();
+    const ds = makeDs({ worker });
+    ds.session.agentTeam = {
+      teamId: 'team_1', role: 'worker', leaderSessionId: 'leader_1', workerId: 'worker_a',
+    };
+    __testOnly_setupWorkerHandlers(ds, worker);
+
+    worker.emit('message', {
+      type: 'progress_output', kind: 'assistant', turnId: 'team-turn', content: '{"attemptId":"attempt_1",',
+    });
+    worker.emit('message', {
+      type: 'progress_output', kind: 'assistant', turnId: 'team-turn', content: '"revisionId":"rev_1"}',
+    });
+    await flush();
+
+    expect(sessionReplyMock).not.toHaveBeenCalled();
+    expect(updateMessageMock).not.toHaveBeenCalled();
+    expect(deleteMessageMock).not.toHaveBeenCalled();
+  });
+
+  it('renders an Agent Team final as the callback short card and never leaks the raw JSON', async () => {
+    const onSessionFinalOutput = vi.fn(async () => ({
+      action: 'deliver' as const,
+      humanContent: '✅ [MR 8303533](https://bits.bytedance.net/bytebus/devops/code/detail/8303533?tab=changes&x=1)\n范围：worker_a\n状态：测试通过',
+      cardJson: JSON.stringify({
+        schema: '2.0',
+        body: { elements: [{ tag: 'markdown', content: '✅ [MR 8303533](https://bits.bytedance.net/bytebus/devops/code/detail/8303533?tab=changes&x=1)\n范围：worker_a\n状态：测试通过' }] },
+      }),
+    }));
+    initWorkerPool({
+      sessionReply: sessionReplyMock,
+      getSessionWorkingDir: () => '/repo',
+      getActiveCount: () => 1,
+      closeSession: vi.fn(),
+      onSessionFinalOutput,
+    });
+    const worker = makeFakeWorker();
+    const ds = makeDs({ worker });
+    ds.session.agentTeam = {
+      teamId: 'team_1', role: 'worker', leaderSessionId: 'leader_1', workerId: 'worker_a',
+    };
+    __testOnly_setupWorkerHandlers(ds, worker);
+    const raw = '{"attemptId":"attempt_1","revisionId":"rev_1","status":"succeeded","summary":"done","evidenceRefs":[],"metrics":[]}';
+
+    worker.emit('message', { type: 'final_output', turnId: 'team-turn', lastUuid: 'team-final-1', content: raw });
+    await flush();
+    await flush();
+
+    expect(onSessionFinalOutput).toHaveBeenCalledWith(ds, expect.objectContaining({ content: raw }));
+    expect(sessionReplyMock).toHaveBeenCalledTimes(1);
+    expect(sessionReplyMock.mock.calls[0][2]).toBe('interactive');
+    expect(String(sessionReplyMock.mock.calls[0][1])).toContain('[MR 8303533](');
+    expect(String(sessionReplyMock.mock.calls[0][1])).not.toContain('attemptId');
     expect(updateMessageMock).not.toHaveBeenCalled();
     expect(deleteMessageMock).not.toHaveBeenCalled();
   });

@@ -639,7 +639,7 @@ ipcRoute('POST', '/api/agent-teams/:teamId/milestones', async (req, res, params)
   }
   const worker = actorWorker ?? team.workers.find(item => item.workerId === requestedWorkerId);
   if (!worker) return jsonRes(res, 400, { ok: false, error: 'milestone_worker_required' });
-  const types = new Set<AgentTeamMilestoneType>(['audit_eligible', 'commit_pushed', 'bits_mr_ready', 'build_started', 'build_terminal']);
+  const types = new Set<AgentTeamMilestoneType>(['audit_eligible', 'commit_pushed', 'bits_mr_ready', 'build_started', 'build_terminal', 'human_required']);
   const type = typeof body.type === 'string' && types.has(body.type as AgentTeamMilestoneType)
     ? body.type as AgentTeamMilestoneType
     : undefined;
@@ -655,6 +655,11 @@ ipcRoute('POST', '/api/agent-teams/:teamId/milestones', async (req, res, params)
     url: typeof body.url === 'string' ? body.url : undefined,
     evidenceRefs: Array.isArray(body.evidenceRefs) ? body.evidenceRefs.filter((item): item is string => typeof item === 'string') : [],
     idempotencyKey: typeof body.idempotencyKey === 'string' ? body.idempotencyKey : undefined,
+    latestArtifacts: {
+      branch: typeof body.branch === 'string' ? body.branch : undefined,
+      sha: typeof body.sha === 'string' ? body.sha : undefined,
+      buildJob: typeof body.buildJob === 'string' ? body.buildJob : undefined,
+    },
   });
   if (!recorded.ok) return jsonRes(res, 400, recorded);
   if (recorded.disposition !== 'stale') void Promise.resolve(agentTeamMilestoneNotifier?.()).catch(err => {

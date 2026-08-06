@@ -93,6 +93,13 @@ describe('codex-app runner steering', () => {
     expect(source).toContain('...(outputSchema ? { outputSchema } : {})');
   });
 
+  it('collects Team structured deltas without writing them to terminal or progress markers', () => {
+    expect(source).toContain('structuredOutput: boolean');
+    expect(source).toContain('const turn = makeTurn(!!outputSchema)');
+    expect(source).toContain('if (turn.structuredOutput) return');
+    expect(source).toContain('if (!activeTurn.structuredOutput) process.stdout.write(delta)');
+  });
+
   it('automatically continues bounded HTTP 429 retry-limit failures', () => {
     expect(source).toContain('isCodexAppRetryLimit429(errorMessage)');
     expect(source).toContain('CODEX_APP_RATE_LIMIT_MAX_CONTINUES');

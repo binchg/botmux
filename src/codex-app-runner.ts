@@ -48,6 +48,9 @@ interface ActiveTurn {
   resolveDone: () => void;
   criticalHookFailure?: string;
   rateLimitError?: string;
+  /** Structured Team JSON is machine-only: collect it for the final marker,
+   * but never mirror its streamed bytes into terminal/progress surfaces. */
+  structuredOutput: boolean;
 }
 
 interface TurnOutcome {
@@ -289,7 +292,7 @@ const queue: string[] = [];
 let inputBuffer = '';
 let processing = false;
 
-function makeTurn(): ActiveTurn {
+function makeTurn(structuredOutput = false): ActiveTurn {
   let resolveDone!: () => void;
   const done = new Promise<void>(resolve => { resolveDone = resolve; });
   return {
@@ -304,6 +307,7 @@ function makeTurn(): ActiveTurn {
     steerChain: Promise.resolve(),
     done,
     resolveDone,
+    structuredOutput,
   };
 }
 
@@ -312,6 +316,7 @@ function userTextInput(content: string): JsonObject[] {
 }
 
 function maybeEmitProgress(turn: ActiveTurn, force = false): void {
+  if (turn.structuredOutput) return;
   if (turn.finalText) return;
   const snapshots = turn.progress.drainSnapshots({
     turnId: turn.turnId,
@@ -511,7 +516,7 @@ function handleNotification(msg: JsonObject): void {
     const itemEpoch = activeTurn.itemEpoch.get(itemId) ?? activeTurn.guidanceEpoch;
     if (!activeTurn.itemEpoch.has(itemId)) activeTurn.itemEpoch.set(itemId, itemEpoch);
     activeTurn.itemText.set(itemId, (activeTurn.itemText.get(itemId) ?? '') + delta);
-    process.stdout.write(delta);
+    if (!activeTurn.structuredOutput) process.stdout.write(delta);
     if (itemEpoch !== activeTurn.guidanceEpoch) return;
     if (activeTurn.finalText && activeTurn.finalItemId !== itemId) {
       activeTurn.finalText = '';
@@ -661,7 +666,8 @@ async function runSingleTurn(content: string, autoContinue: boolean): Promise<Tu
   const hookTrustIssue = await currentHookTrustIssue();
   if (hookTrustIssue) throw new Error(hookTrustIssue);
   const tid = await ensureThread();
-  const turn = makeTurn();
+  const outputSchema = agentTeamOutputSchema(content);
+  const turn = makeTurn(!!outputSchema);
   activeTurn = turn;
   // Agent-message deltas are event driven, but a short unpunctuated delta may
   // be followed by a long tool call. Tick independently so the first progress
@@ -684,7 +690,6 @@ async function runSingleTurn(content: string, autoContinue: boolean): Promise<Tu
     }
     writeLine();
 
-    const outputSchema = agentTeamOutputSchema(content);
     const result = await client.request('turn/start', {
       threadId: tid,
       input: userTextInput(content),

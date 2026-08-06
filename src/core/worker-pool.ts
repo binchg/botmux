@@ -80,7 +80,7 @@ export interface WorkerPoolCallbacks {
   onSessionFinalOutput?: (
     ds: DaemonSession,
     output: { content: string; lastUuid: string; turnId: string },
-  ) => void | Promise<void>;
+  ) => AgentTeamFinalDelivery | undefined | Promise<AgentTeamFinalDelivery | undefined>;
   /** Codex App Server interrupt 回执；请求写入 PTY 本身不算终态。 */
   onSessionInterruptAck?: (
     ds: DaemonSession,
@@ -88,6 +88,14 @@ export interface WorkerPoolCallbacks {
   ) => void | Promise<void>;
   /** worker cold-resume/restart 后重新可投递，用于重放持久 leader report outbox。 */
   onSessionReady?: (ds: DaemonSession) => void | Promise<void>;
+}
+
+export interface AgentTeamFinalDelivery {
+  action: 'deliver' | 'suppress';
+  /** Already-rendered Lark card JSON from the shared Team renderer. */
+  cardJson?: string;
+  /** Human-only short text used by dashboard/live-event and HTTP surfaces. */
+  humanContent?: string;
 }
 
 let callbacks: WorkerPoolCallbacks | undefined;
@@ -2502,6 +2510,10 @@ function setupWorkerHandlers(ds: DaemonSession, worker: ChildProcess): void {
       }
 
       case 'progress_output': {
+        if (ds.session.agentTeam?.role === 'worker') {
+          logger.info(`[${t}] Agent Team structured progress suppressed before outbound (turn ${msg.turnId.substring(0, 8)})`);
+          break;
+        }
         if (msg.kind === 'heartbeat' || msg.kind === 'activity') {
           logger.info(`[${t}] Codex App automatic activity kept internal; only AI assistant progress is posted (turn ${msg.turnId.substring(0, 8)})`);
           break;
@@ -2567,6 +2579,39 @@ function setupWorkerHandlers(ds: DaemonSession, worker: ChildProcess): void {
           logger.debug(`[${t}] final_output deduped (uuid ${msg.lastUuid.substring(0, 8)})`);
           break;
         }
+        // Team finals are strict machine JSON. Persist/validate first, then
+        // expose only the shared short-card render; malformed/stale raw blobs
+        // are never appended to live events or sent to Lark.
+        if (ds.session.agentTeam?.role === 'worker') {
+          let decision: AgentTeamFinalDelivery | undefined;
+          try {
+            decision = await cb.onSessionFinalOutput?.(ds, {
+              content: msg.content,
+              lastUuid: msg.lastUuid,
+              turnId: msg.turnId,
+            });
+          } catch (err) {
+            logger.warn(`[${t}] agent-team final callback failed: ${err instanceof Error ? err.message : String(err)}`);
+          }
+          if (!decision || decision.action === 'suppress' || !decision.cardJson || !decision.humanContent) {
+            ds.lastBridgeEmittedUuid = msg.lastUuid;
+            logger.info(`[${t}] Agent Team raw final suppressed after ledger callback (turn ${msg.turnId.substring(0, 8)})`);
+            break;
+          }
+          appendSessionLiveEvent(ds, {
+            kind: 'assistant_final',
+            turnId: msg.turnId,
+            content: decision.humanContent,
+            at: Date.now(),
+          });
+          dashboardEventBus.publish({
+            type: 'session.update',
+            body: { sessionId: ds.session.sessionId, patch: sessionLivePatch(ds) },
+          });
+          deliverFinalOutput(ds, msg, t, 0, decision);
+          break;
+        }
+
         // Worker pops the turn off its queue right after emit, so it will
         // NOT re-send this payload on its own. Daemon owns retry on
         // transient Lark failures.
@@ -2578,18 +2623,7 @@ function setupWorkerHandlers(ds: DaemonSession, worker: ChildProcess): void {
         });
         dashboardEventBus.publish({
           type: 'session.update',
-          body: {
-            sessionId: ds.session.sessionId,
-            patch: sessionLivePatch(ds),
-          },
-        });
-        // 先持久化/通知监督会话，再走原话题投递；钩子失败不得吞掉 worker 答案。
-        Promise.resolve(cb.onSessionFinalOutput?.(ds, {
-          content: msg.content,
-          lastUuid: msg.lastUuid,
-          turnId: msg.turnId,
-        })).catch(err => {
-          logger.warn(`[${t}] agent-team final callback failed: ${err instanceof Error ? err.message : String(err)}`);
+          body: { sessionId: ds.session.sessionId, patch: sessionLivePatch(ds) },
         });
         deliverFinalOutput(ds, msg, t, 0);
         break;
@@ -2723,13 +2757,14 @@ function deliverFinalOutput(
   msg: Extract<WorkerToDaemon, { type: 'final_output' }>,
   t: string,
   attempt: number,
+  teamDelivery?: AgentTeamFinalDelivery,
 ): void {
   // Wait Mode / HTTP Sync Override:
   // If this turn is being waited for by an HTTP webhook request, intercept the
   // output, resolve the Promise immediately, and DO NOT send it to Lark.
   const waitPromise = ds.pendingWaitPromises?.get(msg.turnId);
   if (waitPromise) {
-    waitPromise.resolve(msg.content);
+    waitPromise.resolve(teamDelivery?.humanContent ?? msg.content);
     ds.lastBridgeEmittedUuid = msg.lastUuid;
     logger.info(`[${t}] Intercepted final_output for Wait Mode HTTP request (turn ${msg.turnId.substring(0, 8)})`);
     return;
@@ -2738,7 +2773,7 @@ function deliverFinalOutput(
   const asyncResult = ds.asyncTriggerResults?.get(msg.turnId);
   if (asyncResult) {
     asyncResult.status = 'completed';
-    asyncResult.content = msg.content;
+    asyncResult.content = teamDelivery?.humanContent ?? msg.content;
     asyncResult.completedAt = Date.now();
     ds.lastBridgeEmittedUuid = msg.lastUuid;
     logger.info(`[${t}] Captured final_output for Async HTTP request (turn ${msg.turnId.substring(0, 8)})`);
@@ -2790,8 +2825,8 @@ function deliverFinalOutput(
       // they use the contextual card so the user prompt sits in a
       // blockquote and only the assistant body goes through full markdown
       // rendering.
-      let outwardContent = msg.content;
-      if (localFileShareEnabled()) {
+      let outwardContent = teamDelivery?.humanContent ?? msg.content;
+      if (!teamDelivery && localFileShareEnabled()) {
         const sharedLinks = rewriteLocalFileLinks(msg.content, {
           dataDir: config.session.dataDir,
           roots: configuredFileShareRoots(requireCallbacks().getSessionWorkingDir(ds)),
@@ -2804,7 +2839,7 @@ function deliverFinalOutput(
         }
       }
       const recipientOpenId = daemonCardFooterRecipientOpenId(ds, effectiveCliId);
-      const cardJson = msg.kind === 'local-turn' || msg.kind === 'local-turn-headless'
+      const cardJson = teamDelivery?.cardJson ?? (msg.kind === 'local-turn' || msg.kind === 'local-turn-headless'
         ? buildContextualReplyCard({
             title: msg.kind === 'local-turn-headless'
               ? tr('card.local_turn_resumed', undefined, localeForBot(ds.larkAppId))
@@ -2816,14 +2851,14 @@ function deliverFinalOutput(
             brand: resolveBrandLabel(ds.larkAppId),
             locale: localeForBot(ds.larkAppId),
           })
-        : buildMarkdownCard(outwardContent, recipientOpenId, resolveBrandLabel(ds.larkAppId), localeForBot(ds.larkAppId));
+        : buildMarkdownCard(outwardContent, recipientOpenId, resolveBrandLabel(ds.larkAppId), localeForBot(ds.larkAppId)));
 
       // Always deliver the answer as a fresh message — never PATCH a card in
       // place. message.patch is silent (no Feishu notification / unread), which
       // used to swallow the answer; a brand-new message always pings.
       await scopedReply(cardJson, 'interactive', msg.turnId);
       ds.lastBridgeEmittedUuid = msg.lastUuid;
-      logger.info(`[${t}] Bridge final_output forwarded (turn ${msg.turnId.substring(0, 8)}, ${msg.content.length} chars, kind=${msg.kind ?? 'bridge'}, attempt ${attempt + 1})`);
+      logger.info(`[${t}] ${teamDelivery ? 'Agent Team short card' : 'Bridge final_output'} forwarded (turn ${msg.turnId.substring(0, 8)}, ${outwardContent.length} chars, kind=${msg.kind ?? 'bridge'}, attempt ${attempt + 1})`);
     } catch (err: any) {
       if (err instanceof MessageWithdrawnError) {
         // Root message gone — no point retrying. Mark as emitted so any
@@ -2841,7 +2876,7 @@ function deliverFinalOutput(
         return;
       }
       logger.warn(`[${t}] Bridge final_output attempt ${next} failed (${err.message}); retrying in ${FINAL_OUTPUT_RETRY_BACKOFF_MS[next]}ms`);
-      deliverFinalOutput(ds, msg, t, next);
+      deliverFinalOutput(ds, msg, t, next, teamDelivery);
     }
   }, FINAL_OUTPUT_RETRY_BACKOFF_MS[attempt] ?? 0);
 }

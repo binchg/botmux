@@ -153,6 +153,7 @@ describe('agent team store', () => {
     expect(invalid?.disposition).toBe('invalid');
     expect(invalid?.worker.status).toBe('failed');
     expect(invalid?.report.status).toBe('invalid');
+    expect(invalid?.report.summary).not.toContain('plain success');
   });
 
   it('normalizes strict named metric entries while retaining legacy map compatibility', () => {
@@ -212,10 +213,18 @@ describe('agent team store', () => {
       ...base, type: 'audit_eligible', summary: 'machine audit passed',
     }, new Date('2026-08-06T00:02:00.000Z'));
     const bits = recordAgentTeamMilestone(dataDir, team.teamId, worker.workerId, {
-      ...base, type: 'bits_mr_ready', summary: 'BITS ready', url: 'https://bits.example/mr/1',
+      ...base,
+      type: 'bits_mr_ready',
+      summary: 'BITS ready',
+      url: 'https://bits.bytedance.net/bytebus/devops/code/detail/8303533?tab=changes&devops_space_type=client',
+      latestArtifacts: { branch: 'dev', sha: '899ef47c7eec293927416ad39627e570fca2c4c3' },
     }, new Date('2026-08-06T00:03:00.000Z'));
     const duplicate = recordAgentTeamMilestone(dataDir, team.teamId, worker.workerId, {
-      ...base, type: 'bits_mr_ready', summary: 'same URL again', url: 'https://bits.example/mr/1', idempotencyKey: 'different-caller-key',
+      ...base,
+      type: 'bits_mr_ready',
+      summary: 'same URL again',
+      url: 'https://bits.bytedance.net/bytebus/devops/code/detail/8303533?tab=changes&devops_space_type=client',
+      idempotencyKey: 'different-caller-key',
     }, new Date('2026-08-06T00:03:30.000Z'));
     const terminal = recordAgentTeamMilestone(dataDir, team.teamId, worker.workerId, {
       ...base, type: 'build_terminal', summary: 'build passed',
@@ -227,6 +236,11 @@ describe('agent team store', () => {
     expect(terminal.ok && terminal.disposition).toBe('accepted');
     if (!bits.ok || !duplicate.ok) throw new Error('expected milestones');
     expect(duplicate.milestone.milestoneId).toBe(bits.milestone.milestoneId);
+    if (!terminal.ok) throw new Error('expected terminal milestone');
+    expect(terminal.milestone.url).toBe('https://bits.bytedance.net/bytebus/devops/code/detail/8303533?tab=changes&devops_space_type=client');
+    expect(terminal.milestone.latestArtifacts).toMatchObject({
+      bitsMrId: '8303533', branch: 'dev', sha: '899ef47c7eec293927416ad39627e570fca2c4c3',
+    });
     const persisted = getAgentTeam(dataDir, team.teamId)!;
     expect(persisted.workers[0].attempts[0].status).toBe('running');
     expect(persisted.milestones).toHaveLength(3);
@@ -243,6 +257,38 @@ describe('agent team store', () => {
     expect(markAgentTeamMilestoneLeaderSeen(dataDir, team.teamId, bits.milestone.milestoneId)?.firstSeen).toBe(false);
     expect(getAgentTeam(dataDir, team.teamId)?.milestones.find(item => item.milestoneId === bits.milestone.milestoneId)?.visibleMessageId).toBe('om_visible_bits');
     expect(getAgentTeam(dataDir, team.teamId)?.metrics.duplicateMilestoneLeaderSuppressions).toBe(1);
+    if (!audit.ok) throw new Error('expected audit milestone');
+    expect(markAgentTeamMilestoneLeaderSeen(dataDir, team.teamId, audit.milestone.milestoneId)?.firstSeen).toBe(true);
+    expect(getAgentTeam(dataDir, team.teamId)?.milestones.find(item => item.milestoneId === audit.milestone.milestoneId)?.visibleMessageId).toBeUndefined();
+  });
+
+  it('keeps latestArtifacts inside one attempt and quarantines old pending artifacts on a new revision', () => {
+    const dataDir = temporaryDataDir();
+    const team = create(dataDir);
+    const worker = addRunning(dataDir, team.teamId);
+    const oldBitsUrl = 'https://bits.bytedance.net/bytebus/devops/code/detail/8303533?tab=changes&from=old-attempt';
+    recordAgentTeamMilestone(dataDir, team.teamId, worker.workerId, {
+      attemptId: worker.currentAttemptId!,
+      revisionId: worker.currentRevisionId!,
+      type: 'bits_mr_ready',
+      summary: 'old attempt BITS',
+      url: oldBitsUrl,
+    });
+
+    const correction = appendAgentTeamGuidance(dataDir, team.teamId, worker.workerId, {
+      type: 'correction', lifetime: 'task-scoped', content: 'new attempt',
+    })!;
+    const build = recordAgentTeamMilestone(dataDir, team.teamId, worker.workerId, {
+      attemptId: correction.attempt!.attemptId,
+      revisionId: correction.revision.revisionId,
+      type: 'build_started',
+      summary: 'new attempt build started',
+    });
+    expect(build.ok && build.milestone.url).toBeUndefined();
+    expect(build.ok && build.milestone.latestArtifacts?.bitsUrl).toBeUndefined();
+    const persisted = getAgentTeam(dataDir, team.teamId)!;
+    expect(persisted.milestones.find(item => item.url === oldBitsUrl)?.deliveryState).toBe('quarantined');
+    expect(listPendingAgentTeamMilestones(dataDir).map(item => item.milestone.attemptId)).toEqual([correction.attempt!.attemptId]);
   });
 
   it('quarantines a late milestone from a superseded revision without a leader effect', () => {

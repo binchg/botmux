@@ -25,7 +25,7 @@ export type AgentTeamAttemptStatus =
   | 'interrupting' | 'interrupted' | 'superseded' | 'invalid' | 'closed';
 export type AgentTeamResultStatus = 'succeeded' | 'failed' | 'blocked' | 'interrupted';
 export type AgentTeamMilestoneType =
-  | 'audit_eligible' | 'commit_pushed' | 'bits_mr_ready' | 'build_started' | 'build_terminal';
+  | 'audit_eligible' | 'commit_pushed' | 'bits_mr_ready' | 'build_started' | 'build_terminal' | 'human_required';
 
 export interface AgentTeamGuidanceRevision {
   revisionId: string;
@@ -48,6 +48,14 @@ export interface AgentTeamResult {
   metrics: Record<string, number>;
 }
 
+export interface AgentTeamLatestArtifacts {
+  bitsUrl?: string;
+  bitsMrId?: string;
+  branch?: string;
+  sha?: string;
+  buildJob?: string;
+}
+
 export interface AgentTeamAttempt {
   attemptId: string;
   revisionId: string;
@@ -59,6 +67,7 @@ export interface AgentTeamAttempt {
   interruptAckAt?: string;
   supersededAt?: string;
   result?: AgentTeamResult;
+  latestArtifacts?: AgentTeamLatestArtifacts;
   invalidReason?: string;
 }
 
@@ -93,9 +102,11 @@ export interface AgentTeamReport {
   summary: string;
   evidenceRefs: string[];
   metrics: Record<string, number>;
+  latestArtifacts?: AgentTeamLatestArtifacts;
   createdAt: string;
   terminalAt: string;
   deliveryState: 'pending' | 'leader-seen' | 'quarantined';
+  visibleMessageId?: string;
   leaderAckAt?: string;
   invalidReason?: string;
 }
@@ -109,9 +120,11 @@ export interface AgentTeamMilestone {
   summary: string;
   url?: string;
   evidenceRefs: string[];
+  latestArtifacts?: AgentTeamLatestArtifacts;
   createdAt: string;
   deliveryState: 'pending' | 'leader-seen' | 'quarantined';
   visibleMessageId?: string;
+  workerVisibleMessageId?: string;
   leaderAckAt?: string;
   quarantineReason?: string;
 }
@@ -275,6 +288,22 @@ function activeWorkerStatus(status: AgentTeamWorkerStatus): boolean {
 function workerStatusFromAttempt(status: AgentTeamAttemptStatus): AgentTeamWorkerStatus {
   if (status === 'invalid') return 'failed';
   return status;
+}
+
+function quarantinePendingMilestonesForAttempt(team: AgentTeam, workerId: string, attemptId: string): void {
+  let quarantined = 0;
+  for (const milestone of team.milestones) {
+    if (milestone.workerId !== workerId || milestone.attemptId !== attemptId || milestone.deliveryState !== 'pending') continue;
+    milestone.deliveryState = 'quarantined';
+    milestone.quarantineReason = 'attempt_superseded_before_delivery';
+    quarantined += 1;
+  }
+  for (const milestone of team.milestoneOutbox) {
+    if (milestone.workerId !== workerId || milestone.attemptId !== attemptId || milestone.deliveryState !== 'pending') continue;
+    milestone.deliveryState = 'quarantined';
+    milestone.quarantineReason = 'attempt_superseded_before_delivery';
+  }
+  team.metrics.quarantinedStaleMilestones += quarantined;
 }
 
 /** 创建一支由现有会话担任 leader 的团队。 */
@@ -518,6 +547,7 @@ export function appendAgentTeamGuidance(
   if (input.lifetime === 'revoked' && input.revokesRevisionId === worker.currentRevisionId) {
     const revokedAttempt = currentAttempt(worker);
     if (revokedAttempt && ['queued', 'starting', 'running', 'interrupting'].includes(revokedAttempt.status)) {
+      quarantinePendingMilestonesForAttempt(team, worker.workerId, revokedAttempt.attemptId);
       revokedAttempt.status = 'superseded';
       revokedAttempt.supersededAt = stamp;
       revokedAttempt.terminalAt = stamp;
@@ -531,6 +561,7 @@ export function appendAgentTeamGuidance(
     const canContinueLiveSession = !!worker.sessionId && activeWorkerStatus(worker.status);
     const previous = currentAttempt(worker);
     if (previous && ['queued', 'starting', 'running', 'interrupting'].includes(previous.status)) {
+      quarantinePendingMilestonesForAttempt(team, worker.workerId, previous.attemptId);
       previous.status = 'superseded';
       previous.supersededAt = stamp;
       previous.terminalAt = stamp;
@@ -613,6 +644,56 @@ function milestoneIdFor(
   return `milestone_${createHash('sha256').update(`${teamId}\0${workerId}\0${attemptId}\0${type}\0${identity}`).digest('hex').slice(0, 32)}`;
 }
 
+const ARTIFACT_URL_RE = /https?:\/\/[^\s<>\]]+/giu;
+
+function cleanArtifactUrl(value: string): string {
+  return value.replace(/[.,;:!，。；！]+$/u, '');
+}
+
+function artifactUrls(value: string): string[] {
+  return [...value.matchAll(ARTIFACT_URL_RE)].map(match => cleanArtifactUrl(match[0]));
+}
+
+function artifactMrId(value: string): string | undefined {
+  return /\/code\/detail\/(\d+)(?:[/?#]|$)/u.exec(value)?.[1]
+    ?? /\bMR\s*#?\s*(\d+)\b/iu.exec(value)?.[1];
+}
+
+function deriveLatestArtifacts(
+  previous: AgentTeamLatestArtifacts | undefined,
+  input: {
+    type: AgentTeamMilestoneType;
+    summary: string;
+    url?: string;
+    evidenceRefs?: string[];
+    latestArtifacts?: AgentTeamLatestArtifacts;
+  },
+): AgentTeamLatestArtifacts {
+  const next: AgentTeamLatestArtifacts = { ...(previous ?? {}) };
+  const explicit = input.latestArtifacts ?? {};
+  const source = [input.summary, ...(input.evidenceRefs ?? [])].join('\n');
+  const urls = [...(input.url ? [input.url] : []), ...artifactUrls(source)];
+  const bitsUrl = explicit.bitsUrl?.trim()
+    || urls.find(url => /\/code\/detail\/\d+/u.test(url));
+  if (bitsUrl) next.bitsUrl = bitsUrl;
+  const mrId = explicit.bitsMrId?.trim()
+    || (next.bitsUrl ? artifactMrId(next.bitsUrl) : undefined)
+    || artifactMrId(source);
+  if (mrId) next.bitsMrId = mrId;
+  const branch = explicit.branch?.trim()
+    || /(?:\bbranch|分支)\s*[:=：]?\s*([A-Za-z0-9._/-]+)/iu.exec(source)?.[1];
+  if (branch) next.branch = branch;
+  const sha = explicit.sha?.trim()
+    || /(?:\bsha|commit(?:\s+id)?|提交)\s*[:=：]?\s*([0-9a-f]{7,40})\b/iu.exec(source)?.[1];
+  if (sha) next.sha = sha;
+  const buildUrl = urls.find(url => /(?:hummer|remotex|\/build\/logs|jobId=)/iu.test(url));
+  const buildJob = explicit.buildJob?.trim()
+    || buildUrl
+    || /(?:build(?:\s*job)?|构建(?:任务|节点)?)\s*[:=#：]\s*([A-Za-z0-9._/-]+)/iu.exec(source)?.[1];
+  if (buildJob) next.buildJob = buildJob;
+  return next;
+}
+
 /**
  * Persist a non-terminal artifact event for the current attempt. Milestones
  * never mutate attempt/worker status; stale revision events stay quarantined.
@@ -629,6 +710,7 @@ export function recordAgentTeamMilestone(
     url?: string;
     evidenceRefs?: string[];
     idempotencyKey?: string;
+    latestArtifacts?: AgentTeamLatestArtifacts;
   },
   now = new Date(),
 ): { ok: true; team: AgentTeam; worker: AgentTeamWorker; milestone: AgentTeamMilestone; disposition: 'accepted' | 'stale' | 'duplicate' }
@@ -636,16 +718,25 @@ export function recordAgentTeamMilestone(
   const teams = readStore(dataDir);
   const team = teams[teamId];
   const worker = team?.workers.find(item => item.workerId === workerId);
-  const types = new Set<AgentTeamMilestoneType>(['audit_eligible', 'commit_pushed', 'bits_mr_ready', 'build_started', 'build_terminal']);
+  const types = new Set<AgentTeamMilestoneType>(['audit_eligible', 'commit_pushed', 'bits_mr_ready', 'build_started', 'build_terminal', 'human_required']);
   if (!team || !worker) return { ok: false, error: 'team_or_worker_not_found' };
   if (!types.has(input.type)) return { ok: false, error: 'milestone_type_invalid' };
   const summary = input.summary.trim().slice(0, 4000);
   if (!summary) return { ok: false, error: 'milestone_summary_required' };
-  const url = input.url?.trim().slice(0, 2000) || undefined;
-  if (input.type === 'bits_mr_ready' && (!url || !/^https?:\/\//i.test(url))) {
+  const requestedUrl = input.url?.trim() || undefined;
+  if (input.type === 'bits_mr_ready' && (!requestedUrl || !/^https?:\/\//i.test(requestedUrl))) {
     return { ok: false, error: 'bits_mr_ready_http_url_required' };
   }
   const evidenceRefs = (input.evidenceRefs ?? []).filter(item => typeof item === 'string').map(item => item.slice(0, 2000)).slice(0, 100);
+  const attemptForInput = worker.attempts.find(item => item.attemptId === input.attemptId && item.revisionId === input.revisionId);
+  const latestArtifacts = deriveLatestArtifacts(attemptForInput?.latestArtifacts, {
+    ...input,
+    url: requestedUrl,
+    evidenceRefs,
+  });
+  // Once a BITS MR is known, every later artifact in this exact attempt keeps
+  // the clickable MR coordinate even when the caller omits --url.
+  const url = requestedUrl ?? latestArtifacts.bitsUrl;
   // BITS URL is itself the canonical idempotency coordinate. A caller-supplied
   // key must never allow the same URL to create a second visible event.
   const identity = input.type === 'bits_mr_ready'
@@ -680,6 +771,7 @@ export function recordAgentTeamMilestone(
     summary,
     url,
     evidenceRefs,
+    latestArtifacts,
     createdAt: stamp,
     deliveryState: stale ? 'quarantined' : 'pending',
     ...(stale ? { quarantineReason: 'attempt_or_revision_stale' } : {}),
@@ -688,6 +780,7 @@ export function recordAgentTeamMilestone(
   if (stale) {
     team.metrics.quarantinedStaleMilestones += 1;
   } else {
+    current.latestArtifacts = latestArtifacts;
     const acceptedForAttempt = team.milestones.filter(item =>
       item.milestoneId !== milestoneId
       && item.attemptId === input.attemptId
@@ -728,6 +821,7 @@ export function markAgentTeamMilestoneLeaderSeen(
   milestoneId: string,
   now = new Date(),
   visibleMessageId?: string,
+  workerVisibleMessageId?: string,
 ): { team: AgentTeam; milestone: AgentTeamMilestone; firstSeen: boolean } | undefined {
   const teams = readStore(dataDir);
   const team = teams[teamId];
@@ -742,11 +836,13 @@ export function markAgentTeamMilestoneLeaderSeen(
   team.leaderSeenMilestoneIds.push(milestoneId);
   milestone.deliveryState = 'leader-seen';
   milestone.visibleMessageId = visibleMessageId ?? milestone.visibleMessageId;
+  milestone.workerVisibleMessageId = workerVisibleMessageId ?? milestone.workerVisibleMessageId;
   milestone.leaderAckAt = stamp;
   const outbox = team.milestoneOutbox.find(item => item.milestoneId === milestoneId);
   if (outbox) {
     outbox.deliveryState = 'leader-seen';
     outbox.visibleMessageId = visibleMessageId ?? outbox.visibleMessageId;
+    outbox.workerVisibleMessageId = workerVisibleMessageId ?? outbox.workerVisibleMessageId;
     outbox.leaderAckAt = stamp;
   }
   team.updatedAt = stamp;
@@ -774,6 +870,7 @@ export function recordAgentTeamWorkerReport(
     const stamp = now.toISOString();
     const parsed = parseAgentTeamResult(payload.content);
     const parsedAttemptId = parsed.ok ? parsed.result.attemptId : (worker.currentAttemptId ?? 'unknown');
+    const reportedAttempt = worker.attempts.find(item => item.attemptId === parsedAttemptId);
     const stableId = reportIdFor(team.teamId, worker.workerId, parsedAttemptId, payload.lastUuid);
     const existing = team.reports.find(item => item.reportId === stableId);
     if (existing) {
@@ -836,6 +933,7 @@ export function recordAgentTeamWorkerReport(
       summary,
       evidenceRefs,
       metrics,
+      latestArtifacts: reportedAttempt?.latestArtifacts ? { ...reportedAttempt.latestArtifacts } : undefined,
       createdAt: stamp,
       terminalAt: stamp,
       deliveryState: disposition === 'stale' ? 'quarantined' : 'pending',
@@ -863,6 +961,7 @@ export function markAgentTeamReportLeaderSeen(
   teamId: string,
   reportId: string,
   now = new Date(),
+  visibleMessageId?: string,
 ): { team: AgentTeam; report: AgentTeamReport; firstSeen: boolean } | undefined {
   const teams = readStore(dataDir);
   const team = teams[teamId];
@@ -876,9 +975,14 @@ export function markAgentTeamReportLeaderSeen(
   const stamp = now.toISOString();
   team.leaderSeenReportIds.push(reportId);
   report.deliveryState = 'leader-seen';
+  report.visibleMessageId = visibleMessageId ?? report.visibleMessageId;
   report.leaderAckAt = stamp;
   const outbox = team.reportOutbox.find(item => item.reportId === reportId);
-  if (outbox) { outbox.deliveryState = 'leader-seen'; outbox.leaderAckAt = stamp; }
+  if (outbox) {
+    outbox.deliveryState = 'leader-seen';
+    outbox.visibleMessageId = visibleMessageId ?? outbox.visibleMessageId;
+    outbox.leaderAckAt = stamp;
+  }
   team.metrics.terminalToLeaderAckMs.push(Math.max(0, now.getTime() - Date.parse(report.terminalAt)));
   team.updatedAt = stamp;
   writeStore(dataDir, teams);
