@@ -2,6 +2,7 @@
 import type {
   AgentTeam,
   AgentTeamGuidanceRevision,
+  AgentTeamMilestone,
   AgentTeamReport,
   AgentTeamWorker,
 } from '../services/agent-team-store.js';
@@ -35,6 +36,9 @@ export function buildAgentTeamWorkerPrompt(input: {
     '不要启动 Codex sub-agent，不使用已下线的 Botmux Workflow。',
     '新证据、真实阻塞与最终结果直接作为正常 assistant message 发在本话题；Botmux 会把最终回报同步给 leader。',
     '用户插入纠偏时立即按最新要求调整；新要求使分支、SHA、MR 或构建证据失效时明确作废旧证据。',
+    `获得审计、commit、BITS URL 或构建节点时，立即运行 botmux team milestone --team ${clean(input.teamId)} --type <类型> --summary <摘要> 上报；BITS URL 用 --url，不等待最终回报。`,
+    'assignment 已授权写入/交付且机器审计通过时，低风险路径默认继续 write→push→BITS，并让人工 review 与 RemoteX 并行；只在 ref 漂移、范围扩大、高风险或外部权限阻塞时暂停。',
+    '普通独立候选以 guidance 后 5-10 分钟内先给 BITS URL 为目标；该 milestone 不是 final，后续构建和验收继续。',
     '最终 assistant message 必须是窄结构化 JSON，字段仅需 attemptId、revisionId、status、summary、evidenceRefs、metrics；status 只能是 succeeded/failed/blocked/interrupted，metrics 使用 [{"name":"指标名","value":数值}]。',
     '</botmux_agent_team>',
     '',
@@ -63,6 +67,25 @@ export function buildAgentTeamGuidancePrompt(revision: AgentTeamGuidanceRevision
     '</botmux_agent_team_guidance>',
     '',
     revision.content.trim(),
+  ].join('\n');
+}
+
+/** 非终态 artifact 注入 leader；不得被解释为 attempt 已完成。 */
+export function buildAgentTeamLeaderMilestonePrompt(team: AgentTeam, worker: AgentTeamWorker, milestone: AgentTeamMilestone): string {
+  return [
+    '<botmux_agent_team_milestone>',
+    `team_id: ${team.teamId}`,
+    `worker_id: ${worker.workerId}`,
+    `milestone_id: ${milestone.milestoneId}`,
+    `attempt_id: ${milestone.attemptId}`,
+    `revision_id: ${milestone.revisionId}`,
+    `type: ${milestone.type}`,
+    ...(milestone.url ? [`url: ${milestone.url}`] : []),
+    '这是非终态产物事件，不得把 attempt 提前标记为完成。按风险门禁决定继续、并行或暂停；BITS URL 已可立即交付用户。',
+    '</botmux_agent_team_milestone>',
+    '',
+    milestone.summary,
+    ...(milestone.evidenceRefs.length ? ['', 'evidence_refs:', ...milestone.evidenceRefs.map(ref => `- ${ref}`)] : []),
   ].join('\n');
 }
 

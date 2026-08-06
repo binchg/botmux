@@ -30,7 +30,7 @@ import {
 } from './session-create.js';
 import { validateZellijAdoptTarget } from './zellij-adopt-discovery.js';
 import type { BackendType } from '../adapters/backend/types.js';
-import type { LarkAttachment, LarkMention, ScheduledTask } from '../types.js';
+import type { LarkAttachment, LarkMention, ScheduledTask, Session } from '../types.js';
 import type { MessageResource } from '../im/lark/message-parser.js';
 import type { ResolvedSender } from '../im/lark/identity-cache.js';
 import { sessionKey, sessionAnchorId } from './types.js';
@@ -1217,6 +1217,84 @@ export async function resumeSession(
   // it rather than silently orphaning it (consistent with restore/transfer).
   await setActiveSessionSafe(activeSessions, key, ds);
   logger.info(`Resumed session ${sessionId.substring(0, 8)} (scope: ${scope}, anchor: ${anchor.substring(0, 12)})`);
+  return { ok: true, ds };
+}
+
+/**
+ * Repair the runtime registry for a persisted active session without invoking
+ * resume semantics. This is deliberately separate from resumeSession: an
+ * `active` store row means the conversation was never closed, so Team send
+ * may restore its routing record and re-fork a missing runner, but must not
+ * claim that it resumed a terminal session.
+ */
+export async function reconcileActiveSessionRegistry(
+  sessionId: string,
+  activeSessions: Map<string, DaemonSession>,
+): Promise<{ ok: true; ds: DaemonSession }
+| { ok: false; error: 'not_found' | 'not_active' | 'anchor_occupied' | 'adopt_unsupported'; activeSessionId?: string }> {
+  const session = sessionStore.getSession(sessionId);
+  if (!session) return { ok: false, error: 'not_found' };
+  if (session.status !== 'active') return { ok: false, error: 'not_active' };
+  if (session.title?.startsWith('Adopt:') || session.adoptedFrom) {
+    return { ok: false, error: 'adopt_unsupported' };
+  }
+
+  const scope: 'thread' | 'chat' = session.scope === 'chat' ? 'chat' : 'thread';
+  const larkAppId = session.larkAppId ?? getAllBots()[0]?.config.larkAppId ?? '';
+  const anchor = scope === 'thread' ? session.rootMessageId : session.chatId;
+  const key = sessionKey(anchor, larkAppId);
+  const existing = activeSessions.get(key);
+  if (existing?.session.sessionId === sessionId) return { ok: true, ds: existing };
+  if (existing) {
+    if (isRelayableRealSession(existing) || existing.pendingRepo) {
+      return { ok: false, error: 'anchor_occupied', activeSessionId: existing.session.sessionId };
+    }
+    await closeSession(existing.session.sessionId);
+  }
+
+  const conflicts = sessionStore.listSessions().filter(candidate =>
+    candidate.sessionId !== sessionId
+    && candidate.status === 'active'
+    && (candidate.larkAppId ?? '') === larkAppId
+    && (candidate.scope === 'chat' ? 'chat' : 'thread') === scope
+    && (scope === 'thread' ? candidate.rootMessageId === anchor : candidate.chatId === anchor),
+  );
+  const realConflict = conflicts.find(candidate => !!candidate.cliId || !!candidate.lastCliInput);
+  if (realConflict) return { ok: false, error: 'anchor_occupied', activeSessionId: realConflict.sessionId };
+  for (const scratch of conflicts) await closeSession(scratch.sessionId);
+
+  session.lastMessageAt = new Date().toISOString();
+  sessionStore.updateSession(session);
+  const now = Date.now();
+  const ds: DaemonSession = {
+    session: session as Session,
+    worker: null,
+    workerPort: null,
+    workerToken: null,
+    larkAppId,
+    chatId: session.chatId,
+    chatType: session.chatType ?? 'group',
+    scope,
+    spawnedAt: sessionCreatedAtMs(session),
+    cliVersion: getCurrentCliVersion(),
+    lastMessageAt: now,
+    hasHistory: true,
+    workingDir: session.workingDir,
+    ownerOpenId: session.ownerOpenId,
+    streamCardId: session.streamCardId,
+    streamCardNonce: session.streamCardNonce,
+    displayMode: session.displayMode ?? (session.streamExpanded ? 'screenshot' : 'hidden'),
+    currentImageKey: session.currentImageKey,
+    currentTurnTitle: session.currentTurnTitle,
+    usageLimit: session.usageLimit,
+    lastUserPrompt: session.lastUserPrompt,
+    lastCliInput: session.lastCliInput,
+    replyThreadAliases: session.replyThreadAliases,
+    currentReplyTarget: session.currentReplyTarget,
+  };
+  messageQueue.ensureQueue(anchor);
+  await setActiveSessionSafe(activeSessions, key, ds);
+  logger.info(`Reconciled active session ${sessionId.substring(0, 8)} into runtime registry (anchor: ${anchor.substring(0, 12)})`);
   return { ok: true, ds };
 }
 

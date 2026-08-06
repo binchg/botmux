@@ -4,7 +4,7 @@ import { createHmac, randomBytes } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { startIpcServer, setLarkAppId, setIpcAuthSecret, setBotRenamer, type IpcServerHandle } from '../src/core/dashboard-ipc-server.js';
+import { startIpcServer, setAgentTeamMilestoneNotifier, setLarkAppId, setIpcAuthSecret, setBotRenamer, type IpcServerHandle } from '../src/core/dashboard-ipc-server.js';
 import { dashboardEventBus } from '../src/core/dashboard-events.js';
 import * as groupsStore from '../src/services/groups-store.js';
 import * as oncallStore from '../src/services/oncall-store.js';
@@ -86,7 +86,51 @@ afterEach(async () => {
   setLarkAppId('');
   __testOnly_resetBotRegistry();
   setIpcAuthSecret(null);
+  setAgentTeamMilestoneNotifier(null);
 });
+
+function prepareAgentTeamReuseFixture(dataDir: string, options: {
+  workerStatus: 'failed' | 'succeeded' | 'closed';
+  registryPresent: boolean;
+  storedClosed?: boolean;
+  screenStatus?: 'working' | 'idle';
+}) {
+  config.session.dataDir = dataDir;
+  sessionStore.init();
+  setLarkAppId('cli_team');
+  const leader = {
+    session: { sessionId: 'leader-team', status: 'active', rootMessageId: 'om_leader', chatId: 'oc_team', cliId: 'codex-app' },
+    worker: { send: vi.fn(), killed: false },
+    larkAppId: 'cli_team', chatId: 'oc_team', chatType: 'group', scope: 'thread', hasHistory: true,
+  } as any;
+  const session = sessionStore.createSession('oc_team', 'om_worker_original', 'Reusable worker', 'group');
+  session.larkAppId = 'cli_team';
+  session.scope = 'thread';
+  session.cliId = 'codex-app';
+  session.workingDir = '/tmp/reuse-worktree';
+  session.lastCliInput = 'old task';
+  sessionStore.updateSession(session);
+  if (options.storedClosed) sessionStore.closeSession(session.sessionId);
+  const send = vi.fn();
+  const workerSession = {
+    session,
+    worker: { send, killed: false },
+    larkAppId: 'cli_team', chatId: 'oc_team', chatType: 'group', scope: 'thread', hasHistory: true,
+    lastScreenStatus: options.screenStatus ?? 'working',
+  } as any;
+  const registry = new Map<string, any>([[sessionKey('om_leader', 'cli_team'), leader]]);
+  if (options.registryPresent) registry.set(sessionKey('om_worker_original', 'cli_team'), workerSession);
+  workerPool.setActiveSessionsRegistry(registry);
+  const team = createAgentTeam(dataDir, {
+    name: 'reuse', objective: 'reuse original session', larkAppId: 'cli_team', chatId: 'oc_team', leaderSessionId: 'leader-team',
+  });
+  addAgentTeamWorker(dataDir, team.teamId, {
+    workerId: 'worker-reuse', sessionId: session.sessionId, rootMessageId: 'om_worker_original',
+    title: 'Reusable worker', assignment: 'old task', workingDir: '/tmp/reuse-worktree', dependsOn: [], reuseKey: 'same-task', writer: true,
+  });
+  updateAgentTeamWorker(dataDir, team.teamId, 'worker-reuse', { status: options.workerStatus });
+  return { team, session, registry, send };
+}
 
 describe('dashboard IPC server', () => {
   it('binds to 127.0.0.1 and serves /__health', async () => {
@@ -153,7 +197,15 @@ describe('Agent Team cold session reuse', () => {
       const body = await response.json() as any;
 
       expect(response.status).toBe(200);
-      expect(body).toMatchObject({ ok: true, recovered: true, sessionId: session.sessionId, rootMessageId: 'om_worker_original' });
+      expect(body).toMatchObject({
+        ok: true,
+        recovered: true,
+        resumeCalled: true,
+        registryReconciled: false,
+        deliveryMode: 'dead-resume-refork',
+        sessionId: session.sessionId,
+        rootMessageId: 'om_worker_original',
+      });
       expect(forkSpy).toHaveBeenCalledWith(expect.objectContaining({ session: expect.objectContaining({ sessionId: session.sessionId }) }), expect.any(String), true);
       expect(send).not.toHaveBeenCalled(); // prompt is passed directly to cold re-fork, not double-sent
       expect(sessionStore.getSession(session.sessionId)?.status).toBe('active');
@@ -168,6 +220,158 @@ describe('Agent Team cold session reuse', () => {
       sessionStore.init();
       config.session.dataDir = previousDataDir;
       rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('direct-sends to an active runner even when the Team worker is invalid', async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'dashboard-agent-team-active-'));
+    const previousDataDir = config.session.dataDir;
+    const forkSpy = vi.spyOn(workerPool, 'forkWorker');
+    const replySpy = vi.spyOn(larkClient, 'replyMessage').mockResolvedValue('om_reply');
+    try {
+      const { team, session, send } = prepareAgentTeamReuseFixture(dataDir, {
+        workerStatus: 'failed', registryPresent: true, screenStatus: 'working',
+      });
+      handle = await startIpcServer({ port: 0, host: '127.0.0.1' });
+      const response = await fetch(`http://127.0.0.1:${handle.port}/api/agent-teams/${team.teamId}/workers/worker-reuse/message`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ actorSessionId: 'leader-team', content: 'structured result only', guidanceType: 'correction' }),
+      });
+      const body = await response.json() as any;
+      expect(body).toMatchObject({
+        ok: true, recovered: false, resumeCalled: false, deliveryMode: 'active-direct',
+        teamId: team.teamId, workerId: 'worker-reuse', sessionId: session.sessionId, rootMessageId: 'om_worker_original',
+      });
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(forkSpy).not.toHaveBeenCalled();
+      expect(getAgentTeam(dataDir, team.teamId)?.workers[0]).toMatchObject({ status: 'running', sessionId: session.sessionId });
+    } finally {
+      forkSpy.mockRestore(); replySpy.mockRestore(); workerPool.setActiveSessionsRegistry(new Map());
+      sessionStore.init(); config.session.dataDir = previousDataDir; rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('direct-sends and wakes an idle runner without resume or refork', async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'dashboard-agent-team-idle-'));
+    const previousDataDir = config.session.dataDir;
+    const forkSpy = vi.spyOn(workerPool, 'forkWorker');
+    const replySpy = vi.spyOn(larkClient, 'replyMessage').mockResolvedValue('om_reply');
+    try {
+      const { team, session, send } = prepareAgentTeamReuseFixture(dataDir, {
+        workerStatus: 'succeeded', registryPresent: true, screenStatus: 'idle',
+      });
+      handle = await startIpcServer({ port: 0, host: '127.0.0.1' });
+      const response = await fetch(`http://127.0.0.1:${handle.port}/api/agent-teams/${team.teamId}/workers/worker-reuse/message`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ actorSessionId: 'leader-team', content: 'wake on original thread', guidanceType: 'addition' }),
+      });
+      expect(await response.json()).toMatchObject({
+        ok: true, recovered: false, resumeCalled: false, deliveryMode: 'idle-direct', sessionId: session.sessionId,
+      });
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(forkSpy).not.toHaveBeenCalled();
+    } finally {
+      forkSpy.mockRestore(); replySpy.mockRestore(); workerPool.setActiveSessionsRegistry(new Map());
+      sessionStore.init(); config.session.dataDir = previousDataDir; rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('reconciles a persisted active session into the registry without calling resume', async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'dashboard-agent-team-reconcile-'));
+    const previousDataDir = config.session.dataDir;
+    const send = vi.fn();
+    const forkSpy = vi.spyOn(workerPool, 'forkWorker').mockImplementation((ds: any) => {
+      ds.worker = { send, killed: false };
+      return undefined as any;
+    });
+    const replySpy = vi.spyOn(larkClient, 'replyMessage').mockResolvedValue('om_reply');
+    try {
+      const { team, session, registry } = prepareAgentTeamReuseFixture(dataDir, {
+        workerStatus: 'closed', registryPresent: false,
+      });
+      handle = await startIpcServer({ port: 0, host: '127.0.0.1' });
+      const response = await fetch(`http://127.0.0.1:${handle.port}/api/agent-teams/${team.teamId}/workers/worker-reuse/message`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ actorSessionId: 'leader-team', content: 'reconcile then deliver', guidanceType: 'addition' }),
+      });
+      expect(await response.json()).toMatchObject({
+        ok: true, recovered: true, resumeCalled: false, registryReconciled: true,
+        deliveryMode: 'registry-reconcile-refork', sessionId: session.sessionId, rootMessageId: 'om_worker_original',
+      });
+      expect(forkSpy).toHaveBeenCalledTimes(1);
+      expect(registry.get(sessionKey('om_worker_original', 'cli_team'))?.session.sessionId).toBe(session.sessionId);
+    } finally {
+      forkSpy.mockRestore(); replySpy.mockRestore(); workerPool.setActiveSessionsRegistry(new Map());
+      sessionStore.init(); config.session.dataDir = previousDataDir; rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('single-flights concurrent sends so a dead session is resumed only once', async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'dashboard-agent-team-flight-'));
+    const previousDataDir = config.session.dataDir;
+    const send = vi.fn();
+    const forkSpy = vi.spyOn(workerPool, 'forkWorker').mockImplementation((ds: any) => {
+      ds.worker = { send, killed: false };
+      return undefined as any;
+    });
+    const replySpy = vi.spyOn(larkClient, 'replyMessage').mockResolvedValue('om_reply');
+    try {
+      const { team, session } = prepareAgentTeamReuseFixture(dataDir, {
+        workerStatus: 'closed', registryPresent: false, storedClosed: true,
+      });
+      handle = await startIpcServer({ port: 0, host: '127.0.0.1' });
+      const url = `http://127.0.0.1:${handle.port}/api/agent-teams/${team.teamId}/workers/worker-reuse/message`;
+      const request = (content: string) => fetch(url, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ actorSessionId: 'leader-team', content, guidanceType: 'addition' }),
+      }).then(response => response.json() as Promise<any>);
+      const results = await Promise.all([request('first concurrent guidance'), request('second concurrent guidance')]);
+      expect(results).toEqual(expect.arrayContaining([
+        expect.objectContaining({ ok: true, resumeCalled: true, deliveryMode: 'dead-resume-refork', sessionId: session.sessionId }),
+        expect.objectContaining({ ok: true, resumeCalled: false, deliveryMode: 'active-direct', sessionId: session.sessionId }),
+      ]));
+      expect(forkSpy).toHaveBeenCalledTimes(1);
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(getAgentTeam(dataDir, team.teamId)?.workers[0].attempts).toHaveLength(3);
+    } finally {
+      forkSpy.mockRestore(); replySpy.mockRestore(); workerPool.setActiveSessionsRegistry(new Map());
+      sessionStore.init(); config.session.dataDir = previousDataDir; rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts a worker milestone idempotently without making its attempt terminal', async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'dashboard-agent-team-milestone-'));
+    const previousDataDir = config.session.dataDir;
+    const notify = vi.fn();
+    try {
+      const { team, session } = prepareAgentTeamReuseFixture(dataDir, {
+        workerStatus: 'succeeded', registryPresent: true, screenStatus: 'idle',
+      });
+      setAgentTeamMilestoneNotifier(notify);
+      handle = await startIpcServer({ port: 0, host: '127.0.0.1' });
+      const url = `http://127.0.0.1:${handle.port}/api/agent-teams/${team.teamId}/milestones`;
+      const payload = {
+        actorSessionId: session.sessionId,
+        type: 'bits_mr_ready',
+        summary: 'BITS URL ready',
+        url: 'https://bits.example/mr/42',
+        evidenceRefs: ['sha:42'],
+      };
+      const first = await fetch(url, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload),
+      }).then(response => response.json() as Promise<any>);
+      const duplicate = await fetch(url, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload),
+      }).then(response => response.json() as Promise<any>);
+      expect(first).toMatchObject({ ok: true, disposition: 'accepted', terminal: false, worker: { sessionId: session.sessionId } });
+      expect(duplicate).toMatchObject({ ok: true, disposition: 'duplicate', terminal: false });
+      expect(duplicate.milestone.milestoneId).toBe(first.milestone.milestoneId);
+      expect(getAgentTeam(dataDir, team.teamId)?.workers[0].attempts[0].status).toBe('running');
+      expect(getAgentTeam(dataDir, team.teamId)?.milestoneOutbox).toHaveLength(1);
+      await vi.waitFor(() => expect(notify).toHaveBeenCalled());
+    } finally {
+      workerPool.setActiveSessionsRegistry(new Map()); sessionStore.init();
+      config.session.dataDir = previousDataDir; rmSync(dataDir, { recursive: true, force: true });
     }
   });
 });

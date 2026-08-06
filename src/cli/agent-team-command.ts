@@ -19,6 +19,9 @@ const HELP = `botmux team — 同一 Bot 多独立会话的 supervisor 控制面
   botmux team send [--team <team_id>] --worker <worker_id> (--content <纠偏> | --content-file <文件>)
       [--kind correction|replacement|addition|status_query]
       [--lifetime task-scoped|one-shot|revoked] [--revoke-revision <revision_id>]
+  botmux team milestone --team <team_id> --type audit_eligible|commit_pushed|bits_mr_ready|build_started|build_terminal
+      (--summary <摘要> | --summary-file <文件>) [--url <BITS_URL>] [--evidence-ref <引用> ...]
+      [--attempt-id <attempt_id>] [--revision-id <revision_id>] [--idempotency-key <稳定键>]
   botmux team interrupt [--team <team_id>] --worker <worker_id>
   botmux team reap [--team <team_id>] [--close-team]
 
@@ -29,6 +32,7 @@ const HELP = `botmux team — 同一 Bot 多独立会话的 supervisor 控制面
   - reuse-key 或同 --repo 的 --writer 命中时不重复 spawn，返回已有 worker 并引导 team send。
   - send 默认 addition/task-scoped；每次可执行 guidance 创建 revision/attempt。status_query 只读，不创建 attempt/恢复 session。
   - closed/已回报 worker 的 send 会复用原 session/thread 并 cold-resume；失败保持 fail-closed。
+  - milestone 是当前 attempt 的非终态产物事件；BITS URL 立即进入 leader 可见 outbox，重复 URL 幂等，旧 revision 隔离。
   - worker final 必须含 attemptId/revisionId/status/summary/evidenceRefs/metrics，invalid/旧 attempt 不计成功。
   - interrupt 只中断当前 turn，不删除会话；必须等 Codex App Server 回执才进入 interrupted；reap 不回收 interrupting。
   - 这是 session federation，不是 Codex sub-agent，也不是已下线的 Botmux Workflow。`;
@@ -134,6 +138,26 @@ export async function runAgentTeamCommand(args: string[], ctx?: AgentTeamCliCont
           dependsOn: values(rest, '--depends-on'),
           reuseKey: value(rest, '--reuse-key'),
           writer: rest.includes('--writer'),
+        }),
+      }));
+      return 0;
+    }
+    if (sub === 'milestone') {
+      const type = (value(rest, '--type') ?? '').trim();
+      const summary = textArg(rest, '--summary', '--summary-file');
+      if (!type || !summary) throw new Error('milestone 需要 --type 和 --summary/--summary-file');
+      print(await request(ctx, `/api/agent-teams/${encodeURIComponent(teamId)}/milestones`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          actorSessionId: ctx.sessionId,
+          workerId: value(rest, '--worker'),
+          type,
+          summary,
+          url: value(rest, '--url'),
+          evidenceRefs: values(rest, '--evidence-ref'),
+          attemptId: value(rest, '--attempt-id'),
+          revisionId: value(rest, '--revision-id'),
+          idempotencyKey: value(rest, '--idempotency-key'),
         }),
       }));
       return 0;

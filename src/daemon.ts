@@ -75,6 +75,7 @@ import {
   setBotName,
   setLarkAppId,
   startIpcServer,
+  setAgentTeamMilestoneNotifier,
   setBotRenamer,
 } from './core/dashboard-ipc-server.js';
 import { saveFrozenCards, deleteFrozenCards } from './services/frozen-card-store.js';
@@ -134,11 +135,13 @@ import { listAllDocSubscriptions, listDocSubscriptionsForSession, removeDocSubsc
 import { subscribeDocFile, unsubscribeDocFile } from './im/lark/doc-comment.js';
 import {
   acknowledgeAgentTeamWorkerInterrupt,
+  listPendingAgentTeamMilestones,
   listPendingAgentTeamReports,
+  markAgentTeamMilestoneLeaderSeen,
   markAgentTeamReportLeaderSeen,
   recordAgentTeamWorkerReport,
 } from './services/agent-team-store.js';
-import { buildAgentTeamLeaderReportPrompt } from './core/agent-team-prompts.js';
+import { buildAgentTeamLeaderMilestonePrompt, buildAgentTeamLeaderReportPrompt } from './core/agent-team-prompts.js';
 import { learnFromMentions, resolveSender, flushIdentityCacheSync } from './im/lark/identity-cache.js';
 import { normalizeBrand } from './im/lark/lark-hosts.js';
 import { renderBufferedSenderBlock } from './core/session-manager.js';
@@ -1500,6 +1503,62 @@ function deliverPendingAgentTeamReports(): number {
     leader.worker.send({ type: 'message', content: wrapped });
     delivered += 1;
     logger.info(`[agent-team] report ${consumed.report.reportId.slice(0, 16)} injected into leader ${consumed.team.leaderSessionId.slice(0, 8)}`);
+  }
+  return delivered;
+}
+
+/**
+ * Milestone outbox consumer. The direct Lark reply uses milestoneId as Feishu
+ * uuid, so daemon retry/restart cannot duplicate a BITS URL. The event remains
+ * pending until a live leader runner can also receive the supervisor prompt.
+ */
+async function deliverPendingAgentTeamMilestones(): Promise<number> {
+  let delivered = 0;
+  for (const pending of listPendingAgentTeamMilestones(config.session.dataDir, selfV3LarkAppId)) {
+    const leader = [...activeSessions.values()].find(item => item.session.sessionId === pending.team.leaderSessionId);
+    if (!leader) continue;
+    const worker = pending.team.workers.find(item => item.workerId === pending.milestone.workerId);
+    if (!worker) continue;
+    const proposer = leader.session.creatorOpenId ?? leader.session.ownerOpenId;
+    const mention = pending.milestone.type === 'bits_mr_ready' && proposer
+      ? `<at user_id="${proposer}"></at> `
+      : '';
+    const visible = [
+      `${mention}【Agent Team · ${pending.milestone.type}】${worker.workerId}`,
+      pending.milestone.summary,
+      pending.milestone.url,
+    ].filter((item): item is string => !!item).join('\n');
+    try {
+      await replyMessage(
+        pending.team.larkAppId,
+        leader.session.rootMessageId,
+        visible,
+        'text',
+        true,
+        pending.milestone.milestoneId,
+      );
+    } catch (err) {
+      logger.warn(`[agent-team] milestone ${pending.milestone.milestoneId.slice(0, 20)} visible delivery failed: ${err instanceof Error ? err.message : String(err)}`);
+      continue;
+    }
+    // Keep the durable outbox pending when the leader runner is unavailable;
+    // the same Feishu uuid makes the next visible retry harmless.
+    if (!leader.worker || leader.worker.killed) continue;
+    const consumed = markAgentTeamMilestoneLeaderSeen(config.session.dataDir, pending.team.teamId, pending.milestone.milestoneId);
+    if (!consumed?.firstSeen) continue;
+    const prompt = buildAgentTeamLeaderMilestonePrompt(consumed.team, worker, consumed.milestone);
+    beginNewTurn(leader, `Worker 里程碑：${worker.workerId}`);
+    const wrapped = buildFollowUpContent(prompt, leader.session.sessionId, {
+      cliId: leader.session.cliId,
+      locale: localeForBot(leader.larkAppId),
+      larkAppId: leader.larkAppId,
+      chatId: leader.chatId,
+      whiteboardId: leader.session.whiteboardId,
+    });
+    rememberLastCliInput(leader, prompt, wrapped);
+    leader.worker.send({ type: 'message', content: wrapped });
+    delivered += 1;
+    logger.info(`[agent-team] milestone ${consumed.milestone.milestoneId.slice(0, 20)} injected into leader ${consumed.team.leaderSessionId.slice(0, 8)}`);
   }
   return delivered;
 }
@@ -3716,6 +3775,7 @@ export async function startDaemon(botIndex?: number): Promise<void> {
     try { writeBotInfoFile(config.session.dataDir); } catch { /* best effort */ }
     return r;
   });
+  setAgentTeamMilestoneNotifier(async () => { await deliverPendingAgentTeamMilestones(); });
   // Initialise worker pool with daemon callbacks
   initWorkerPool({
     sessionReply,
@@ -3758,6 +3818,7 @@ export async function startDaemon(botIndex?: number): Promise<void> {
     onSessionReady(ds: DaemonSession) {
       if (ds.session.agentTeam?.role !== 'leader') return;
       deliverPendingAgentTeamReports();
+      void deliverPendingAgentTeamMilestones();
     },
   });
   // Expose the activeSessions Map (owned by daemon) to worker-pool readers,
@@ -3962,8 +4023,9 @@ export async function startDaemon(botIndex?: number): Promise<void> {
   try {
     const starts = await reconcileAgentTeamQueuedWorkers(cfg.larkAppId);
     const delivered = deliverPendingAgentTeamReports();
+    const milestones = await deliverPendingAgentTeamMilestones();
     const started = starts.filter(item => item.ok && item.started).length;
-    if (started || delivered) logger.info(`[agent-team] reconciliation started=${started} delivered=${delivered}`);
+    if (started || delivered || milestones) logger.info(`[agent-team] reconciliation started=${started} reports=${delivered} milestones=${milestones}`);
   } catch (err) {
     logger.warn(`[agent-team] startup reconciliation failed: ${err instanceof Error ? err.message : String(err)}`);
   }

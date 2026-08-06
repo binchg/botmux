@@ -24,6 +24,8 @@ export type AgentTeamAttemptStatus =
   | 'queued' | 'starting' | 'running' | 'succeeded' | 'failed' | 'blocked'
   | 'interrupting' | 'interrupted' | 'superseded' | 'invalid' | 'closed';
 export type AgentTeamResultStatus = 'succeeded' | 'failed' | 'blocked' | 'interrupted';
+export type AgentTeamMilestoneType =
+  | 'audit_eligible' | 'commit_pushed' | 'bits_mr_ready' | 'build_started' | 'build_terminal';
 
 export interface AgentTeamGuidanceRevision {
   revisionId: string;
@@ -98,6 +100,21 @@ export interface AgentTeamReport {
   invalidReason?: string;
 }
 
+export interface AgentTeamMilestone {
+  milestoneId: string;
+  workerId: string;
+  attemptId: string;
+  revisionId: string;
+  type: AgentTeamMilestoneType;
+  summary: string;
+  url?: string;
+  evidenceRefs: string[];
+  createdAt: string;
+  deliveryState: 'pending' | 'leader-seen' | 'quarantined';
+  leaderAckAt?: string;
+  quarantineReason?: string;
+}
+
 export interface AgentTeamMetrics {
   queueToStartMs: number[];
   terminalToLeaderAckMs: number[];
@@ -111,6 +128,12 @@ export interface AgentTeamMetrics {
   staleResultsAccepted: number;
   duplicateLeaderEffects: number;
   falseInterruptTerminals: number;
+  guidanceToFirstArtifactMs: number[];
+  guidanceToBitsUrlMs: number[];
+  bitsUrlToBuildTerminalMs: number[];
+  duplicateMilestones: number;
+  quarantinedStaleMilestones: number;
+  duplicateMilestoneLeaderSuppressions: number;
 }
 
 export interface AgentTeam {
@@ -129,6 +152,9 @@ export interface AgentTeam {
   reports: AgentTeamReport[];
   reportOutbox: AgentTeamReport[];
   leaderSeenReportIds: string[];
+  milestones: AgentTeamMilestone[];
+  milestoneOutbox: AgentTeamMilestone[];
+  leaderSeenMilestoneIds: string[];
   metrics: AgentTeamMetrics;
 }
 
@@ -145,6 +171,8 @@ function emptyMetrics(): AgentTeamMetrics {
     quarantinedStaleResults: 0, invalidResults: 0,
     prematureDependencyStarts: 0, staleResultsAccepted: 0,
     duplicateLeaderEffects: 0, falseInterruptTerminals: 0,
+    guidanceToFirstArtifactMs: [], guidanceToBitsUrlMs: [], bitsUrlToBuildTerminalMs: [],
+    duplicateMilestones: 0, quarantinedStaleMilestones: 0, duplicateMilestoneLeaderSuppressions: 0,
   };
 }
 
@@ -165,6 +193,9 @@ function normalizeTeam(team: AgentTeam): AgentTeam {
   team.reports ??= [];
   team.reportOutbox ??= [];
   team.leaderSeenReportIds ??= [];
+  team.milestones ??= [];
+  team.milestoneOutbox ??= [];
+  team.leaderSeenMilestoneIds ??= [];
   team.metrics = { ...emptyMetrics(), ...(team.metrics ?? {}) };
   for (const worker of team.workers ??= []) {
     worker.dependsOn ??= [];
@@ -265,7 +296,8 @@ export function createAgentTeam(
       Math.max(1, input.maxActiveWorkers ?? DEFAULT_AGENT_TEAM_ACTIVE_WORKERS),
     ),
     status: 'active', createdAt: stamp, updatedAt: stamp,
-    workers: [], revisions: [], reports: [], reportOutbox: [], leaderSeenReportIds: [], metrics: emptyMetrics(),
+    workers: [], revisions: [], reports: [], reportOutbox: [], leaderSeenReportIds: [],
+    milestones: [], milestoneOutbox: [], leaderSeenMilestoneIds: [], metrics: emptyMetrics(),
   };
   teams[team.teamId] = team;
   writeStore(dataDir, teams);
@@ -568,6 +600,143 @@ export function parseAgentTeamResult(content: string): { ok: true; result: Agent
       metrics: metricMap,
     },
   };
+}
+
+function milestoneIdFor(
+  teamId: string,
+  workerId: string,
+  attemptId: string,
+  type: AgentTeamMilestoneType,
+  identity: string,
+): string {
+  return `milestone_${createHash('sha256').update(`${teamId}\0${workerId}\0${attemptId}\0${type}\0${identity}`).digest('hex').slice(0, 32)}`;
+}
+
+/**
+ * Persist a non-terminal artifact event for the current attempt. Milestones
+ * never mutate attempt/worker status; stale revision events stay quarantined.
+ */
+export function recordAgentTeamMilestone(
+  dataDir: string,
+  teamId: string,
+  workerId: string,
+  input: {
+    attemptId: string;
+    revisionId: string;
+    type: AgentTeamMilestoneType;
+    summary: string;
+    url?: string;
+    evidenceRefs?: string[];
+    idempotencyKey?: string;
+  },
+  now = new Date(),
+): { ok: true; team: AgentTeam; worker: AgentTeamWorker; milestone: AgentTeamMilestone; disposition: 'accepted' | 'stale' | 'duplicate' }
+| { ok: false; error: string } {
+  const teams = readStore(dataDir);
+  const team = teams[teamId];
+  const worker = team?.workers.find(item => item.workerId === workerId);
+  const types = new Set<AgentTeamMilestoneType>(['audit_eligible', 'commit_pushed', 'bits_mr_ready', 'build_started', 'build_terminal']);
+  if (!team || !worker) return { ok: false, error: 'team_or_worker_not_found' };
+  if (!types.has(input.type)) return { ok: false, error: 'milestone_type_invalid' };
+  const summary = input.summary.trim().slice(0, 4000);
+  if (!summary) return { ok: false, error: 'milestone_summary_required' };
+  const url = input.url?.trim().slice(0, 2000) || undefined;
+  if (input.type === 'bits_mr_ready' && (!url || !/^https?:\/\//i.test(url))) {
+    return { ok: false, error: 'bits_mr_ready_http_url_required' };
+  }
+  const evidenceRefs = (input.evidenceRefs ?? []).filter(item => typeof item === 'string').map(item => item.slice(0, 2000)).slice(0, 100);
+  const identity = input.idempotencyKey?.trim()
+    || (input.type === 'bits_mr_ready' ? url! : JSON.stringify([summary, url ?? '', evidenceRefs]));
+  const milestoneId = milestoneIdFor(teamId, workerId, input.attemptId, input.type, identity.slice(0, 4000));
+  const duplicate = team.milestones.find(item => item.milestoneId === milestoneId);
+  const stamp = now.toISOString();
+  if (duplicate) {
+    team.metrics.duplicateMilestones += 1;
+    team.updatedAt = stamp;
+    writeStore(dataDir, teams);
+    return { ok: true, team, worker, milestone: duplicate, disposition: 'duplicate' };
+  }
+
+  const current = currentAttempt(worker);
+  const stale = !current
+    || input.attemptId !== worker.currentAttemptId
+    || input.revisionId !== worker.currentRevisionId
+    || current.revisionId !== input.revisionId;
+  const milestone: AgentTeamMilestone = {
+    milestoneId,
+    workerId,
+    attemptId: input.attemptId,
+    revisionId: input.revisionId,
+    type: input.type,
+    summary,
+    url,
+    evidenceRefs,
+    createdAt: stamp,
+    deliveryState: stale ? 'quarantined' : 'pending',
+    ...(stale ? { quarantineReason: 'attempt_or_revision_stale' } : {}),
+  };
+  team.milestones.push(milestone);
+  if (stale) {
+    team.metrics.quarantinedStaleMilestones += 1;
+  } else {
+    const acceptedForAttempt = team.milestones.filter(item =>
+      item.milestoneId !== milestoneId
+      && item.attemptId === input.attemptId
+      && item.deliveryState !== 'quarantined');
+    const guidance = team.revisions.find(item => item.revisionId === input.revisionId);
+    const guidanceAt = guidance ? Date.parse(guidance.createdAt) : NaN;
+    if (acceptedForAttempt.length === 0 && Number.isFinite(guidanceAt)) {
+      team.metrics.guidanceToFirstArtifactMs.push(Math.max(0, now.getTime() - guidanceAt));
+    }
+    if (input.type === 'bits_mr_ready' && Number.isFinite(guidanceAt)) {
+      team.metrics.guidanceToBitsUrlMs.push(Math.max(0, now.getTime() - guidanceAt));
+    }
+    if (input.type === 'build_terminal') {
+      const bits = [...acceptedForAttempt]
+        .filter(item => item.type === 'bits_mr_ready')
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+      if (bits) team.metrics.bitsUrlToBuildTerminalMs.push(Math.max(0, now.getTime() - Date.parse(bits.createdAt)));
+    }
+    team.milestoneOutbox.push(milestone);
+  }
+  worker.updatedAt = team.updatedAt = stamp;
+  writeStore(dataDir, teams);
+  return { ok: true, team, worker, milestone, disposition: stale ? 'stale' : 'accepted' };
+}
+
+export function listPendingAgentTeamMilestones(dataDir: string, larkAppId?: string): Array<{ team: AgentTeam; milestone: AgentTeamMilestone }> {
+  return Object.values(readStore(dataDir))
+    .filter(team => !larkAppId || team.larkAppId === larkAppId)
+    .flatMap(team => team.milestoneOutbox
+      .filter(milestone => milestone.deliveryState === 'pending')
+      .map(milestone => ({ team, milestone })));
+}
+
+/** Stable leader consumer claim; duplicate URL/event IDs have one visible effect. */
+export function markAgentTeamMilestoneLeaderSeen(
+  dataDir: string,
+  teamId: string,
+  milestoneId: string,
+  now = new Date(),
+): { team: AgentTeam; milestone: AgentTeamMilestone; firstSeen: boolean } | undefined {
+  const teams = readStore(dataDir);
+  const team = teams[teamId];
+  const milestone = team?.milestones.find(item => item.milestoneId === milestoneId);
+  if (!team || !milestone) return undefined;
+  if (team.leaderSeenMilestoneIds.includes(milestoneId)) {
+    team.metrics.duplicateMilestoneLeaderSuppressions += 1;
+    writeStore(dataDir, teams);
+    return { team, milestone, firstSeen: false };
+  }
+  const stamp = now.toISOString();
+  team.leaderSeenMilestoneIds.push(milestoneId);
+  milestone.deliveryState = 'leader-seen';
+  milestone.leaderAckAt = stamp;
+  const outbox = team.milestoneOutbox.find(item => item.milestoneId === milestoneId);
+  if (outbox) { outbox.deliveryState = 'leader-seen'; outbox.leaderAckAt = stamp; }
+  team.updatedAt = stamp;
+  writeStore(dataDir, teams);
+  return { team, milestone, firstSeen: true };
 }
 
 function reportIdFor(teamId: string, workerId: string, attemptId: string, lastUuid: string): string {

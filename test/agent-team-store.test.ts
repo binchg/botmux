@@ -15,9 +15,12 @@ import {
   getAgentTeam,
   getAgentTeamCapacity,
   listAgentTeams,
+  listPendingAgentTeamMilestones,
   listPendingAgentTeamReports,
+  markAgentTeamMilestoneLeaderSeen,
   markAgentTeamReportLeaderSeen,
   parseAgentTeamResult,
+  recordAgentTeamMilestone,
   recordAgentTeamWorkerReport,
   requestAgentTeamWorkerInterrupt,
   updateAgentTeamWorker,
@@ -196,6 +199,64 @@ describe('agent team store', () => {
     expect(listPendingAgentTeamReports(dataDir)).toHaveLength(0);
     expect(persisted.metrics.duplicateLeaderEffects).toBe(0);
     expect(persisted.metrics.duplicateLeaderSuppressions).toBe(1);
+  });
+
+  it('persists non-terminal milestones, dedupes BITS URLs and records artifact latency', () => {
+    const dataDir = temporaryDataDir();
+    const team = create(dataDir);
+    const worker = addRunning(dataDir, team.teamId);
+    const base = {
+      attemptId: worker.currentAttemptId!, revisionId: worker.currentRevisionId!, evidenceRefs: ['live:test'],
+    };
+    const audit = recordAgentTeamMilestone(dataDir, team.teamId, worker.workerId, {
+      ...base, type: 'audit_eligible', summary: 'machine audit passed',
+    }, new Date('2026-08-06T00:02:00.000Z'));
+    const bits = recordAgentTeamMilestone(dataDir, team.teamId, worker.workerId, {
+      ...base, type: 'bits_mr_ready', summary: 'BITS ready', url: 'https://bits.example/mr/1',
+    }, new Date('2026-08-06T00:03:00.000Z'));
+    const duplicate = recordAgentTeamMilestone(dataDir, team.teamId, worker.workerId, {
+      ...base, type: 'bits_mr_ready', summary: 'same URL again', url: 'https://bits.example/mr/1',
+    }, new Date('2026-08-06T00:03:30.000Z'));
+    const terminal = recordAgentTeamMilestone(dataDir, team.teamId, worker.workerId, {
+      ...base, type: 'build_terminal', summary: 'build passed',
+    }, new Date('2026-08-06T00:05:00.000Z'));
+
+    expect(audit.ok && audit.disposition).toBe('accepted');
+    expect(bits.ok && bits.disposition).toBe('accepted');
+    expect(duplicate.ok && duplicate.disposition).toBe('duplicate');
+    expect(terminal.ok && terminal.disposition).toBe('accepted');
+    if (!bits.ok || !duplicate.ok) throw new Error('expected milestones');
+    expect(duplicate.milestone.milestoneId).toBe(bits.milestone.milestoneId);
+    const persisted = getAgentTeam(dataDir, team.teamId)!;
+    expect(persisted.workers[0].attempts[0].status).toBe('running');
+    expect(persisted.milestones).toHaveLength(3);
+    expect(listPendingAgentTeamMilestones(dataDir)).toHaveLength(3);
+    expect(persisted.metrics).toMatchObject({
+      guidanceToFirstArtifactMs: [60_000],
+      guidanceToBitsUrlMs: [120_000],
+      bitsUrlToBuildTerminalMs: [120_000],
+      duplicateMilestones: 1,
+    });
+    expect(markAgentTeamMilestoneLeaderSeen(dataDir, team.teamId, bits.milestone.milestoneId)?.firstSeen).toBe(true);
+    expect(markAgentTeamMilestoneLeaderSeen(dataDir, team.teamId, bits.milestone.milestoneId)?.firstSeen).toBe(false);
+    expect(getAgentTeam(dataDir, team.teamId)?.metrics.duplicateMilestoneLeaderSuppressions).toBe(1);
+  });
+
+  it('quarantines a late milestone from a superseded revision without a leader effect', () => {
+    const dataDir = temporaryDataDir();
+    const team = create(dataDir);
+    const worker = addRunning(dataDir, team.teamId);
+    const old = { attemptId: worker.currentAttemptId!, revisionId: worker.currentRevisionId! };
+    appendAgentTeamGuidance(dataDir, team.teamId, worker.workerId, {
+      type: 'correction', lifetime: 'task-scoped', content: 'new revision',
+    });
+    const stale = recordAgentTeamMilestone(dataDir, team.teamId, worker.workerId, {
+      ...old, type: 'commit_pushed', summary: 'late old commit', evidenceRefs: ['sha:old'],
+    });
+    expect(stale.ok && stale.disposition).toBe('stale');
+    expect(stale.ok && stale.milestone.deliveryState).toBe('quarantined');
+    expect(listPendingAgentTeamMilestones(dataDir)).toHaveLength(0);
+    expect(getAgentTeam(dataDir, team.teamId)?.metrics.quarantinedStaleMilestones).toBe(1);
   });
 
   it('does not enter interrupted from a final and waits for App Server ack', () => {

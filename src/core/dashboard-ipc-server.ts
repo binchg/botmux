@@ -35,7 +35,7 @@ import { listActiveSessions, findActiveBySessionId, closeSession, getActiveSessi
 import { listOnlineDaemons } from '../utils/daemon-discovery.js';
 import { getChatMode, replyMessage, sendMessage, resolveUnionIdFromOpenId, listThreadMessages, listChatMessages, getUserProfile } from '../im/lark/client.js';
 import { parseApiMessage, cardContentHasUpgradeFallback, resolveMergedCardContent } from '../im/lark/message-parser.js';
-import { buildFollowUpContent, rememberLastCliInput, resumeSession, spawnAgentTeamWorker, spawnDashboardSession, activateQueuedSession, closeCliMismatchedSessionsForBot } from './session-manager.js';
+import { buildFollowUpContent, rememberLastCliInput, reconcileActiveSessionRegistry, resumeSession, spawnAgentTeamWorker, spawnDashboardSession, activateQueuedSession, closeCliMismatchedSessionsForBot } from './session-manager.js';
 import { parseSpawnRequest } from './session-create.js';
 import { getCliDisplayName } from '../im/lark/card-builder.js';
 import { locateLimiter } from './dashboard-locate.js';
@@ -72,10 +72,12 @@ import {
   getAgentTeamCapacity,
   listAgentTeams,
   markAgentTeamWorkerStarting,
+  recordAgentTeamMilestone,
   requestAgentTeamWorkerInterrupt,
   updateAgentTeamWorker,
   type AgentTeamGuidanceLifetime,
   type AgentTeamGuidanceType,
+  type AgentTeamMilestoneType,
 } from '../services/agent-team-store.js';
 import { buildAgentTeamGuidancePrompt } from './agent-team-prompts.js';
 
@@ -95,6 +97,25 @@ export type BotRenameOutcome =
 let botRenamer: ((newName: string) => Promise<BotRenameOutcome>) | null = null;
 export function setBotRenamer(fn: ((newName: string) => Promise<BotRenameOutcome>) | null): void {
   botRenamer = fn;
+}
+
+let agentTeamMilestoneNotifier: (() => void | Promise<void>) | null = null;
+export function setAgentTeamMilestoneNotifier(fn: (() => void | Promise<void>) | null): void {
+  agentTeamMilestoneNotifier = fn;
+}
+
+/** Serialize guidance delivery per Team worker so concurrent send calls cannot
+ * race through registry reconciliation and start multiple recovery runners. */
+const agentTeamSendFlights = new Map<string, Promise<unknown>>();
+async function withAgentTeamSendFlight<T>(key: string, action: () => Promise<T>): Promise<T> {
+  const previous = agentTeamSendFlights.get(key) ?? Promise.resolve();
+  const current = previous.catch(() => undefined).then(action);
+  agentTeamSendFlights.set(key, current);
+  try {
+    return await current;
+  } finally {
+    if (agentTeamSendFlights.get(key) === current) agentTeamSendFlights.delete(key);
+  }
 }
 import {
   composeRowFromActive,
@@ -433,127 +454,226 @@ ipcRoute('POST', '/api/agent-teams/:teamId/workers', async (req, res, params) =>
 ipcRoute('POST', '/api/agent-teams/:teamId/workers/:workerId/message', async (req, res, params) => {
   let body: Record<string, unknown>;
   try { body = await readJsonBody(req) as Record<string, unknown>; } catch { return jsonRes(res, 400, { ok: false, error: 'invalid_json' }); }
-  const actor = agentTeamActor(params.teamId, body.actorSessionId);
-  if (!actor.ok) return jsonRes(res, 403, { ok: false, error: actor.error });
-  const worker = actor.team.workers.find(item => item.workerId === params.workerId);
-  const content = typeof body.content === 'string' ? body.content.trim().slice(0, 30_000) : '';
-  if (!worker || !content) return jsonRes(res, 400, { ok: false, error: 'worker_and_content_required' });
-  const guidanceTypes = new Set<Exclude<AgentTeamGuidanceType, 'assignment'>>(['correction', 'replacement', 'addition', 'status_query']);
-  const lifetimes = new Set<AgentTeamGuidanceLifetime>(['task-scoped', 'one-shot', 'revoked']);
-  const guidanceType = typeof body.guidanceType === 'string' && guidanceTypes.has(body.guidanceType as any)
-    ? body.guidanceType as Exclude<AgentTeamGuidanceType, 'assignment'>
-    : 'addition';
-  const lifetime = typeof body.lifetime === 'string' && lifetimes.has(body.lifetime as any)
-    ? body.lifetime as AgentTeamGuidanceLifetime
-    : 'task-scoped';
-  const revokesRevisionId = typeof body.revokesRevisionId === 'string' ? body.revokesRevisionId.trim() : undefined;
-  const appended = appendAgentTeamGuidance(config.session.dataDir, actor.team.teamId, worker.workerId, {
-    type: guidanceType,
-    lifetime,
-    content,
-    revokesRevisionId,
-  });
-  if (!appended) return jsonRes(res, 400, { ok: false, error: 'guidance_invalid_or_revoke_target_missing' });
-
-  // status_query / revoked 只追加 ledger，不创建 attempt，也不唤醒或改变 worker。
-  if (!appended.attempt) {
-    return jsonRes(res, 200, {
-      ok: true,
-      queried: guidanceType === 'status_query',
-      revoked: lifetime === 'revoked',
-      revision: appended.revision,
-      worker: appended.worker,
+  await withAgentTeamSendFlight(`${params.teamId}\0${params.workerId}`, async () => {
+    // Re-read Team state only after acquiring the per-worker flight. This
+    // makes revision/attempt append and session recovery one ordered action.
+    const actor = agentTeamActor(params.teamId, body.actorSessionId);
+    if (!actor.ok) return jsonRes(res, 403, { ok: false, error: actor.error });
+    const worker = actor.team.workers.find(item => item.workerId === params.workerId);
+    const content = typeof body.content === 'string' ? body.content.trim().slice(0, 30_000) : '';
+    if (!worker || !content) return jsonRes(res, 400, { ok: false, error: 'worker_and_content_required' });
+    const guidanceTypes = new Set<Exclude<AgentTeamGuidanceType, 'assignment'>>(['correction', 'replacement', 'addition', 'status_query']);
+    const lifetimes = new Set<AgentTeamGuidanceLifetime>(['task-scoped', 'one-shot', 'revoked']);
+    const guidanceType = typeof body.guidanceType === 'string' && guidanceTypes.has(body.guidanceType as any)
+      ? body.guidanceType as Exclude<AgentTeamGuidanceType, 'assignment'>
+      : 'addition';
+    const lifetime = typeof body.lifetime === 'string' && lifetimes.has(body.lifetime as any)
+      ? body.lifetime as AgentTeamGuidanceLifetime
+      : 'task-scoped';
+    const revokesRevisionId = typeof body.revokesRevisionId === 'string' ? body.revokesRevisionId.trim() : undefined;
+    const appended = appendAgentTeamGuidance(config.session.dataDir, actor.team.teamId, worker.workerId, {
+      type: guidanceType,
+      lifetime,
+      content,
+      revokesRevisionId,
     });
-  }
+    if (!appended) return jsonRes(res, 400, { ok: false, error: 'guidance_invalid_or_revoke_target_missing' });
 
-  // 从未创建过 session 的 queued worker：更新后的 revision 由真实依赖闸门决定何时启动。
-  if (!appended.worker.sessionId) {
-    const start = await startQueuedAgentTeamWorker(actor.team.teamId, worker.workerId);
-    const current = getAgentTeam(config.session.dataDir, actor.team.teamId)?.workers.find(item => item.workerId === worker.workerId);
-    return jsonRes(res, start.ok ? 200 : 500, {
-      ok: start.ok,
-      queued: start.ok && !start.started,
-      revision: appended.revision,
-      attempt: appended.attempt,
-      worker: current,
-      start,
-    });
-  }
+    // status_query / revoked 只追加 ledger，不创建 attempt，也不唤醒或改变 worker。
+    if (!appended.attempt) {
+      return jsonRes(res, 200, {
+        ok: true,
+        queried: guidanceType === 'status_query',
+        revoked: lifetime === 'revoked',
+        revision: appended.revision,
+        worker: appended.worker,
+      });
+    }
 
-  const registry = getActiveSessionsRegistry();
-  if (!registry) {
-    failAgentTeamWorkerStart(config.session.dataDir, actor.team.teamId, worker.workerId, 'registry_unavailable');
-    return jsonRes(res, 503, { ok: false, error: 'registry_unavailable', revision: appended.revision, attempt: appended.attempt });
-  }
-  let ds = findActiveBySessionId(appended.worker.sessionId);
-  let recovered = false;
-  if (!ds) {
-    const stored = sessionStore.getSession(appended.worker.sessionId);
+    // 从未创建过 session 的 queued worker：更新后的 revision 由真实依赖闸门决定何时启动。
+    if (!appended.worker.sessionId) {
+      const start = await startQueuedAgentTeamWorker(actor.team.teamId, worker.workerId);
+      const current = getAgentTeam(config.session.dataDir, actor.team.teamId)?.workers.find(item => item.workerId === worker.workerId);
+      return jsonRes(res, start.ok ? 200 : 500, {
+        ok: start.ok,
+        queued: start.ok && !start.started,
+        revision: appended.revision,
+        attempt: appended.attempt,
+        worker: current,
+        start,
+      });
+    }
+
+    const registry = getActiveSessionsRegistry();
+    if (!registry) {
+      failAgentTeamWorkerStart(config.session.dataDir, actor.team.teamId, worker.workerId, 'registry_unavailable');
+      return jsonRes(res, 503, { ok: false, error: 'registry_unavailable', revision: appended.revision, attempt: appended.attempt });
+    }
+
+    const sessionId = appended.worker.sessionId;
+    let ds = findActiveBySessionId(sessionId);
+    let resumeCalled = false;
+    let registryReconciled = false;
+    let storeReconciled = false;
+    const stored = sessionStore.getSession(sessionId);
     if (!stored) {
       failAgentTeamWorkerStart(config.session.dataDir, actor.team.teamId, worker.workerId, 'session_not_found');
       return jsonRes(res, 409, { ok: false, error: 'worker_session_not_found', revision: appended.revision, attempt: appended.attempt });
     }
-    if (stored.status !== 'closed') {
-      failAgentTeamWorkerStart(config.session.dataDir, actor.team.teamId, worker.workerId, 'session_active_but_unregistered');
-      return jsonRes(res, 409, { ok: false, error: 'worker_session_active_but_unregistered', revision: appended.revision, attempt: appended.attempt });
+
+    // Runtime registry is the routing authority. If it still owns the original
+    // session, direct-send/refork it and repair a stale closed store row; never
+    // call resume merely because the Team worker is reported/invalid/closed.
+    if (ds && stored.status === 'closed') {
+      stored.status = 'active';
+      stored.closedAt = undefined;
+      stored.lastMessageAt = new Date().toISOString();
+      sessionStore.updateSession(stored);
+      storeReconciled = true;
     }
-    const resumed = await resumeSession(appended.worker.sessionId, registry);
-    if (!resumed.ok) {
-      failAgentTeamWorkerStart(config.session.dataDir, actor.team.teamId, worker.workerId, `session_resume_failed:${resumed.error}`);
-      return jsonRes(res, 409, {
-        ok: false,
-        error: `worker_session_resume_failed:${resumed.error}`,
-        activeSessionId: resumed.activeSessionId,
+    if (!ds && stored.status === 'active') {
+      const reconciled = await reconcileActiveSessionRegistry(sessionId, registry);
+      if (!reconciled.ok) {
+        failAgentTeamWorkerStart(config.session.dataDir, actor.team.teamId, worker.workerId, `session_registry_reconcile_failed:${reconciled.error}`);
+        return jsonRes(res, 409, {
+          ok: false,
+          error: `worker_session_registry_reconcile_failed:${reconciled.error}`,
+          activeSessionId: reconciled.activeSessionId,
+          revision: appended.revision,
+          attempt: appended.attempt,
+        });
+      }
+      ds = reconciled.ds;
+      registryReconciled = true;
+    } else if (!ds && stored.status === 'closed') {
+      const resumed = await resumeSession(sessionId, registry);
+      resumeCalled = true;
+      if (!resumed.ok) {
+        failAgentTeamWorkerStart(config.session.dataDir, actor.team.teamId, worker.workerId, `session_resume_failed:${resumed.error}`);
+        return jsonRes(res, 409, {
+          ok: false,
+          error: `worker_session_resume_failed:${resumed.error}`,
+          activeSessionId: resumed.activeSessionId,
+          revision: appended.revision,
+          attempt: appended.attempt,
+        });
+      }
+      ds = resumed.ds;
+    }
+    if (!ds) {
+      failAgentTeamWorkerStart(config.session.dataDir, actor.team.teamId, worker.workerId, 'session_resolution_failed');
+      return jsonRes(res, 409, { ok: false, error: 'worker_session_resolution_failed', revision: appended.revision, attempt: appended.attempt });
+    }
+
+    const capacity = getAgentTeamCapacity(config.session.dataDir, actor.team.leaderSessionId, actor.team.maxActiveWorkers);
+    const alreadyLive = !!ds.worker && !ds.worker.killed;
+    if (!alreadyLive && capacity.available <= 0) {
+      return jsonRes(res, 409, { ok: false, error: 'leader_worker_capacity_exhausted', capacity, revision: appended.revision, attempt: appended.attempt });
+    }
+    const deliveryMode = alreadyLive
+      ? (ds.lastScreenStatus === 'idle' ? 'idle-direct' : 'active-direct')
+      : resumeCalled
+        ? 'dead-resume-refork'
+        : registryReconciled
+          ? 'registry-reconcile-refork'
+          : 'runner-refork';
+    const guidance = buildAgentTeamGuidancePrompt(appended.revision);
+    const wrapped = buildFollowUpContent(guidance, ds.session.sessionId, {
+      cliId: ds.session.cliId,
+      locale: localeForBot(ds.larkAppId),
+      larkAppId: ds.larkAppId,
+      chatId: ds.chatId,
+      whiteboardId: ds.session.whiteboardId,
+    });
+    try {
+      rememberLastCliInput(ds, guidance, wrapped);
+      if (alreadyLive) ds.worker!.send({ type: 'message', content: wrapped });
+      else forkWorker(ds, wrapped, ds.hasHistory);
+      const activeWorker = ds.worker && !ds.worker.killed;
+      if (!activeWorker) throw new Error('worker_refork_not_started');
+      const attached = appended.attempt.status === 'running'
+        ? getAgentTeam(config.session.dataDir, actor.team.teamId)?.workers.find(item => item.workerId === worker.workerId)
+        : attachAgentTeamWorkerSession(config.session.dataDir, actor.team.teamId, worker.workerId, {
+            sessionId: ds.session.sessionId,
+            rootMessageId: ds.session.rootMessageId,
+          });
+      if (!attached) throw new Error('attempt_attach_failed');
+      if (worker.rootMessageId) {
+        await replyMessage(actor.team.larkAppId, worker.rootMessageId, `【Leader · ${guidanceType}】\n${content}`, 'text', true).catch(() => undefined);
+      }
+      return jsonRes(res, 200, {
+        ok: true,
+        recovered: !alreadyLive,
+        resumeCalled,
+        registryReconciled,
+        storeReconciled,
+        deliveryMode,
+        teamId: actor.team.teamId,
+        workerId: worker.workerId,
+        sessionId: ds.session.sessionId,
+        rootMessageId: ds.session.rootMessageId,
         revision: appended.revision,
         attempt: appended.attempt,
       });
+    } catch (err: any) {
+      const reason = `worker_delivery_failed:${err?.message ?? err}`;
+      failAgentTeamWorkerStart(config.session.dataDir, actor.team.teamId, worker.workerId, reason);
+      return jsonRes(res, 409, { ok: false, error: reason, revision: appended.revision, attempt: appended.attempt });
     }
-    ds = resumed.ds;
-    recovered = true;
-  }
-
-  const capacity = getAgentTeamCapacity(config.session.dataDir, actor.team.leaderSessionId, actor.team.maxActiveWorkers);
-  const alreadyLive = !!ds.worker && !ds.worker.killed;
-  if (!alreadyLive && capacity.available <= 0) {
-    return jsonRes(res, 409, { ok: false, error: 'leader_worker_capacity_exhausted', capacity, revision: appended.revision, attempt: appended.attempt });
-  }
-  const guidance = buildAgentTeamGuidancePrompt(appended.revision);
-  const wrapped = buildFollowUpContent(guidance, ds.session.sessionId, {
-    cliId: ds.session.cliId,
-    locale: localeForBot(ds.larkAppId),
-    larkAppId: ds.larkAppId,
-    chatId: ds.chatId,
-    whiteboardId: ds.session.whiteboardId,
   });
-  try {
-    rememberLastCliInput(ds, guidance, wrapped);
-    if (alreadyLive) ds.worker!.send({ type: 'message', content: wrapped });
-    else forkWorker(ds, wrapped, ds.hasHistory);
-    const activeWorker = ds.worker && !ds.worker.killed;
-    if (!activeWorker) throw new Error('worker_refork_not_started');
-    const attached = appended.attempt.status === 'running'
-      ? getAgentTeam(config.session.dataDir, actor.team.teamId)?.workers.find(item => item.workerId === worker.workerId)
-      : attachAgentTeamWorkerSession(config.session.dataDir, actor.team.teamId, worker.workerId, {
-          sessionId: ds.session.sessionId,
-          rootMessageId: ds.session.rootMessageId,
-        });
-    if (!attached) throw new Error('attempt_attach_failed');
-    if (worker.rootMessageId) {
-      await replyMessage(actor.team.larkAppId, worker.rootMessageId, `【Leader · ${guidanceType}】\n${content}`, 'text', true).catch(() => undefined);
-    }
-    return jsonRes(res, 200, {
-      ok: true,
-      recovered: recovered || !alreadyLive,
-      sessionId: ds.session.sessionId,
-      rootMessageId: ds.session.rootMessageId,
-      revision: appended.revision,
-      attempt: appended.attempt,
-    });
-  } catch (err: any) {
-    const reason = `worker_delivery_failed:${err?.message ?? err}`;
-    failAgentTeamWorkerStart(config.session.dataDir, actor.team.teamId, worker.workerId, reason);
-    return jsonRes(res, 409, { ok: false, error: reason, revision: appended.revision, attempt: appended.attempt });
+});
+
+/** Worker/leader append a non-terminal artifact event for the current attempt. */
+ipcRoute('POST', '/api/agent-teams/:teamId/milestones', async (req, res, params) => {
+  let body: Record<string, unknown>;
+  try { body = await readJsonBody(req) as Record<string, unknown>; } catch { return jsonRes(res, 400, { ok: false, error: 'invalid_json' }); }
+  const team = getAgentTeam(config.session.dataDir, params.teamId);
+  if (!team) return jsonRes(res, 404, { ok: false, error: 'team_not_found' });
+  const actorSessionId = typeof body.actorSessionId === 'string' ? body.actorSessionId : '';
+  const actorWorker = team.workers.find(item => item.sessionId === actorSessionId);
+  const actorIsLeader = team.leaderSessionId === actorSessionId;
+  if (!actorIsLeader && !actorWorker) return jsonRes(res, 403, { ok: false, error: 'team_actor_forbidden' });
+  const requestedWorkerId = typeof body.workerId === 'string' ? body.workerId.trim() : '';
+  if (actorWorker && requestedWorkerId && requestedWorkerId !== actorWorker.workerId) {
+    return jsonRes(res, 403, { ok: false, error: 'worker_milestone_identity_mismatch' });
   }
+  const worker = actorWorker ?? team.workers.find(item => item.workerId === requestedWorkerId);
+  if (!worker) return jsonRes(res, 400, { ok: false, error: 'milestone_worker_required' });
+  const types = new Set<AgentTeamMilestoneType>(['audit_eligible', 'commit_pushed', 'bits_mr_ready', 'build_started', 'build_terminal']);
+  const type = typeof body.type === 'string' && types.has(body.type as AgentTeamMilestoneType)
+    ? body.type as AgentTeamMilestoneType
+    : undefined;
+  const summary = typeof body.summary === 'string' ? body.summary : '';
+  const attemptId = typeof body.attemptId === 'string' && body.attemptId.trim() ? body.attemptId.trim() : worker.currentAttemptId;
+  const revisionId = typeof body.revisionId === 'string' && body.revisionId.trim() ? body.revisionId.trim() : worker.currentRevisionId;
+  if (!type || !attemptId || !revisionId) return jsonRes(res, 400, { ok: false, error: 'milestone_type_attempt_revision_required' });
+  const recorded = recordAgentTeamMilestone(config.session.dataDir, team.teamId, worker.workerId, {
+    attemptId,
+    revisionId,
+    type,
+    summary,
+    url: typeof body.url === 'string' ? body.url : undefined,
+    evidenceRefs: Array.isArray(body.evidenceRefs) ? body.evidenceRefs.filter((item): item is string => typeof item === 'string') : [],
+    idempotencyKey: typeof body.idempotencyKey === 'string' ? body.idempotencyKey : undefined,
+  });
+  if (!recorded.ok) return jsonRes(res, 400, recorded);
+  if (recorded.disposition !== 'stale') void Promise.resolve(agentTeamMilestoneNotifier?.()).catch(err => {
+    logger.warn(`[agent-team] milestone notifier failed: ${err instanceof Error ? err.message : String(err)}`);
+  });
+  return jsonRes(res, 200, {
+    ok: true,
+    disposition: recorded.disposition,
+    terminal: false,
+    milestone: recorded.milestone,
+    worker: {
+      workerId: recorded.worker.workerId,
+      sessionId: recorded.worker.sessionId,
+      rootMessageId: recorded.worker.rootMessageId,
+      status: recorded.worker.status,
+      currentAttemptId: recorded.worker.currentAttemptId,
+      currentRevisionId: recorded.worker.currentRevisionId,
+    },
+  });
 });
 
 ipcRoute('POST', '/api/agent-teams/:teamId/workers/:workerId/interrupt', async (req, res, params) => {
