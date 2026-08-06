@@ -81,7 +81,37 @@ describe('agent team store', () => {
     expect(worker.currentAttemptId).toMatch(/^attempt_/);
     expect(getAgentTeam(dataDir, team.teamId)?.revisions[0].type).toBe('assignment');
     expect(listAgentTeams(dataDir, { leaderSessionId: 'leader_1' })).toHaveLength(1);
-    expect(getAgentTeamCapacity(dataDir, 'leader_1', 2)).toMatchObject({ activeWorkers: 1, configuredLimit: 2, hardLimit: 4, available: 1 });
+    expect(getAgentTeamCapacity(dataDir, team.teamId)).toMatchObject({
+      activeWorkers: 1, globalActiveWorkers: 1, configuredLimit: 2, hardLimit: 4,
+      teamAvailable: 1, globalAvailable: 3, available: 1,
+    });
+  });
+
+  it('keeps per-Team configured limits independent under the leader-wide hard limit', () => {
+    const dataDir = temporaryDataDir();
+    const main = create(dataDir, 3);
+    addRunning(dataDir, main.teamId, 'main-a');
+    addRunning(dataDir, main.teamId, 'main-b');
+    addRunning(dataDir, main.teamId, 'main-c');
+    const small = create(dataDir, 1);
+
+    // Three workers in a sibling Team do not consume this Team's configured
+    // slot; the fourth leader-wide slot remains available.
+    expect(getAgentTeamCapacity(dataDir, small.teamId)).toMatchObject({
+      activeWorkers: 0, globalActiveWorkers: 3, configuredLimit: 1,
+      teamAvailable: 1, globalAvailable: 1, available: 1,
+    });
+    expect(getAgentTeamCapacity(dataDir, main.teamId)).toMatchObject({
+      activeWorkers: 3, globalActiveWorkers: 3, configuredLimit: 3,
+      teamAvailable: 0, globalAvailable: 1, available: 0,
+    });
+
+    addRunning(dataDir, small.teamId, 'small-a');
+    const fifth = create(dataDir, 4);
+    expect(getAgentTeamCapacity(dataDir, fifth.teamId)).toMatchObject({
+      activeWorkers: 0, globalActiveWorkers: 4, configuredLimit: 4,
+      teamAvailable: 4, globalAvailable: 0, available: 0,
+    });
   });
 
   it('keeps an unmet dependency queued without a session and never starts prematurely', () => {
@@ -352,7 +382,7 @@ describe('agent team store', () => {
     });
     expect(findReusableAgentTeamWorker(dataDir, 'leader_1', { reuseKey: 'repo-audit' })?.worker.workerId).toBe('writer');
     expect(findReusableAgentTeamWorker(dataDir, 'leader_1', { workingDir: '/repo/a', writer: true })?.matchedBy).toBe('workingDir-writer');
-    expect(getAgentTeamCapacity(dataDir, 'leader_1', 1)).toMatchObject({ activeWorkers: 1, available: 0 });
+    expect(getAgentTeamCapacity(dataDir, team.teamId)).toMatchObject({ activeWorkers: 1, available: 0 });
     updateAgentTeamWorker(dataDir, team.teamId, 'writer', { status: 'closed' });
     expect(findReusableAgentTeamWorker(dataDir, 'leader_1', { reuseKey: 'repo-audit' })?.worker.sessionId).toBe('session_writer');
   });

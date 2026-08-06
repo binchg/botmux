@@ -73,6 +73,7 @@ import {
   listAgentTeams,
   markAgentTeamWorkerStarting,
   recordAgentTeamMilestone,
+  reconcileAgentTeamWorkerRuntimeGone,
   requestAgentTeamWorkerInterrupt,
   updateAgentTeamWorker,
   type AgentTeamGuidanceLifetime,
@@ -294,8 +295,63 @@ ipcRoute('GET', '/api/agent-teams', (req, res) => {
   jsonRes(res, 200, { ok: true, teams: listAgentTeams(config.session.dataDir, { leaderSessionId, larkAppId: cachedLarkAppId }) });
 });
 
+export interface AgentTeamRuntimeReconciliation {
+  teamId: string;
+  workerId: string;
+  sessionId: string;
+  previousSessionStatus: 'active' | 'closed' | 'missing';
+  terminalReason: 'registry_missing_without_runner' | 'session_closed_without_runner' | 'session_deleted_without_runner';
+}
+
+/**
+ * Release capacity held by a worker whose original runtime was explicitly
+ * removed from this daemon's registry. A registry entry always wins — in
+ * particular an idle/live runner is never reclaimed even if the persisted
+ * session row is stale. Session coordinates and attempt history stay intact.
+ */
+export function reconcileAgentTeamRuntimeWorkers(options: { larkAppId?: string; teamId?: string } = {}): AgentTeamRuntimeReconciliation[] {
+  if (!getActiveSessionsRegistry()) return [];
+  const reconciled: AgentTeamRuntimeReconciliation[] = [];
+  const scopedAppId = options.larkAppId || cachedLarkAppId || undefined;
+  const targetTeam = options.teamId ? getAgentTeam(config.session.dataDir, options.teamId) : undefined;
+  const teams = options.teamId
+    ? (targetTeam && (!scopedAppId || targetTeam.larkAppId === scopedAppId) ? [targetTeam] : [])
+    : listAgentTeams(config.session.dataDir, { larkAppId: scopedAppId });
+  for (const team of teams.filter(item => item.status === 'active')) {
+    for (const worker of team.workers) {
+      if (!worker.sessionId || !['queued', 'starting', 'running', 'working', 'interrupting'].includes(worker.status)) continue;
+      // Presence in the live registry means the session is recoverable or has
+      // a runner; status reconciliation must never kill it.
+      if (findActiveBySessionId(worker.sessionId)) continue;
+      const stored = sessionStore.getSession(worker.sessionId);
+      const terminalReason = stored?.status === 'closed'
+        ? 'session_closed_without_runner'
+        : stored
+          ? 'registry_missing_without_runner'
+          : 'session_deleted_without_runner';
+      const finished = reconcileAgentTeamWorkerRuntimeGone(
+        config.session.dataDir,
+        team.teamId,
+        worker.workerId,
+        terminalReason,
+      );
+      if (!finished) continue;
+      reconciled.push({
+        teamId: team.teamId,
+        workerId: worker.workerId,
+        sessionId: worker.sessionId,
+        previousSessionStatus: stored?.status === 'closed' ? 'closed' : stored ? 'active' : 'missing',
+        terminalReason,
+      });
+      logger.warn(`[agent-team] crash-safe runtime reconcile ${team.teamId}/${worker.workerId}: ${terminalReason}`);
+    }
+  }
+  return reconciled;
+}
+
 /** 状态读回合并持久关系与当前 worker 活动，leader 不必进入子话题看日志。 */
 ipcRoute('GET', '/api/agent-teams/:teamId', (_req, res, params) => {
+  const runtimeReconciliation = reconcileAgentTeamRuntimeWorkers({ larkAppId: cachedLarkAppId });
   const team = getAgentTeam(config.session.dataDir, params.teamId);
   if (!team || team.larkAppId !== cachedLarkAppId) return jsonRes(res, 404, { ok: false, error: 'team_not_found' });
   const workers = team.workers.map(worker => {
@@ -310,12 +366,12 @@ ipcRoute('GET', '/api/agent-teams/:teamId', (_req, res, params) => {
       },
     };
   });
-  const capacity = getAgentTeamCapacity(config.session.dataDir, team.leaderSessionId, team.maxActiveWorkers);
+  const capacity = getAgentTeamCapacity(config.session.dataDir, team.teamId);
   const counts = workers.reduce<Record<string, number>>((acc, worker) => {
     acc[worker.status] = (acc[worker.status] ?? 0) + 1;
     return acc;
   }, {});
-  jsonRes(res, 200, { ok: true, team: { ...team, workers }, counts, capacity });
+  jsonRes(res, 200, { ok: true, team: { ...team, workers }, counts, capacity, runtimeReconciliation });
 });
 
 export type AgentTeamStartResult =
@@ -325,6 +381,8 @@ export type AgentTeamStartResult =
 
 /** queued → start 的唯一入口；依赖、容量和 session 创建在同一处 fail-closed。 */
 export async function startQueuedAgentTeamWorker(teamId: string, workerId: string): Promise<AgentTeamStartResult> {
+  const initialTeam = getAgentTeam(config.session.dataDir, teamId);
+  reconcileAgentTeamRuntimeWorkers({ larkAppId: initialTeam?.larkAppId });
   const team = getAgentTeam(config.session.dataDir, teamId);
   const worker = team?.workers.find(item => item.workerId === workerId);
   if (!team || !worker) return { ok: false, workerId, error: 'worker_not_found' };
@@ -333,7 +391,7 @@ export async function startQueuedAgentTeamWorker(teamId: string, workerId: strin
   if (!agentTeamDependenciesSatisfied(team, worker)) {
     return { ok: true, started: false, workerId, reason: 'dependencies_pending' };
   }
-  const capacity = getAgentTeamCapacity(config.session.dataDir, team.leaderSessionId, team.maxActiveWorkers);
+  const capacity = getAgentTeamCapacity(config.session.dataDir, team.teamId);
   if (capacity.available <= 0) return { ok: true, started: false, workerId, reason: 'capacity_pending' };
   const leader = findActiveBySessionId(team.leaderSessionId);
   if (!leader) return { ok: true, started: false, workerId, reason: 'leader_not_active' };
@@ -381,6 +439,7 @@ export async function startQueuedAgentTeamWorker(teamId: string, workerId: strin
 /** daemon 重启与依赖终态事件共用的 reconciliation。 */
 export async function reconcileAgentTeamQueuedWorkers(larkAppId?: string): Promise<AgentTeamStartResult[]> {
   const outcomes: AgentTeamStartResult[] = [];
+  reconcileAgentTeamRuntimeWorkers({ larkAppId });
   for (const team of listAgentTeams(config.session.dataDir, { larkAppId }).filter(item => item.status === 'active')) {
     for (const worker of team.workers.filter(item => item.status === 'queued')) {
       const outcome = await startQueuedAgentTeamWorker(team.teamId, worker.workerId);
@@ -394,6 +453,7 @@ export async function reconcileAgentTeamQueuedWorkers(larkAppId?: string): Promi
 ipcRoute('POST', '/api/agent-teams/:teamId/workers', async (req, res, params) => {
   let body: Record<string, unknown>;
   try { body = await readJsonBody(req) as Record<string, unknown>; } catch { return jsonRes(res, 400, { ok: false, error: 'invalid_json' }); }
+  reconcileAgentTeamRuntimeWorkers({ larkAppId: cachedLarkAppId });
   const actor = agentTeamActor(params.teamId, body.actorSessionId);
   if (!actor.ok) return jsonRes(res, actor.error === 'team_not_found' ? 404 : 403, { ok: false, error: actor.error });
   const workerId = typeof body.workerId === 'string' ? body.workerId.trim().slice(0, 80) : '';
@@ -430,7 +490,7 @@ ipcRoute('POST', '/api/agent-teams/:teamId/workers', async (req, res, params) =>
     const attempt = dependency?.attempts.find(item => item.attemptId === dependency.currentAttemptId);
     return attempt?.status === 'succeeded';
   });
-  const capacity = getAgentTeamCapacity(config.session.dataDir, actor.team.leaderSessionId, actor.team.maxActiveWorkers);
+  const capacity = getAgentTeamCapacity(config.session.dataDir, actor.team.teamId);
   if (dependenciesReady && capacity.available <= 0) {
     return jsonRes(res, 409, { ok: false, error: 'leader_worker_capacity_exhausted', capacity });
   }
@@ -455,6 +515,8 @@ ipcRoute('POST', '/api/agent-teams/:teamId/workers/:workerId/message', async (re
   let body: Record<string, unknown>;
   try { body = await readJsonBody(req) as Record<string, unknown>; } catch { return jsonRes(res, 400, { ok: false, error: 'invalid_json' }); }
   await withAgentTeamSendFlight(`${params.teamId}\0${params.workerId}`, async () => {
+    const initialTeam = getAgentTeam(config.session.dataDir, params.teamId);
+    reconcileAgentTeamRuntimeWorkers({ larkAppId: initialTeam?.larkAppId });
     // Re-read Team state only after acquiring the per-worker flight. This
     // makes revision/attempt append and session recovery one ordered action.
     const actor = agentTeamActor(params.teamId, body.actorSessionId);
@@ -565,7 +627,7 @@ ipcRoute('POST', '/api/agent-teams/:teamId/workers/:workerId/message', async (re
       return jsonRes(res, 409, { ok: false, error: 'worker_session_resolution_failed', revision: appended.revision, attempt: appended.attempt });
     }
 
-    const capacity = getAgentTeamCapacity(config.session.dataDir, actor.team.leaderSessionId, actor.team.maxActiveWorkers);
+    const capacity = getAgentTeamCapacity(config.session.dataDir, actor.team.teamId);
     const alreadyLive = !!ds.worker && !ds.worker.killed;
     if (!alreadyLive && capacity.available <= 0) {
       return jsonRes(res, 409, { ok: false, error: 'leader_worker_capacity_exhausted', capacity, revision: appended.revision, attempt: appended.attempt });
@@ -684,6 +746,7 @@ ipcRoute('POST', '/api/agent-teams/:teamId/milestones', async (req, res, params)
 ipcRoute('POST', '/api/agent-teams/:teamId/workers/:workerId/interrupt', async (req, res, params) => {
   let body: Record<string, unknown>;
   try { body = await readJsonBody(req) as Record<string, unknown>; } catch { return jsonRes(res, 400, { ok: false, error: 'invalid_json' }); }
+  reconcileAgentTeamRuntimeWorkers({ teamId: params.teamId });
   const actor = agentTeamActor(params.teamId, body.actorSessionId);
   if (!actor.ok) return jsonRes(res, 403, { ok: false, error: actor.error });
   const worker = actor.team.workers.find(item => item.workerId === params.workerId);
@@ -705,6 +768,7 @@ ipcRoute('POST', '/api/agent-teams/:teamId/workers/:workerId/interrupt', async (
 ipcRoute('POST', '/api/agent-teams/:teamId/reap', async (req, res, params) => {
   let body: Record<string, unknown>;
   try { body = await readJsonBody(req) as Record<string, unknown>; } catch { return jsonRes(res, 400, { ok: false, error: 'invalid_json' }); }
+  const runtimeReconciliation = reconcileAgentTeamRuntimeWorkers({ teamId: params.teamId });
   const actor = agentTeamActor(params.teamId, body.actorSessionId);
   if (!actor.ok) return jsonRes(res, 403, { ok: false, error: actor.error });
   const terminal = new Set(['reported', 'succeeded', 'blocked', 'interrupted', 'failed', 'superseded']);
@@ -715,11 +779,13 @@ ipcRoute('POST', '/api/agent-teams/:teamId/reap', async (req, res, params) => {
     updateAgentTeamWorker(config.session.dataDir, actor.team.teamId, worker.workerId, { status: 'closed' });
     reaped.push(worker.workerId);
   }
-  if (body.closeTeam === true && actor.team.workers.every(worker => terminal.has(worker.status) || worker.status === 'closed')) {
-    closeAgentTeam(config.session.dataDir, actor.team.teamId);
+  const current = getAgentTeam(config.session.dataDir, actor.team.teamId);
+  let teamClosed = false;
+  if (body.closeTeam === true && current?.workers.every(worker => terminal.has(worker.status) || worker.status === 'closed')) {
+    teamClosed = closeAgentTeam(config.session.dataDir, actor.team.teamId)?.status === 'closed';
   }
   const reconciliation = await reconcileAgentTeamQueuedWorkers(actor.team.larkAppId);
-  jsonRes(res, 200, { ok: true, reaped, reconciliation });
+  jsonRes(res, 200, { ok: true, reaped, teamClosed, runtimeReconciliation, reconciliation });
 });
 
 ipcRoute('POST', '/api/sessions/:sessionId/close', async (_req, res, params) => {

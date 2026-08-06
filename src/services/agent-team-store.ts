@@ -69,6 +69,9 @@ export interface AgentTeamAttempt {
   result?: AgentTeamResult;
   latestArtifacts?: AgentTeamLatestArtifacts;
   invalidReason?: string;
+  /** Crash-safe runtime reconciliation reason. This is audit metadata, not a
+   * structured worker result and never resumes the vanished runner. */
+  terminalReason?: string;
 }
 
 export interface AgentTeamWorker {
@@ -345,24 +348,45 @@ export function listAgentTeams(dataDir: string, filter?: { leaderSessionId?: str
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
-/** leader-wide 容量；queued worker 不占 live 配额。 */
-export function getAgentTeamCapacity(dataDir: string, leaderSessionId: string, limit?: number): {
+/**
+ * Team 配额与 leader 全局硬上限是两个正交闸门；queued worker 不占 live 配额。
+ *
+ * A small Team must still be able to use its own slot when sibling Teams are
+ * below the leader-wide hard limit, while no combination of Teams may create
+ * a fifth live worker for the same leader.
+ */
+export function getAgentTeamCapacity(dataDir: string, teamId: string): {
   activeWorkers: number;
+  globalActiveWorkers: number;
   configuredLimit: number;
   hardLimit: number;
+  teamAvailable: number;
+  globalAvailable: number;
   available: number;
 } {
-  const teams = listAgentTeams(dataDir, { leaderSessionId }).filter(team => team.status === 'active');
+  const allTeams = readStore(dataDir);
+  const team = allTeams[teamId];
   const configuredLimit = Math.min(
     MAX_AGENT_TEAM_ACTIVE_WORKERS,
-    Math.max(1, limit ?? teams[0]?.maxActiveWorkers ?? DEFAULT_AGENT_TEAM_ACTIVE_WORKERS),
+    Math.max(1, team?.maxActiveWorkers ?? DEFAULT_AGENT_TEAM_ACTIVE_WORKERS),
   );
-  const activeWorkers = teams.flatMap(team => team.workers).filter(worker => activeWorkerStatus(worker.status)).length;
+  const activeWorkers = team?.workers.filter(worker => activeWorkerStatus(worker.status)).length ?? 0;
+  const leaderTeams = team
+    ? Object.values(allTeams).filter(item => item.status === 'active' && item.leaderSessionId === team.leaderSessionId)
+    : [];
+  const globalActiveWorkers = leaderTeams
+    .flatMap(item => item.workers)
+    .filter(worker => activeWorkerStatus(worker.status)).length;
+  const teamAvailable = Math.max(0, configuredLimit - activeWorkers);
+  const globalAvailable = Math.max(0, MAX_AGENT_TEAM_ACTIVE_WORKERS - globalActiveWorkers);
   return {
     activeWorkers,
+    globalActiveWorkers,
     configuredLimit,
     hardLimit: MAX_AGENT_TEAM_ACTIVE_WORKERS,
-    available: Math.max(0, configuredLimit - activeWorkers),
+    teamAvailable,
+    globalAvailable,
+    available: Math.min(teamAvailable, globalAvailable),
   };
 }
 
@@ -1005,6 +1029,41 @@ export function requestAgentTeamWorkerInterrupt(
   worker.status = 'interrupting'; worker.updatedAt = team.updatedAt = stamp;
   writeStore(dataDir, teams);
   return worker;
+}
+
+/**
+ * Finish an attempt whose persisted session no longer has a runtime registry
+ * entry/runner. The caller must establish that runtime fact first; the store
+ * intentionally cannot infer it on its own.
+ *
+ * This is distinct from an App Server interrupt acknowledgement: it retains
+ * the original attempt and records why it ended, but never fabricates a model
+ * result or resumes the vanished session.
+ */
+export function reconcileAgentTeamWorkerRuntimeGone(
+  dataDir: string,
+  teamId: string,
+  workerId: string,
+  reason: 'registry_missing_without_runner' | 'session_closed_without_runner' | 'session_deleted_without_runner',
+  now = new Date(),
+): { team: AgentTeam; worker: AgentTeamWorker; attempt: AgentTeamAttempt } | undefined {
+  const teams = readStore(dataDir);
+  const team = teams[teamId];
+  const worker = team?.workers.find(item => item.workerId === workerId);
+  const attempt = worker ? currentAttempt(worker) : undefined;
+  const liveWorkerStatuses = new Set<AgentTeamWorkerStatus>(['queued', 'starting', 'running', 'working', 'interrupting']);
+  const liveAttemptStatuses = new Set<AgentTeamAttemptStatus>(['queued', 'starting', 'running', 'interrupting']);
+  if (!team || !worker || !attempt || !liveWorkerStatuses.has(worker.status) || !liveAttemptStatuses.has(attempt.status)) {
+    return undefined;
+  }
+  const stamp = now.toISOString();
+  attempt.status = 'interrupted';
+  attempt.terminalAt = stamp;
+  attempt.terminalReason = reason;
+  worker.status = 'interrupted';
+  worker.updatedAt = team.updatedAt = stamp;
+  writeStore(dataDir, teams);
+  return { team, worker, attempt };
 }
 
 export function acknowledgeAgentTeamWorkerInterrupt(
