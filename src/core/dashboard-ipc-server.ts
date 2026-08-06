@@ -65,6 +65,7 @@ import {
   appendAgentTeamGuidance,
   attachAgentTeamWorkerSession,
   closeAgentTeam,
+  configureAgentTeam,
   createAgentTeam,
   failAgentTeamWorkerStart,
   findReusableAgentTeamWorker,
@@ -76,6 +77,7 @@ import {
   reconcileAgentTeamWorkerRuntimeGone,
   requestAgentTeamWorkerInterrupt,
   updateAgentTeamWorker,
+  MAX_AGENT_TEAM_ACTIVE_WORKERS,
   type AgentTeamGuidanceLifetime,
   type AgentTeamGuidanceType,
   type AgentTeamMilestoneType,
@@ -272,8 +274,8 @@ ipcRoute('POST', '/api/agent-teams', async (req, res) => {
   const objective = typeof body.objective === 'string' ? body.objective.trim().slice(0, 20_000) : '';
   const maxActiveWorkers = typeof body.maxActiveWorkers === 'number' ? body.maxActiveWorkers : undefined;
   if (!leader || !name || !objective) return jsonRes(res, 400, { ok: false, error: 'leader_name_objective_required' });
-  if (maxActiveWorkers !== undefined && (!Number.isInteger(maxActiveWorkers) || maxActiveWorkers < 1 || maxActiveWorkers > 4)) {
-    return jsonRes(res, 400, { ok: false, error: 'max_active_workers_must_be_1_to_4' });
+  if (maxActiveWorkers !== undefined && (!Number.isInteger(maxActiveWorkers) || maxActiveWorkers < 1 || maxActiveWorkers > MAX_AGENT_TEAM_ACTIVE_WORKERS)) {
+    return jsonRes(res, 400, { ok: false, error: 'max_active_workers_must_be_1_to_6' });
   }
   if (leader.larkAppId !== cachedLarkAppId) return jsonRes(res, 409, { ok: false, error: 'wrong_daemon' });
   const team = createAgentTeam(config.session.dataDir, {
@@ -372,6 +374,45 @@ ipcRoute('GET', '/api/agent-teams/:teamId', (_req, res, params) => {
     return acc;
   }, {});
   jsonRes(res, 200, { ok: true, team: { ...team, workers }, counts, capacity, runtimeReconciliation });
+});
+
+/** 持久配置 Team 配额/worker 依赖；审计与运行时唤醒解耦。 */
+ipcRoute('POST', '/api/agent-teams/:teamId/configure', async (req, res, params) => {
+  let body: Record<string, unknown>;
+  try { body = await readJsonBody(req) as Record<string, unknown>; } catch { return jsonRes(res, 400, { ok: false, error: 'invalid_json' }); }
+  reconcileAgentTeamRuntimeWorkers({ teamId: params.teamId });
+  const actor = agentTeamActor(params.teamId, body.actorSessionId);
+  if (!actor.ok) return jsonRes(res, actor.error === 'team_not_found' ? 404 : 403, { ok: false, error: actor.error });
+  const maxActiveWorkers = typeof body.maxActiveWorkers === 'number' ? body.maxActiveWorkers : undefined;
+  const workerId = typeof body.workerId === 'string' ? body.workerId.trim().slice(0, 80) : undefined;
+  const clearDependsOn = body.clearDependsOn === true;
+  const configured = configureAgentTeam(config.session.dataDir, actor.team.teamId, {
+    actorSessionId: actor.team.leaderSessionId,
+    maxActiveWorkers,
+    workerId,
+    clearDependsOn,
+  });
+  if (!configured.ok) {
+    const status = configured.error === 'team_not_active' || configured.error === 'worker_not_found'
+      ? 404
+      : configured.error === 'max_active_workers_below_current_active'
+        ? 409
+        : 400;
+    return jsonRes(res, status, configured);
+  }
+  const start = clearDependsOn && workerId && configured.worker?.status === 'queued'
+    ? await startQueuedAgentTeamWorker(actor.team.teamId, workerId)
+    : undefined;
+  const team = getAgentTeam(config.session.dataDir, actor.team.teamId)!;
+  return jsonRes(res, 200, {
+    ok: true,
+    changed: configured.changed,
+    events: configured.events,
+    team,
+    worker: workerId ? team.workers.find(item => item.workerId === workerId) : undefined,
+    start,
+    capacity: getAgentTeamCapacity(config.session.dataDir, actor.team.teamId),
+  });
 });
 
 export type AgentTeamStartResult =

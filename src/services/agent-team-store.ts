@@ -11,7 +11,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
 
 export const DEFAULT_AGENT_TEAM_ACTIVE_WORKERS = 3;
-export const MAX_AGENT_TEAM_ACTIVE_WORKERS = 4;
+export const MAX_AGENT_TEAM_ACTIVE_WORKERS = 6;
 
 export type AgentTeamStatus = 'active' | 'completed' | 'closed';
 export type AgentTeamWorkerStatus =
@@ -132,6 +132,18 @@ export interface AgentTeamMilestone {
   quarantineReason?: string;
 }
 
+export interface AgentTeamConfigurationEvent {
+  eventId: string;
+  type: 'max_active_workers_changed' | 'worker_dependencies_cleared';
+  actorSessionId: string;
+  workerId?: string;
+  previousMaxActiveWorkers?: number;
+  maxActiveWorkers?: number;
+  previousDependsOn?: string[];
+  dependsOn?: string[];
+  createdAt: string;
+}
+
 export interface AgentTeamMetrics {
   queueToStartMs: number[];
   terminalToLeaderAckMs: number[];
@@ -172,6 +184,7 @@ export interface AgentTeam {
   milestones: AgentTeamMilestone[];
   milestoneOutbox: AgentTeamMilestone[];
   leaderSeenMilestoneIds: string[];
+  configurationEvents: AgentTeamConfigurationEvent[];
   metrics: AgentTeamMetrics;
 }
 
@@ -213,6 +226,7 @@ function normalizeTeam(team: AgentTeam): AgentTeam {
   team.milestones ??= [];
   team.milestoneOutbox ??= [];
   team.leaderSeenMilestoneIds ??= [];
+  team.configurationEvents ??= [];
   team.metrics = { ...emptyMetrics(), ...(team.metrics ?? {}) };
   for (const worker of team.workers ??= []) {
     worker.dependsOn ??= [];
@@ -330,11 +344,103 @@ export function createAgentTeam(
     ),
     status: 'active', createdAt: stamp, updatedAt: stamp,
     workers: [], revisions: [], reports: [], reportOutbox: [], leaderSeenReportIds: [],
-    milestones: [], milestoneOutbox: [], leaderSeenMilestoneIds: [], metrics: emptyMetrics(),
+    milestones: [], milestoneOutbox: [], leaderSeenMilestoneIds: [], configurationEvents: [], metrics: emptyMetrics(),
   };
   teams[team.teamId] = team;
   writeStore(dataDir, teams);
   return team;
+}
+
+export type ConfigureAgentTeamResult =
+  | {
+      ok: true;
+      changed: boolean;
+      team: AgentTeam;
+      worker?: AgentTeamWorker;
+      events: AgentTeamConfigurationEvent[];
+    }
+  | {
+      ok: false;
+      error:
+        | 'team_not_active'
+        | 'configuration_action_required'
+        | 'max_active_workers_must_be_1_to_6'
+        | 'max_active_workers_below_current_active'
+        | 'worker_required_for_clear_depends_on'
+        | 'worker_not_found';
+      activeWorkers?: number;
+    };
+
+/**
+ * 持久修改 Team 配额或 worker 依赖。先完整校验再一次原子写入；重复配置不追加
+ * 审计事件，也不改变正在运行的 worker/attempt/session。
+ */
+export function configureAgentTeam(
+  dataDir: string,
+  teamId: string,
+  input: {
+    actorSessionId: string;
+    maxActiveWorkers?: number;
+    workerId?: string;
+    clearDependsOn?: boolean;
+  },
+  now = new Date(),
+): ConfigureAgentTeamResult {
+  const teams = readStore(dataDir);
+  const team = teams[teamId];
+  if (!team || team.status !== 'active') return { ok: false, error: 'team_not_active' };
+  const hasMaxChange = input.maxActiveWorkers !== undefined;
+  const clearDependsOn = input.clearDependsOn === true;
+  if (!hasMaxChange && !clearDependsOn) return { ok: false, error: 'configuration_action_required' };
+  if (hasMaxChange && (
+    !Number.isInteger(input.maxActiveWorkers)
+    || input.maxActiveWorkers! < 1
+    || input.maxActiveWorkers! > MAX_AGENT_TEAM_ACTIVE_WORKERS
+  )) {
+    return { ok: false, error: 'max_active_workers_must_be_1_to_6' };
+  }
+  const worker = clearDependsOn
+    ? team.workers.find(item => item.workerId === input.workerId)
+    : undefined;
+  if (clearDependsOn && !input.workerId) return { ok: false, error: 'worker_required_for_clear_depends_on' };
+  if (clearDependsOn && !worker) return { ok: false, error: 'worker_not_found' };
+  const activeWorkers = team.workers.filter(item => activeWorkerStatus(item.status)).length;
+  if (hasMaxChange && input.maxActiveWorkers! < activeWorkers) {
+    return { ok: false, error: 'max_active_workers_below_current_active', activeWorkers };
+  }
+
+  const stamp = now.toISOString();
+  const events: AgentTeamConfigurationEvent[] = [];
+  if (hasMaxChange && input.maxActiveWorkers !== team.maxActiveWorkers) {
+    events.push({
+      eventId: `config_${randomUUID()}`,
+      type: 'max_active_workers_changed',
+      actorSessionId: input.actorSessionId,
+      previousMaxActiveWorkers: team.maxActiveWorkers,
+      maxActiveWorkers: input.maxActiveWorkers,
+      createdAt: stamp,
+    });
+    team.maxActiveWorkers = input.maxActiveWorkers!;
+  }
+  if (clearDependsOn && worker && worker.dependsOn.length > 0) {
+    events.push({
+      eventId: `config_${randomUUID()}`,
+      type: 'worker_dependencies_cleared',
+      actorSessionId: input.actorSessionId,
+      workerId: worker.workerId,
+      previousDependsOn: [...worker.dependsOn],
+      dependsOn: [],
+      createdAt: stamp,
+    });
+    worker.dependsOn = [];
+    worker.updatedAt = stamp;
+  }
+  if (events.length > 0) {
+    team.configurationEvents.push(...events);
+    team.updatedAt = stamp;
+    writeStore(dataDir, teams);
+  }
+  return { ok: true, changed: events.length > 0, team, worker, events };
 }
 
 export function getAgentTeam(dataDir: string, teamId: string): AgentTeam | undefined {
@@ -353,7 +459,7 @@ export function listAgentTeams(dataDir: string, filter?: { leaderSessionId?: str
  *
  * A small Team must still be able to use its own slot when sibling Teams are
  * below the leader-wide hard limit, while no combination of Teams may create
- * a fifth live worker for the same leader.
+ * a seventh live worker for the same leader.
  */
 export function getAgentTeamCapacity(dataDir: string, teamId: string): {
   activeWorkers: number;

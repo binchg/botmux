@@ -70,7 +70,7 @@ afterEach(async () => {
 });
 
 describe('Agent Team runtime capacity reconciliation', () => {
-  it('starts the fourth worker across Teams, rejects same-Team overflow, and rejects the global fifth', async () => {
+  it('allows six workers across Teams, rejects same-Team overflow, and rejects the global seventh', async () => {
     const dir = prepare();
     const main = createTeam(dir, 3);
     for (const workerId of ['main-a', 'main-b', 'main-c']) {
@@ -110,7 +110,7 @@ describe('Agent Team runtime capacity reconciliation', () => {
     expect(await startQueuedAgentTeamWorker(small.teamId, 'fourth')).toMatchObject({ ok: true, started: true });
     expect(spawn).toHaveBeenCalledTimes(1);
     expect(getAgentTeamCapacity(dir, small.teamId)).toMatchObject({
-      activeWorkers: 1, globalActiveWorkers: 4, teamAvailable: 0, globalAvailable: 0, available: 0,
+      activeWorkers: 1, globalActiveWorkers: 4, teamAvailable: 0, globalAvailable: 2, available: 0,
     });
 
     addAgentTeamWorker(dir, small.teamId, {
@@ -120,14 +120,63 @@ describe('Agent Team runtime capacity reconciliation', () => {
       ok: true, started: false, reason: 'capacity_pending',
     });
 
-    const fifthTeam = createTeam(dir, 4);
+    const fifthTeam = createTeam(dir, 2);
     addAgentTeamWorker(dir, fifthTeam.teamId, {
       workerId: 'global-fifth', title: 'fifth', assignment: 'task', dependsOn: [],
     });
-    expect(await startQueuedAgentTeamWorker(fifthTeam.teamId, 'global-fifth')).toMatchObject({
+    addAgentTeamWorker(dir, fifthTeam.teamId, {
+      workerId: 'global-sixth', title: 'sixth', assignment: 'task', dependsOn: [],
+    });
+    expect(await startQueuedAgentTeamWorker(fifthTeam.teamId, 'global-fifth')).toMatchObject({ ok: true, started: true });
+    expect(await startQueuedAgentTeamWorker(fifthTeam.teamId, 'global-sixth')).toMatchObject({ ok: true, started: true });
+    expect(getAgentTeamCapacity(dir, fifthTeam.teamId)).toMatchObject({
+      activeWorkers: 2, globalActiveWorkers: 6, hardLimit: 6, globalAvailable: 0, available: 0,
+    });
+
+    const seventhTeam = createTeam(dir, 6);
+    addAgentTeamWorker(dir, seventhTeam.teamId, {
+      workerId: 'global-seventh', title: 'seventh', assignment: 'task', dependsOn: [],
+    });
+    expect(await startQueuedAgentTeamWorker(seventhTeam.teamId, 'global-seventh')).toMatchObject({
       ok: true, started: false, reason: 'capacity_pending',
     });
-    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(spawn).toHaveBeenCalledTimes(3);
+  });
+
+  it('clears a queued worker dependency through configure and starts it without replacing history', async () => {
+    const dir = prepare();
+    const team = createTeam(dir, 4);
+    const rule = addAgentTeamWorker(dir, team.teamId, {
+      workerId: 'alpha-audit-rule', title: 'rule', assignment: 'task', dependsOn: ['workflow-gate', 'diff-topology'],
+    })!;
+    const originalAttemptId = rule.currentAttemptId;
+    workerPool.setActiveSessionsRegistry(new Map([['leader', {
+      session: { sessionId: 'leader-team', status: 'active', rootMessageId: 'om_leader', ownerOpenId: 'ou_owner' },
+      worker: { killed: false, send() {} },
+      larkAppId: 'cli_team', chatId: 'oc_team', chatType: 'group', scope: 'thread', workingDir: dir,
+    } as any]]));
+    vi.spyOn(sessionManager, 'spawnAgentTeamWorker').mockResolvedValue({
+      ok: true, sessionId: 'session_alpha-audit-rule', rootMessageId: 'om_alpha-audit-rule',
+    });
+    handle = await startIpcServer({ port: 0, host: '127.0.0.1' });
+
+    const response = await fetch(`http://127.0.0.1:${handle.port}/api/agent-teams/${team.teamId}/configure`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        actorSessionId: 'leader-team', workerId: rule.workerId, clearDependsOn: true,
+      }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      ok: true,
+      changed: true,
+      events: [{ type: 'worker_dependencies_cleared', previousDependsOn: ['workflow-gate', 'diff-topology'] }],
+      worker: { workerId: rule.workerId, dependsOn: [], currentAttemptId: originalAttemptId, status: 'running' },
+      start: { ok: true, started: true, sessionId: 'session_alpha-audit-rule' },
+    });
+    const persisted = getAgentTeam(dir, team.teamId)!.workers[0];
+    expect(persisted.attempts).toHaveLength(1);
+    expect(persisted.currentAttemptId).toBe(originalAttemptId);
   });
 
   it('terminalizes a dead interrupting worker, preserves its attempt audit, and releases capacity', () => {

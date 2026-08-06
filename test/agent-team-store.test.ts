@@ -10,6 +10,7 @@ import {
   appendAgentTeamGuidance,
   attachAgentTeamWorkerSession,
   closeAgentTeam,
+  configureAgentTeam,
   createAgentTeam,
   findReusableAgentTeamWorker,
   getAgentTeam,
@@ -82,8 +83,8 @@ describe('agent team store', () => {
     expect(getAgentTeam(dataDir, team.teamId)?.revisions[0].type).toBe('assignment');
     expect(listAgentTeams(dataDir, { leaderSessionId: 'leader_1' })).toHaveLength(1);
     expect(getAgentTeamCapacity(dataDir, team.teamId)).toMatchObject({
-      activeWorkers: 1, globalActiveWorkers: 1, configuredLimit: 2, hardLimit: 4,
-      teamAvailable: 1, globalAvailable: 3, available: 1,
+      activeWorkers: 1, globalActiveWorkers: 1, configuredLimit: 2, hardLimit: 6,
+      teamAvailable: 1, globalAvailable: 5, available: 1,
     });
   });
 
@@ -96,22 +97,68 @@ describe('agent team store', () => {
     const small = create(dataDir, 1);
 
     // Three workers in a sibling Team do not consume this Team's configured
-    // slot; the fourth leader-wide slot remains available.
+    // slot; three leader-wide slots remain available.
     expect(getAgentTeamCapacity(dataDir, small.teamId)).toMatchObject({
       activeWorkers: 0, globalActiveWorkers: 3, configuredLimit: 1,
-      teamAvailable: 1, globalAvailable: 1, available: 1,
+      teamAvailable: 1, globalAvailable: 3, available: 1,
     });
     expect(getAgentTeamCapacity(dataDir, main.teamId)).toMatchObject({
       activeWorkers: 3, globalActiveWorkers: 3, configuredLimit: 3,
-      teamAvailable: 0, globalAvailable: 1, available: 0,
+      teamAvailable: 0, globalAvailable: 3, available: 0,
     });
 
     addRunning(dataDir, small.teamId, 'small-a');
-    const fifth = create(dataDir, 4);
-    expect(getAgentTeamCapacity(dataDir, fifth.teamId)).toMatchObject({
-      activeWorkers: 0, globalActiveWorkers: 4, configuredLimit: 4,
-      teamAvailable: 4, globalAvailable: 0, available: 0,
+    const extra = create(dataDir, 2);
+    addRunning(dataDir, extra.teamId, 'extra-a');
+    addRunning(dataDir, extra.teamId, 'extra-b');
+    const seventh = create(dataDir, 6);
+    expect(getAgentTeamCapacity(dataDir, seventh.teamId)).toMatchObject({
+      activeWorkers: 0, globalActiveWorkers: 6, configuredLimit: 6,
+      teamAvailable: 6, globalAvailable: 0, available: 0,
     });
+  });
+
+  it('persists audited Team configuration, clears dependencies idempotently, and rejects unsafe shrink', () => {
+    const dataDir = temporaryDataDir();
+    const team = create(dataDir, 3);
+    addRunning(dataDir, team.teamId, 'active-a');
+    addRunning(dataDir, team.teamId, 'active-b');
+    const rule = addAgentTeamWorker(dataDir, team.teamId, {
+      workerId: 'alpha-audit-rule', title: 'rule', assignment: 'task', dependsOn: ['active-a', 'active-b'],
+    })!;
+    const originalAttempts = structuredClone(rule.attempts);
+    const stamp = new Date('2026-08-07T01:00:00.000Z');
+
+    const configured = configureAgentTeam(dataDir, team.teamId, {
+      actorSessionId: 'leader_1', maxActiveWorkers: 4, workerId: rule.workerId, clearDependsOn: true,
+    }, stamp);
+    expect(configured).toMatchObject({
+      ok: true,
+      changed: true,
+      events: [
+        { type: 'max_active_workers_changed', previousMaxActiveWorkers: 3, maxActiveWorkers: 4 },
+        { type: 'worker_dependencies_cleared', workerId: rule.workerId, previousDependsOn: ['active-a', 'active-b'], dependsOn: [] },
+      ],
+    });
+
+    // Fresh reads simulate daemon restart and prove both config and audit survive.
+    const persisted = getAgentTeam(dataDir, team.teamId)!;
+    expect(persisted.maxActiveWorkers).toBe(4);
+    expect(persisted.configurationEvents).toHaveLength(2);
+    expect(persisted.workers.find(item => item.workerId === rule.workerId)).toMatchObject({
+      status: 'queued', dependsOn: [], attempts: originalAttempts,
+    });
+
+    const duplicate = configureAgentTeam(dataDir, team.teamId, {
+      actorSessionId: 'leader_1', maxActiveWorkers: 4, workerId: rule.workerId, clearDependsOn: true,
+    });
+    expect(duplicate).toMatchObject({ ok: true, changed: false, events: [] });
+    expect(getAgentTeam(dataDir, team.teamId)!.configurationEvents).toHaveLength(2);
+
+    expect(configureAgentTeam(dataDir, team.teamId, {
+      actorSessionId: 'leader_1', maxActiveWorkers: 1,
+    })).toEqual({ ok: false, error: 'max_active_workers_below_current_active', activeWorkers: 2 });
+    expect(getAgentTeam(dataDir, team.teamId)!.maxActiveWorkers).toBe(4);
   });
 
   it('keeps an unmet dependency queued without a session and never starts prematurely', () => {

@@ -1,5 +1,6 @@
 /** `botmux team`：同一 Bot 的持久独立会话团队控制面。 */
 import { existsSync, readFileSync } from 'node:fs';
+import { MAX_AGENT_TEAM_ACTIVE_WORKERS } from '../services/agent-team-store.js';
 
 export interface AgentTeamCliContext {
   sessionId: string;
@@ -10,9 +11,11 @@ export interface AgentTeamCliContext {
 const HELP = `botmux team — 同一 Bot 多独立会话的 supervisor 控制面
 
 用法:
-  botmux team create --name <名称> (--objective <目标> | --objective-file <文件>) [--max-active-workers <1..4>]
+  botmux team create --name <名称> (--objective <目标> | --objective-file <文件>) [--max-active-workers <1..6>]
   botmux team list
   botmux team status [--team <team_id>]
+  botmux team configure [--team <team_id>] [--max-active-workers <1..6>]
+      [--worker <worker_id> --clear-depends-on]
   botmux team spawn [--team <team_id>] --id <worker_id> --title <标题>
       (--assignment <任务> | --assignment-file <文件>) [--repo <目录>] [--depends-on <worker_id> ...]
       [--reuse-key <稳定任务坐标>] [--writer]
@@ -28,14 +31,15 @@ const HELP = `botmux team — 同一 Bot 多独立会话的 supervisor 控制面
 
 说明:
   - leader 只负责编排；spawn 出来的每个 worker 都是同一飞书 Bot 的独立 Codex App session。
-  - 默认最多 3 个额外活跃 worker，create 可调到 1..4，硬上限 4；queued 不占配额，status 显示容量。
+  - 默认最多 3 个额外活跃 worker，create/configure 可调到 1..6，leader 全局硬上限 6；queued 不占配额，status 显示双层容量。
+  - configure 持久写入审计事件；重复配置幂等，禁止缩到当前 Team 活跃数以下，清依赖不删除 attempt/history。
   - depends-on 未满足时只登记 queued，不创建 session；只有依赖当前 attempt succeeded 才启动。
   - reuse-key 或同 --repo 的 --writer 命中时不重复 spawn，返回已有 worker 并引导 team send。
   - send 默认 addition/task-scoped；每次可执行 guidance 创建 revision/attempt。status_query 只读，不创建 attempt/恢复 session。
   - closed/已回报 worker 的 send 会复用原 session/thread 并 cold-resume；失败保持 fail-closed。
   - milestone 是当前 attempt 的非终态产物事件；BITS URL 立即进入 leader 可见 outbox，重复 URL 幂等，旧 revision 隔离。
   - worker final 必须含 attemptId/revisionId/status/summary/evidenceRefs/metrics，invalid/旧 attempt 不计成功。
-  - interrupt 只中断当前 turn，不删除会话；必须等 Codex App Server 回执才进入 interrupted；reap 不回收 interrupting。
+  - interrupt 只中断当前 turn，不删除会话；活 runner 必须等 Codex App Server 回执；registry/session 明确消失时才 crash-safe 回收并保留审计。
   - 这是 session federation，不是 Codex sub-agent，也不是已下线的 Botmux Workflow。`;
 
 function value(args: string[], flag: string): string | undefined {
@@ -105,8 +109,8 @@ export async function runAgentTeamCommand(args: string[], ctx?: AgentTeamCliCont
       if (!name || !objective) throw new Error('create 需要 --name 和 --objective/--objective-file');
       const maxRaw = value(rest, '--max-active-workers');
       const maxActiveWorkers = maxRaw === undefined ? undefined : Number(maxRaw);
-      if (maxRaw !== undefined && (!Number.isInteger(maxActiveWorkers) || maxActiveWorkers! < 1 || maxActiveWorkers! > 4)) {
-        throw new Error('--max-active-workers 必须是 1..4 的整数');
+      if (maxRaw !== undefined && (!Number.isInteger(maxActiveWorkers) || maxActiveWorkers! < 1 || maxActiveWorkers! > MAX_AGENT_TEAM_ACTIVE_WORKERS)) {
+        throw new Error(`--max-active-workers 必须是 1..${MAX_AGENT_TEAM_ACTIVE_WORKERS} 的整数`);
       }
       print(await request(ctx, '/api/agent-teams', {
         method: 'POST', headers: { 'content-type': 'application/json' },
@@ -121,6 +125,29 @@ export async function runAgentTeamCommand(args: string[], ctx?: AgentTeamCliCont
     const teamId = await resolveTeamId(rest, ctx);
     if (sub === 'status' || sub === 'inspect') {
       print(await request(ctx, `/api/agent-teams/${encodeURIComponent(teamId)}`));
+      return 0;
+    }
+    if (sub === 'configure') {
+      const maxRaw = value(rest, '--max-active-workers');
+      const maxActiveWorkers = maxRaw === undefined ? undefined : Number(maxRaw);
+      const workerId = (value(rest, '--worker') ?? '').trim();
+      const clearDependsOn = rest.includes('--clear-depends-on');
+      if (maxRaw === undefined && !clearDependsOn) {
+        throw new Error('configure 需要 --max-active-workers 或 --worker ... --clear-depends-on');
+      }
+      if (maxRaw !== undefined && (!Number.isInteger(maxActiveWorkers) || maxActiveWorkers! < 1 || maxActiveWorkers! > MAX_AGENT_TEAM_ACTIVE_WORKERS)) {
+        throw new Error(`--max-active-workers 必须是 1..${MAX_AGENT_TEAM_ACTIVE_WORKERS} 的整数`);
+      }
+      if (clearDependsOn && !workerId) throw new Error('--clear-depends-on 需要 --worker');
+      print(await request(ctx, `/api/agent-teams/${encodeURIComponent(teamId)}/configure`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          actorSessionId: ctx.sessionId,
+          maxActiveWorkers,
+          workerId: workerId || undefined,
+          clearDependsOn,
+        }),
+      }));
       return 0;
     }
     if (sub === 'spawn') {
