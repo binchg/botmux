@@ -33,6 +33,14 @@ describe('buildCardBodyElements', () => {
     expect(out[0]).toMatchObject({ tag: 'markdown', content: 'hello world' });
   });
 
+  it('outbound hook renders a plain BITS readback as a clickable link', () => {
+    const out = buildCardBodyElements('BITS 已创建并回读：8377427，target=alpha。');
+    expect(out[0]).toMatchObject({
+      tag: 'markdown',
+      content: 'BITS 已创建并回读：[8377427](https://bits.bytedance.net/bytebus/devops/code/detail/8377427)，target=alpha。',
+    });
+  });
+
   it('promotes ATX headings to bold (Feishu markdown widget can\'t render #)', () => {
     const out = buildCardBodyElements('# Title\n\nbody text');
     const text = mdElements(out)[0].content;

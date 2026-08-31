@@ -22,6 +22,7 @@
 import MarkdownIt from 'markdown-it';
 import type Token from 'markdown-it/lib/token.mjs';
 import { t, type Locale } from '../../i18n/index.js';
+import { enrichOutboundMarkdownLinks } from '../../services/outbound-link-enrichment.js';
 
 const md = new MarkdownIt({ html: false, linkify: false, breaks: false });
 
@@ -169,7 +170,8 @@ export function buildCardBodyElements(input: string): any[] {
   // else flows through the markdown element builder unchanged. Fence-aware so
   // image-looking lines inside ``` code blocks are left intact.
   const elements: any[] = [];
-  for (const seg of splitImageRowSegments(unescapeFenceLines(input))) {
+  const enriched = enrichOutboundMarkdownLinks(unescapeFenceLines(input));
+  for (const seg of splitImageRowSegments(enriched)) {
     if (seg.type === 'imgrow') elements.push(imageRowElement(seg.keys));
     else elements.push(...buildMarkdownElements(seg.content));
   }

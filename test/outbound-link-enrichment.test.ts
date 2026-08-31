@@ -1,0 +1,45 @@
+import { describe, expect, it } from 'vitest';
+import {
+  BITS_MR_DETAIL_BASE_URL,
+  enrichOutboundMarkdownLinks,
+} from '../src/services/outbound-link-enrichment.js';
+
+const link = (id: string) => `[${id}](${BITS_MR_DETAIL_BASE_URL}/${id})`;
+
+describe('enrichOutboundMarkdownLinks', () => {
+  it('linkifies the production BITS readback wording', () => {
+    expect(enrichOutboundMarkdownLinks(
+      'BITS 已创建并回读：8377427，Optimize、source 指向本次分支、target=alpha。',
+    )).toBe(
+      `BITS 已创建并回读：${link('8377427')}，Optimize、source 指向本次分支、target=alpha。`,
+    );
+  });
+
+  it('supports compact BITS MR forms and multiple references', () => {
+    expect(enrichOutboundMarkdownLinks('BITS-8377427；BITS MR：8377428')).toBe(
+      `BITS-${link('8377427')}；BITS MR：${link('8377428')}`,
+    );
+  });
+
+  it('is idempotent and preserves existing Markdown links and raw URLs', () => {
+    const markdown = `BITS MR：[8377427](${BITS_MR_DETAIL_BASE_URL}/8377427)\nBITS URL：https://bits.bytedance.net/bytebus/devops/code/detail/8377428`;
+    expect(enrichOutboundMarkdownLinks(markdown)).toBe(markdown);
+    expect(enrichOutboundMarkdownLinks(enrichOutboundMarkdownLinks(markdown))).toBe(markdown);
+  });
+
+  it('does not rewrite inline code, fenced code or indented code', () => {
+    const markdown = [
+      '`BITS 8377427`',
+      '```text',
+      'BITS 已创建：8377428',
+      '```',
+      '    BITS 8377429',
+    ].join('\n');
+    expect(enrichOutboundMarkdownLinks(markdown)).toBe(markdown);
+  });
+
+  it('does not guess from unrelated ticket numbers without BITS context', () => {
+    const markdown = 'Meego 7356167104，commit 8377427，版本 8377428。';
+    expect(enrichOutboundMarkdownLinks(markdown)).toBe(markdown);
+  });
+});
