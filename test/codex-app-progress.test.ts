@@ -126,6 +126,20 @@ describe('Codex App progress throttling', () => {
     })?.content).toBe('completed.');
   });
 
+  it('flushes a completed standalone Markdown image inside the interval', () => {
+    const throttler = new CodexAppProgressThrottler({ minIntervalMs: 10_000 });
+    const first = '请扫码授权。';
+    const image = '![DataMind 二维码](</workspace/task/qr code.png>)';
+
+    expect(throttler.maybeSnapshot({ text: first, startedAtMs: 0, nowMs: 10 })?.content).toBe(first);
+    expect(throttler.maybeSnapshot({
+      text: `${first}\n\n${image}`,
+      startedAtMs: 0,
+      nowMs: 20,
+      force: true,
+    })?.content).toBe(image);
+  });
+
   it('starts a fresh progress epoch after mid-turn user guidance', () => {
     const throttler = new CodexAppProgressThrottler();
     expect(throttler.maybeSnapshot({

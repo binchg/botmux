@@ -144,6 +144,10 @@ function collapseCardWhitespace(text: string): string {
     .trim();
 }
 
+function hasStandaloneMarkdownImage(text: string): boolean {
+  return /^ {0,3}!\[[^\]]*\]\(\s*(?:<[^>]+>|[^)\s]+)\s*\)\s*$/u.test(text.trim());
+}
+
 export interface CodexAppProgressChunk {
   content: string;
   consumedChars: number;
@@ -187,10 +191,15 @@ export function selectCodexAppProgressChunk(
   const unalignedText = normalized.slice(leading);
   if (!unalignedText) return null;
 
-  const fragmentEnd = leadingFragmentEnd(
-    unalignedText,
-    alignLeadingFragment || startsWithDetachedPunctuation(unalignedText),
-  );
+  // Markdown image syntax begins with `!`, but that is not detached sentence
+  // punctuation. Treat a complete image block as an atomic unit before the
+  // prose realignment logic examines its leading character.
+  const fragmentEnd = hasStandaloneMarkdownImage(unalignedText)
+    ? 0
+    : leadingFragmentEnd(
+        unalignedText,
+        alignLeadingFragment || startsWithDetachedPunctuation(unalignedText),
+      );
   if (fragmentEnd < 0) return null;
   const alignedLeading = unalignedText.slice(fragmentEnd).length
     - unalignedText.slice(fragmentEnd).trimStart().length;
@@ -202,7 +211,7 @@ export function selectCodexAppProgressChunk(
   // deliberately a soft target: a long first sentence stays intact, while a
   // second finished sentence is drained as a separate card immediately.
   void maxContentChars;
-  let end = firstBoundaryEndAfter(text, 0);
+  let end = hasStandaloneMarkdownImage(text) ? text.length : firstBoundaryEndAfter(text, 0);
   if (end < 0) end = force ? text.length : -1;
   if (end < 0) return null;
 
@@ -261,7 +270,13 @@ export class CodexAppProgressThrottler {
     }
 
     const elapsedMs = input.nowMs - this.lastSentAtMs;
-    if (this.lastSentAtMs > 0 && elapsedMs < this.minIntervalMs) return null;
+    const pendingContent = fullContent.slice(this.emittedUntil);
+    // A completed Markdown image is an atomic transport block, not an
+    // unfinished prose fragment. Flush it immediately so the daemon can upload
+    // it even when the preceding sentence was posted inside the throttle
+    // interval. Ordinary unpunctuated prose keeps the existing interval gate.
+    const forceAtomicImage = input.force && hasStandaloneMarkdownImage(pendingContent);
+    if (this.lastSentAtMs > 0 && elapsedMs < this.minIntervalMs && !forceAtomicImage) return null;
 
     const intervalReady = (this.lastSentAtMs === 0 && input.nowMs - input.startedAtMs >= this.initialFallbackMs)
       || (this.lastSentAtMs > 0 && elapsedMs >= this.minIntervalMs);

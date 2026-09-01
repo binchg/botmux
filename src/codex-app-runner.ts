@@ -328,7 +328,7 @@ function maybeEmitProgress(turn: ActiveTurn, force = false): void {
     nowMs: Date.now(),
     force,
   });
-  for (const snapshot of snapshots) emitMarker('progress', snapshot);
+  for (const snapshot of snapshots) emitMarker('progress', { ...snapshot, complete: force });
 }
 
 function emitCompletedStructuredMessage(turn: ActiveTurn, itemId: string, content: string): void {
@@ -564,8 +564,12 @@ function handleNotification(msg: JsonObject): void {
       if (item.phase === 'final_answer') {
         activeTurn.finalText = String(item.text ?? '');
         activeTurn.finalItemId = itemId;
-      } else if (!activeTurn.itemText.has(item.id) && item.text) {
-        activeTurn.allAgentText += String(item.text);
+      } else {
+        if (!activeTurn.itemText.has(item.id) && item.text) {
+          activeTurn.allAgentText += String(item.text);
+        }
+        // Delta-backed items already populated allAgentText, but their final
+        // unpunctuated/Markdown tail still needs one semantic-completion flush.
         maybeEmitProgress(activeTurn, true);
       }
     }

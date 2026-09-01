@@ -23,6 +23,22 @@ describe('codex-app runner steering', () => {
     expect(source).toContain('clearInterval(turn.progressTimer)');
   });
 
+  it('marks completed commentary and flushes delta-backed Markdown tails', () => {
+    const progressEmitter = source.slice(
+      source.indexOf('function maybeEmitProgress'),
+      source.indexOf('function userContent'),
+    );
+    expect(progressEmitter).toContain("emitMarker('progress', { ...snapshot, complete: force })");
+
+    const completedHandler = source.slice(
+      source.indexOf("if (msg.method === 'item/completed')"),
+      source.indexOf("if (msg.method === 'turn/completed')"),
+    );
+    expect(completedHandler).toContain('maybeEmitProgress(activeTurn, true)');
+    expect(completedHandler.indexOf('maybeEmitProgress(activeTurn, true)'))
+      .toBeGreaterThan(completedHandler.indexOf("activeTurn.allAgentText += String(item.text)"));
+  });
+
   it('asks the model for concise evidence-based checkpoints without elapsed-time heartbeats', () => {
     expect(source).toContain('连续执行最多 8 次工具调用后');
     expect(source).toContain('直接写已确认的结果或等待原因');
