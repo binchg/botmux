@@ -18,7 +18,7 @@ import { readGlobalConfig } from '../global-config.js';
 import * as sessionStore from '../services/session-store.js';
 import { persistStreamCardState, rememberLastCliInput } from './session-manager.js';
 import { fallbackTurnId } from './reply-target.js';
-import { updateMessage, deleteMessage, sendEphemeralCard, sendUserMessage, addReaction, removeReaction, MessageWithdrawnError } from '../im/lark/client.js';
+import { updateMessage, deleteMessage, sendEphemeralCard, sendUserMessage, addReaction, removeReaction, uploadImage, MessageWithdrawnError } from '../im/lark/client.js';
 import { buildStreamingCard, buildPrivateSnapshotCard, buildSessionCard, buildTuiPromptCard, buildTuiPromptResolvedCard, buildRelayedFrozenCard, getCliDisplayName } from '../im/lark/card-builder.js';
 import { loadFrozenCards, saveFrozenCards } from '../services/frozen-card-store.js';
 import { logger } from '../utils/logger.js';
@@ -57,6 +57,7 @@ import {
   resolveLocalFileShareBaseUrl,
   rewriteLocalFileLinks,
 } from '../services/local-file-share.js';
+import { resolveOutboundLocalImages } from '../services/outbound-local-images.js';
 import { usageLimitStateKey, type CliUsageLimitState } from '../utils/cli-usage-limit.js';
 import { shouldSuppressAfterTerminalSend, terminalSendDecision } from '../services/terminal-send-barrier.js';
 import { allocateCodexAppThreadTitle } from '../services/codex-app-thread-title.js';
@@ -2575,14 +2576,23 @@ function setupWorkerHandlers(ds: DaemonSession, worker: ChildProcess): void {
             continue;
           }
           try {
+            const roots = configuredFileShareRoots(requireCallbacks().getSessionWorkingDir(ds));
+            const prepared = await resolveOutboundLocalImages(content, {
+              roots,
+              upload: path => uploadImage(ds.larkAppId, path),
+            });
+            if (prepared.discovered > 0 || prepared.skipped.length > 0) {
+              logger.info(`[${t}] Codex App progress local images: discovered=${prepared.discovered}, uploaded=${prepared.imageKeys.length}, skipped=${prepared.skipped.length}`);
+            }
             const cardJson = buildTitledMarkdownCard({
               title: codexAppProgressCardTitle(
                 ds.currentTurnTitle || ds.session.currentTurnTitle || ds.lastUserPrompt || ds.session.title,
               ),
-              md: content,
+              md: prepared.content,
               brand: '',
               locale: localeForBot(ds.larkAppId),
               template: 'turquoise',
+              imageKeys: prepared.imageKeys,
             });
             await scopedReply(cardJson, 'interactive', msg.turnId);
             logger.info(`[${t}] Codex App progress appended by background forwarder (turn ${msg.turnId.substring(0, 8)}, kind=${msg.kind ?? 'assistant'}, ${content.length} chars)`);
@@ -2781,6 +2791,7 @@ function deliverFinalOutput(
   t: string,
   attempt: number,
   teamDelivery?: AgentTeamFinalDelivery,
+  preparedDelivery?: { cardJson: string; outwardContentLength: number },
 ): void {
   // Wait Mode / HTTP Sync Override:
   // If this turn is being waited for by an HTTP webhook request, intercept the
@@ -2820,6 +2831,7 @@ function deliverFinalOutput(
       logger.info(`[${t}] Bridge final_output suppressed after terminal send (turn ${msg.turnId.substring(0, 8)})`);
       return;
     }
+    let delivery = preparedDelivery;
     try {
       // 文档评论入口分流：本轮若来自飞书文档评论（/subscribe-lark-doc），把正文
       // 发表为文档评论（而非飞书卡片），状态卡/占位卡仍留在飞书会话起点。
@@ -2848,40 +2860,57 @@ function deliverFinalOutput(
       // they use the contextual card so the user prompt sits in a
       // blockquote and only the assistant body goes through full markdown
       // rendering.
-      let outwardContent = teamDelivery?.humanContent ?? msg.content;
-      if (!teamDelivery && localFileShareEnabled()) {
-        const sharedLinks = rewriteLocalFileLinks(msg.content, {
-          dataDir: config.session.dataDir,
-          roots: configuredFileShareRoots(requireCallbacks().getSessionWorkingDir(ds)),
-          baseUrl: resolveLocalFileShareBaseUrl(),
-          enabled: true,
-        });
-        outwardContent = sharedLinks.content;
-        if (sharedLinks.shared.length > 0) {
-          logger.info(`[${t}] Rewrote ${sharedLinks.shared.length} local file link(s) into expiring capability URLs`);
+      if (!delivery) {
+        let outwardContent = teamDelivery?.humanContent ?? msg.content;
+        let imageKeys: string[] = [];
+        if (!teamDelivery) {
+          const roots = configuredFileShareRoots(requireCallbacks().getSessionWorkingDir(ds));
+          const prepared = await resolveOutboundLocalImages(outwardContent, {
+            roots,
+            upload: path => uploadImage(ds.larkAppId, path),
+          });
+          outwardContent = prepared.content;
+          imageKeys = prepared.imageKeys;
+          if (prepared.discovered > 0 || prepared.skipped.length > 0) {
+            logger.info(`[${t}] Bridge final_output local images: discovered=${prepared.discovered}, uploaded=${prepared.imageKeys.length}, skipped=${prepared.skipped.length}`);
+          }
         }
+        if (!teamDelivery && localFileShareEnabled()) {
+          const sharedLinks = rewriteLocalFileLinks(outwardContent, {
+            dataDir: config.session.dataDir,
+            roots: configuredFileShareRoots(requireCallbacks().getSessionWorkingDir(ds)),
+            baseUrl: resolveLocalFileShareBaseUrl(),
+            enabled: true,
+          });
+          outwardContent = sharedLinks.content;
+          if (sharedLinks.shared.length > 0) {
+            logger.info(`[${t}] Rewrote ${sharedLinks.shared.length} local file link(s) into expiring capability URLs`);
+          }
+        }
+        const recipientOpenId = daemonCardFooterRecipientOpenId(ds, effectiveCliId);
+        const cardJson = teamDelivery?.cardJson ?? (msg.kind === 'local-turn' || msg.kind === 'local-turn-headless'
+          ? buildContextualReplyCard({
+              title: msg.kind === 'local-turn-headless'
+                ? tr('card.local_turn_resumed', undefined, localeForBot(ds.larkAppId))
+                : tr('card.local_turn', undefined, localeForBot(ds.larkAppId)),
+              userText: msg.kind === 'local-turn' ? msg.userText ?? '' : undefined,
+              assistantText: outwardContent,
+              assistantLabel: getCliDisplayName(effectiveCliId),
+              recipientOpenId,
+              brand: resolveBrandLabel(ds.larkAppId),
+              locale: localeForBot(ds.larkAppId),
+              imageKeys,
+            })
+          : buildMarkdownCard(outwardContent, recipientOpenId, resolveBrandLabel(ds.larkAppId), localeForBot(ds.larkAppId), imageKeys));
+        delivery = { cardJson, outwardContentLength: outwardContent.length };
       }
-      const recipientOpenId = daemonCardFooterRecipientOpenId(ds, effectiveCliId);
-      const cardJson = teamDelivery?.cardJson ?? (msg.kind === 'local-turn' || msg.kind === 'local-turn-headless'
-        ? buildContextualReplyCard({
-            title: msg.kind === 'local-turn-headless'
-              ? tr('card.local_turn_resumed', undefined, localeForBot(ds.larkAppId))
-              : tr('card.local_turn', undefined, localeForBot(ds.larkAppId)),
-            userText: msg.kind === 'local-turn' ? msg.userText ?? '' : undefined,
-            assistantText: outwardContent,
-            assistantLabel: getCliDisplayName(effectiveCliId),
-            recipientOpenId,
-            brand: resolveBrandLabel(ds.larkAppId),
-            locale: localeForBot(ds.larkAppId),
-          })
-        : buildMarkdownCard(outwardContent, recipientOpenId, resolveBrandLabel(ds.larkAppId), localeForBot(ds.larkAppId)));
 
       // Always deliver the answer as a fresh message — never PATCH a card in
       // place. message.patch is silent (no Feishu notification / unread), which
       // used to swallow the answer; a brand-new message always pings.
-      await scopedReply(cardJson, 'interactive', msg.turnId);
+      await scopedReply(delivery.cardJson, 'interactive', msg.turnId);
       ds.lastBridgeEmittedUuid = msg.lastUuid;
-      logger.info(`[${t}] ${teamDelivery ? 'Agent Team short card' : 'Bridge final_output'} forwarded (turn ${msg.turnId.substring(0, 8)}, ${outwardContent.length} chars, kind=${msg.kind ?? 'bridge'}, attempt ${attempt + 1})`);
+      logger.info(`[${t}] ${teamDelivery ? 'Agent Team short card' : 'Bridge final_output'} forwarded (turn ${msg.turnId.substring(0, 8)}, ${delivery.outwardContentLength} chars, kind=${msg.kind ?? 'bridge'}, attempt ${attempt + 1})`);
     } catch (err: any) {
       if (err instanceof MessageWithdrawnError) {
         // Root message gone — no point retrying. Mark as emitted so any
@@ -2899,7 +2928,7 @@ function deliverFinalOutput(
         return;
       }
       logger.warn(`[${t}] Bridge final_output attempt ${next} failed (${err.message}); retrying in ${FINAL_OUTPUT_RETRY_BACKOFF_MS[next]}ms`);
-      deliverFinalOutput(ds, msg, t, next, teamDelivery);
+      deliverFinalOutput(ds, msg, t, next, teamDelivery, delivery);
     }
   }, FINAL_OUTPUT_RETRY_BACKOFF_MS[attempt] ?? 0);
 }

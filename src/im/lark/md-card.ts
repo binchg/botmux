@@ -434,8 +434,8 @@ export function hasMarkdown(text: string): boolean {
  * suppressed, else custom. When brand and recipient are both absent the whole
  * footer (HR included) is omitted.
  */
-export function buildMarkdownCard(md: string, recipientOpenId?: string, brand?: string, locale?: Locale): string {
-  const elements = md ? buildCardBodyElements(md) : [];
+export function buildMarkdownCard(md: string, recipientOpenId?: string, brand?: string, locale?: Locale, imageKeys: string[] = []): string {
+  const elements = md ? buildImageCardElements(md, imageKeys) : buildImageCardElements('', imageKeys);
   const footerParts: string[] = [];
   const brandSeg = brandFooterSegment(brand);
   if (brandSeg) footerParts.push(brandSeg);
@@ -464,8 +464,9 @@ export function buildTitledMarkdownCard(opts: {
   locale?: Locale;
   template?: string;
   maxTitleChars?: number;
+  imageKeys?: string[];
 }): string {
-  const elements = opts.md ? buildCardBodyElements(opts.md) : [];
+  const elements = buildImageCardElements(opts.md, opts.imageKeys ?? []);
   const footerParts: string[] = [];
   const brandSeg = brandFooterSegment(opts.brand);
   if (brandSeg) footerParts.push(brandSeg);
@@ -522,8 +523,9 @@ export function buildContextualReplyCard(opts: {
   recipientOpenId?: string;
   brand?: string;
   locale?: Locale;
+  imageKeys?: string[];
 }): string {
-  const { title, userText, assistantText, assistantLabel, recipientOpenId, brand, locale } = opts;
+  const { title, userText, assistantText, assistantLabel, recipientOpenId, brand, locale, imageKeys = [] } = opts;
   const elements: any[] = [];
 
   elements.push({
@@ -547,7 +549,7 @@ export function buildContextualReplyCard(opts: {
   });
 
   const bodyElements = assistantText.trim()
-    ? buildCardBodyElements(assistantText)
+    ? buildImageCardElements(assistantText, imageKeys)
     : [{ tag: 'markdown', content: `*${t('common.empty_paren', undefined, locale)}*` }];
   for (const el of bodyElements) elements.push(el);
 

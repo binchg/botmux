@@ -202,6 +202,12 @@ describe('buildCardBodyElements', () => {
 });
 
 describe('buildMarkdownCard', () => {
+  it('resolves uploaded image placeholders in fallback cards', () => {
+    const card = JSON.parse(buildMarkdownCard('扫码：\n\n![二维码](img:0)', undefined, '', undefined, ['img_v3_qr']));
+    expect(JSON.stringify(card.body.elements)).toContain('img_v3_qr');
+    expect(JSON.stringify(card.body.elements)).not.toContain('img:0');
+  });
+
   it('appends footer hr + grey link element', () => {
     const json = buildMarkdownCard('hello');
     const card = JSON.parse(json);
