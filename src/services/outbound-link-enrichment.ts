@@ -2,6 +2,8 @@
  * Last-mile enrichment for assistant Markdown before it is rendered into a
  * Lark card. Keep this pure and conservative: only explicit BITS references
  * are linkified, while existing links, URLs and code stay byte-for-byte intact.
+ * The complete reference is the link label so Feishu shows meaningful blue
+ * text such as `BITS 8386078`, rather than a lone linked number.
  */
 
 export const BITS_MR_DETAIL_BASE_URL = 'https://bits.bytedance.net/bytebus/devops/code/detail';
@@ -86,14 +88,13 @@ function linkifyLine(line: string): string {
   for (const match of line.matchAll(BITS_REFERENCE_RE)) {
     const id = match.groups?.id;
     if (!id || match.index == null) continue;
-    const idOffset = match[0].lastIndexOf(id);
-    const idStart = match.index + idOffset;
-    const idEnd = idStart + id.length;
-    if (protectedSpans.some(span => idStart < span.end && idEnd > span.start)) continue;
+    const referenceStart = match.index;
+    const referenceEnd = referenceStart + match[0].length;
+    if (protectedSpans.some(span => referenceStart < span.end && referenceEnd > span.start)) continue;
 
-    output += line.slice(cursor, idStart);
-    output += `[${id}](${BITS_MR_DETAIL_BASE_URL}/${id})`;
-    cursor = idEnd;
+    output += line.slice(cursor, referenceStart);
+    output += `[${match[0]}](${BITS_MR_DETAIL_BASE_URL}/${id})`;
+    cursor = referenceEnd;
   }
   return cursor === 0 ? line : output + line.slice(cursor);
 }
@@ -103,7 +104,7 @@ function linkifyLine(line: string): string {
  *
  * Example:
  * `BITS 已创建并回读：8377427` becomes
- * `BITS 已创建并回读：[8377427](https://bits.bytedance.net/...)`.
+ * `[BITS 已创建并回读：8377427](https://bits.bytedance.net/...)`.
  */
 export function enrichOutboundMarkdownLinks(input: string): string {
   if (!input || !/\bBITS\b/iu.test(input)) return input;

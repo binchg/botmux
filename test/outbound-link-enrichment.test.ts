@@ -4,21 +4,34 @@ import {
   enrichOutboundMarkdownLinks,
 } from '../src/services/outbound-link-enrichment.js';
 
-const link = (id: string) => `[${id}](${BITS_MR_DETAIL_BASE_URL}/${id})`;
+const link = (label: string, id: string) => `[${label}](${BITS_MR_DETAIL_BASE_URL}/${id})`;
 
 describe('enrichOutboundMarkdownLinks', () => {
   it('linkifies the production BITS readback wording', () => {
     expect(enrichOutboundMarkdownLinks(
       'BITS 已创建并回读：8377427，Optimize、source 指向本次分支、target=alpha。',
     )).toBe(
-      `BITS 已创建并回读：${link('8377427')}，Optimize、source 指向本次分支、target=alpha。`,
+      `${link('BITS 已创建并回读：8377427', '8377427')}，Optimize、source 指向本次分支、target=alpha。`,
     );
   });
 
   it('supports compact BITS MR forms and multiple references', () => {
     expect(enrichOutboundMarkdownLinks('BITS-8377427；BITS MR：8377428')).toBe(
-      `BITS-${link('8377427')}；BITS MR：${link('8377428')}`,
+      `${link('BITS-8377427', '8377427')}；${link('BITS MR：8377428', '8377428')}`,
     );
+  });
+
+  it('renders the complete references from a delivery summary as clickable labels', () => {
+    const markdown = [
+      '两条 URL 都已落地并绑定同一 final SHA 6084cdce：',
+      '- 合入 merge_alpha：BITS 8386078',
+      '- 指向 base_alpha 复测：BITS 8386087',
+    ].join('\n');
+    expect(enrichOutboundMarkdownLinks(markdown)).toBe([
+      '两条 URL 都已落地并绑定同一 final SHA 6084cdce：',
+      `- 合入 merge_alpha：${link('BITS 8386078', '8386078')}`,
+      `- 指向 base_alpha 复测：${link('BITS 8386087', '8386087')}`,
+    ].join('\n'));
   });
 
   it('is idempotent and preserves existing Markdown links and raw URLs', () => {

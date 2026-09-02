@@ -37,7 +37,7 @@ describe('buildCardBodyElements', () => {
     const out = buildCardBodyElements('BITS 已创建并回读：8377427，target=alpha。');
     expect(out[0]).toMatchObject({
       tag: 'markdown',
-      content: 'BITS 已创建并回读：[8377427](https://bits.bytedance.net/bytebus/devops/code/detail/8377427)，target=alpha。',
+      content: '[BITS 已创建并回读：8377427](https://bits.bytedance.net/bytebus/devops/code/detail/8377427)，target=alpha。',
     });
   });
 
@@ -396,6 +396,18 @@ describe('buildImageCardElements', () => {
     const md = mdElements(out).map(e => e.content).join('\n');
     expect(md).toContain('![](img_v2_a)');
     expect(out.some(e => e.tag === 'column_set')).toBe(false);
+  });
+
+  it('keeps a QR image while rendering a complete BITS reference as a clickable label', () => {
+    const out = buildImageCardElements(
+      '复测入口：BITS 8386087\n\n![二维码](img:0)',
+      ['img_v3_qr'],
+    );
+    const markdown = mdElements(out).map(e => e.content).join('\n');
+    expect(markdown).toContain(
+      '[BITS 8386087](https://bits.bytedance.net/bytebus/devops/code/detail/8386087)',
+    );
+    expect(markdown).toContain('![二维码](img_v3_qr)');
   });
 
   it('grouped placeholder of 2 → one column_set row of 2 side-by-side imgs', () => {
