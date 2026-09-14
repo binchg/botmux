@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import { existsSync } from 'node:fs';
 import { installStdioEpipeGuard } from './utils/stdio-epipe-guard.js';
 import { resolveDaemonBotIndex } from './utils/daemon-bot-index.js';
+import { installLarkOutboundPrivacy } from './im/lark/outbound-privacy.js';
 
 // Under pm2 the daemon's stdout/stderr are pipes to the God daemon. A broken
 // pipe (log streaming detaches, God daemon restart) would otherwise emit an
@@ -27,6 +28,8 @@ for (const k of ['BOTMUX_SESSION_ID', 'BOTMUX_LARK_APP_ID', 'BOTMUX_CHAT_ID', 'B
 }
 
 async function main() {
+  // 启动发送链路前安装隐私处理，覆盖会话卡片、阶段回复和最终回复。
+  installLarkOutboundPrivacy();
   // Resolve global UI locale from ~/.botmux/config.json BEFORE loading
   // daemon code — `bot-registry`, `card-builder`, etc. read `t()` against
   // the process default when a bot has no per-bot `lang` set.
