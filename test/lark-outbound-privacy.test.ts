@@ -71,7 +71,7 @@ describe('审核拒绝的可见结果', () => {
     const { result, calls } = await request(sensitive, [230028], { headers: { 'Content-Length': '999' } });
     expect(result).toMatchObject({ code: 0, data: { message_id: 'delivered' } });
     expect(calls).toHaveLength(2);
-    expect(calls[1].data).toMatchObject({ reply_in_thread: true, uuid: 'same-turn', msg_type: 'interactive' });
+    expect(calls[1].data).toMatchObject({ reply_in_thread: true, uuid: 'same-turn', msg_type: 'text' });
     expect(calls[1].data.content).not.toContain('test.person');
     expect(calls[1].data.content).toContain('原回复未送达');
     expect(calls[1].headers['Content-Length']).toBeUndefined();

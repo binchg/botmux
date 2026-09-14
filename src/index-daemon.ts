@@ -5,7 +5,6 @@ import { homedir } from 'node:os';
 import { existsSync } from 'node:fs';
 import { installStdioEpipeGuard } from './utils/stdio-epipe-guard.js';
 import { resolveDaemonBotIndex } from './utils/daemon-bot-index.js';
-import { installLarkOutboundPrivacy } from './im/lark/outbound-privacy.js';
 
 // Under pm2 the daemon's stdout/stderr are pipes to the God daemon. A broken
 // pipe (log streaming detaches, God daemon restart) would otherwise emit an
@@ -28,8 +27,6 @@ for (const k of ['BOTMUX_SESSION_ID', 'BOTMUX_LARK_APP_ID', 'BOTMUX_CHAT_ID', 'B
 }
 
 async function main() {
-  // 启动发送链路前安装隐私处理，覆盖会话卡片、阶段回复和最终回复。
-  installLarkOutboundPrivacy();
   // Resolve global UI locale from ~/.botmux/config.json BEFORE loading
   // daemon code — `bot-registry`, `card-builder`, etc. read `t()` against
   // the process default when a bot has no per-bot `lang` set.
@@ -48,8 +45,15 @@ async function main() {
   // 覆盖到整组 daemon；环境变量仅兼容旧版配置与直接启动方式。
   const botIndex = resolveDaemonBotIndex(process.argv.slice(2), process.env.BOTMUX_BOT_INDEX);
 
+  // dotenv 和机器人索引确定后再加载投递模块，保证队列按实际机器人隔离。
+  const { startLarkOutboundDelivery } = await import('./services/lark-outbound-runtime.js');
+  const delivery = startLarkOutboundDelivery(botIndex ?? 0);
+
   logger.info(`Starting botmux daemon...${botIndex !== undefined ? ` (bot index: ${botIndex})` : ''}`);
-  await startDaemon(botIndex);
+  // startDaemon 在首次 await 前同步注册所属机器人，随即保护 SDK 的鉴权失败路径。
+  const startup = startDaemon(botIndex);
+  delivery?.protectClient();
+  await startup;
 }
 
 main().catch((err) => {
