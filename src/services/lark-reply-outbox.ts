@@ -19,7 +19,7 @@ export interface PendingReply {
   nextAt: number;
   attempts: number;
   ambiguous: boolean;
-  state: 'pending' | 'uncertain' | 'blocked' | 'delivered';
+  state: 'pending' | 'uncertain' | 'blocked' | 'suppressed' | 'delivered';
   code?: number | string;
 }
 
@@ -93,6 +93,7 @@ export class LarkReplyOutbox {
 
   /** 先保存失败结果，再让调用方处理错误；不会伪造 message_id 或成功回执。 */
   failed(request: OutboundRequest, error: any): void {
+    if (error?.__botmuxReplySuppressed) return;
     const portable = this.portable(request);
     const fingerprint = this.fingerprint(portable);
     const existing = this.records.get(request.__botmuxOutboxId)
@@ -152,6 +153,12 @@ export class LarkReplyOutbox {
         }
         this.accepted(request, response);
       } catch (error) {
+        if ((error as any)?.__botmuxReplySuppressed) {
+          record.state = 'suppressed';
+          this.persist(record);
+          this.log(`Reply suppressed after session handoff id=${record.id}`);
+          return;
+        }
         // SDK 拦截器负责即时路径，补发路径在此统一计数，防止重复入队。
         this.failed((error as any)?.config ?? request, error);
       }
@@ -178,7 +185,7 @@ export class LarkReplyOutbox {
 
   /** 只回读数量及状态，诊断页无需暴露正文或个人资料。 */
   status(): Record<string, number> {
-    const counts = { pending: 0, uncertain: 0, blocked: 0 };
+    const counts = { pending: 0, uncertain: 0, blocked: 0, suppressed: 0 };
     for (const item of this.records.values()) if (item.state !== 'delivered') counts[item.state]++;
     return counts;
   }

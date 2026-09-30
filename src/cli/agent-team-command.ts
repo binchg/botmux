@@ -28,8 +28,10 @@ const HELP = `botmux team — 同一 Bot 多独立会话的 supervisor 控制面
       [--attempt-id <attempt_id>] [--revision-id <revision_id>] [--idempotency-key <稳定键>]
   botmux team interrupt [--team <team_id>] --worker <worker_id>
   botmux team reap [--team <team_id>] [--close-team]
+  botmux team handoff --to <接手会话ID> [--session-id <交出会话ID>]
 
 说明:
+  - handoff 是同 bot 同 owner 的独立话题平级交接，与 Team 角色无关；持久停用交出方回复并关闭其 runner，接手方保持独立会话。
   - leader 只负责编排；spawn 出来的每个 worker 都是同一飞书 Bot 的独立 Codex App session。
   - 默认最多 3 个额外活跃 worker，create/configure 可调到 1..8，leader 全局硬上限 8；queued 不占配额，status 显示双层容量。
   - configure 持久写入审计事件；重复配置幂等，禁止缩到当前 Team 活跃数以下，清依赖不删除 attempt/history。
@@ -98,11 +100,20 @@ export async function runAgentTeamCommand(args: string[], ctx?: AgentTeamCliCont
     return 0;
   }
   if (!ctx) {
-    console.error('无法推断当前 Botmux session/daemon；请在 leader 会话内运行。');
+    console.error('无法推断当前 Botmux session/daemon；请在会话内运行或提供 --session-id。');
     return 2;
   }
   const rest = args.slice(1);
   try {
+    if (sub === 'handoff') {
+      const targetSessionId = value(rest, '--to');
+      if (!targetSessionId) throw new Error('handoff 需要 --to <接手会话ID>');
+      print(await request(ctx, `/api/sessions/${encodeURIComponent(ctx.sessionId)}/handoff`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ targetSessionId }),
+      }));
+      return 0;
+    }
     if (sub === 'create') {
       const name = (value(rest, '--name') ?? '').trim();
       const objective = textArg(rest, '--objective', '--objective-file');

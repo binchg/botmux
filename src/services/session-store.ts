@@ -5,6 +5,7 @@ import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
 import { deleteFrozenCards } from './frozen-card-store.js';
 import type { Session } from '../types.js';
+import { applySessionHandoff, listSessionHandoffs } from './session-handoff-store.js';
 
 let sessions: Map<string, Session> = new Map();
 let loaded = false;
@@ -44,7 +45,11 @@ function ensureDir(): void {
 
 // Sessions persisted before 2026-04-29 lack `cliId`; consumers must fall back to 'unknown' at the render boundary.
 function load(): void {
-  if (loaded) return;
+  if (loaded) {
+    const handoffs = listSessionHandoffs();
+    for (const session of sessions.values()) applySessionHandoff(session, handoffs);
+    return;
+  }
   ensureDir();
   const fp = getFilePath();
   if (existsSync(fp)) {
@@ -78,6 +83,8 @@ function load(): void {
       }
     }
   }
+  const handoffs = listSessionHandoffs();
+  for (const session of sessions.values()) applySessionHandoff(session, handoffs);
   loaded = true;
 }
 
@@ -132,7 +139,9 @@ export function createSession(chatId: string, rootMessageId: string, title: stri
 
 export function getSession(sessionId: string): Session | undefined {
   load();
-  return sessions.get(sessionId) ?? findInOtherFiles(sessionId);
+  const session = sessions.get(sessionId) ?? findInOtherFiles(sessionId);
+  if (session) applySessionHandoff(session);
+  return session;
 }
 
 /**
@@ -183,6 +192,7 @@ export function updateSessionPid(sessionId: string, pid: number | null): void {
 
 export function updateSession(session: Session): void {
   load();
+  applySessionHandoff(session);
   sessions.set(session.sessionId, session);
   save();
 }
@@ -276,6 +286,7 @@ export function collectBotmuxSessionIdentities(dataDir: string = config.session.
 
 function findActiveSessionsMatching(predicate: (s: Session) => boolean): Session[] {
   load();
+  const handoffs = listSessionHandoffs();
   const matches: Session[] = [];
   for (const s of sessions.values()) {
     if (predicate(s) && s.status === 'active') matches.push(s);
@@ -290,6 +301,7 @@ function findActiveSessionsMatching(predicate: (s: Session) => boolean): Session
       try {
         const data: Record<string, Session> = JSON.parse(readFileSync(fp, 'utf-8'));
         for (const s of Object.values(data)) {
+          applySessionHandoff(s, handoffs);
           if (predicate(s) && s.status === 'active') matches.push(s);
         }
       } catch { continue; }

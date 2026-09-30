@@ -2,6 +2,19 @@ import { describe, expect, it, vi } from 'vitest';
 import { runAgentTeamCommand } from '../src/cli/agent-team-command.js';
 
 describe('botmux team CLI help', () => {
+  it('平级交接直接调用会话端点，不要求 Team、leader 或 worker', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ ok: true, relationship: 'peer' })));
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    try {
+      expect(await runAgentTeamCommand(['handoff', '--to', 'peer_2'], {
+        sessionId: 'peer_1', larkAppId: 'cli_peer', ipcPort: 7788,
+      })).toBe(0);
+      const [url, init] = fetchMock.mock.calls[0];
+      expect(url).toBe('http://127.0.0.1:7788/api/sessions/peer_1/handoff');
+      expect(JSON.parse(String(init?.body))).toEqual({ targetSessionId: 'peer_2' });
+    } finally { fetchMock.mockRestore(); write.mockRestore(); }
+  });
+
   it('documents structured guidance, reuse and leader capacity without Workflow', async () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     try {
