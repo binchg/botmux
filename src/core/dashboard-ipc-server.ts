@@ -16,6 +16,7 @@ import * as sandboxStore from '../services/sandbox-store.js';
 import * as cardPrefsStore from '../services/card-prefs-store.js';
 import * as observedBotsStore from '../services/observed-bots-store.js';
 import { getDeploymentIdentity } from '../services/deployment-identity.js';
+import { registerSessionModelApi } from './session-model-api.js';
 import { getBotUnionId } from '../services/bot-union-ids-store.js';
 import * as grantPrefsStore from '../services/grant-prefs-store.js';
 import { findConfigField, applyConfigField, coerceConfigValue } from '../services/bot-config-store.js';
@@ -235,7 +236,7 @@ export function setBotName(name: string): void { setRowsBotName(name); }
 // The daemon's own larkAppId, primed at startup. Required for the groups
 // endpoints below which proxy calls into groups-store on this bot's behalf.
 let cachedLarkAppId = '';
-export function setLarkAppId(id: string): void { cachedLarkAppId = id; }
+export function setLarkAppId(id: string): void { cachedLarkAppId = id; registerSessionModelApi(id); }
 
 ipcRoute('GET', '/api/sessions', (_req, res) => {
   // Active first (live state), closed appended (historical)

@@ -6076,6 +6076,13 @@ process.on('message', async (raw: unknown) => {
       break;
     }
 
+    case 'reload_app_runner_when_idle': {
+      if (lastInitConfig?.cliId !== 'codex-app' || lastInitConfig.adoptMode) break;
+      reloadPersistentAppRunnerAtIdle = true;
+      if (isPromptReady && pendingMessages.length === 0 && !isFlushing) markPromptReady();
+      break;
+    }
+
     case 'tui_keys': {
       handleTuiKeys(msg.keys, msg.isFinal);
       break;

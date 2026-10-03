@@ -66,6 +66,7 @@ import { expandHomePath, invalidWorkingDirs } from './utils/working-dir.js';
 import { firstPositional } from './cli/arg-utils.js';
 import { dispatchPrimaryMessage, findStdinAliasAttachment, sendFileAttachments } from './cli/send-dispatch.js';
 import { runAgentTeamCommand } from './cli/agent-team-command.js';
+import { runSessionModelCommand } from './cli/session-model-command.js';
 import { buildPm2SpawnCommand } from './cli/pm2-command.js';
 import { callDashboard, type DashboardEndpoint, type DashboardResult } from './cli/dashboard-endpoint.js';
 import { loadDashboardSecret } from './dashboard/auth.js';
@@ -3287,6 +3288,7 @@ botmux v${getVersion()} — IM ↔ AI 编程 CLI 桥接
   delete stopped   清理所有进程已退出的僵尸会话
   resume <id>      恢复一个已关闭的会话（支持 ID 前缀匹配）— 会话标记回 active，
                    下条消息会以 --resume 重新拉起 CLI 进程
+  model status|list|set|effort  当前会话模型与推理等级，详见 botmux model --help
   term-link [id]   获取活跃会话的「可操作终端」（带写 token）。不回显链接，改由
                    daemon 把可操作卡片私密发给 owner（群内仅你可见，话题/单聊回退 DM）。
                    单个活跃会话可省略 id
@@ -6355,6 +6357,14 @@ switch (command) {
         : undefined,
     );
     process.exitCode = code;
+    break;
+  }
+  case 'model': {
+    const args = process.argv.slice(3);
+    const sessionId = argValue(args, '--session-id') ?? findAncestorSessionId() ?? undefined;
+    const session = sessionId ? loadSessions().get(sessionId) : undefined;
+    const daemon = session?.larkAppId ? findDaemon(session.larkAppId) : null;
+    process.exitCode = await runSessionModelCommand(args, sessionId && daemon ? { sessionId, ipcPort: daemon.ipcPort } : undefined);
     break;
   }
   case 'create-group': await cmdCreateGroup(process.argv.slice(3)); break;

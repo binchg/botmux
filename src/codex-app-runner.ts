@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { Buffer } from 'node:buffer';
+import { config } from './config.js';
+import { readSessionModel, writeSessionModelRuntime, type ModelSelection } from './services/session-model-store.js';
 import { CodexAppProgressThrottler } from './services/codex-app-progress.js';
 import { normalizeCodexAppTimestampMs } from './services/codex-app-activity.js';
 import { codexAppHookFailure, codexAppHookTrustIssue } from './services/codex-app-hook-health.js';
@@ -49,6 +51,7 @@ interface ActiveTurn {
   done: Promise<void>;
   resolveDone: () => void;
   criticalHookFailure?: string;
+  turnFailed?: boolean;
   rateLimitError?: string;
   /** Structured Team JSON is machine-only: collect it for the final marker,
    * but never mirror its streamed bytes into terminal/progress surfaces. */
@@ -289,6 +292,8 @@ let threadId = args.threadId;
 let threadReady = false;
 let defaultThreadModel: string | undefined;
 let defaultThreadModelProvider: string | undefined;
+let defaultThreadEffort: string | undefined;
+let defaultServiceTier: string | undefined;
 let activeTurn: ActiveTurn | null = null;
 const queue: string[] = [];
 let inputBuffer = '';
@@ -580,6 +585,7 @@ function handleNotification(msg: JsonObject): void {
     const turn = params.turn;
     if (turn?.id && activeTurn.turnId && turn.id !== activeTurn.turnId) return;
     const errorMessage = String(turn?.error?.message ?? '').trim();
+    activeTurn.turnFailed = !!errorMessage || turn?.status === 'failed' || turn?.status === 'interrupted';
     if (activeTurn.criticalHookFailure) {
       activeTurn.finalText = activeTurn.criticalHookFailure;
     } else if (isCodexAppRetryLimit429(errorMessage)) {
@@ -614,6 +620,8 @@ async function loadDefaultThreadModel(): Promise<void> {
     defaultThreadModelProvider = typeof config.model_provider === 'string' && config.model_provider.trim()
       ? config.model_provider.trim()
       : undefined;
+    defaultThreadEffort = config.model_reasoning_effort;
+    defaultServiceTier = config.service_tier;
   } catch (err: any) {
     if (process.env.BOTMUX_CODEX_APP_DEBUG === '1') {
       writeLine(`[codex-app] default model config unavailable: ${err?.message ?? err}`);
@@ -629,7 +637,7 @@ async function ensureThread(): Promise<string> {
       const resumed = await client.request('thread/resume', {
         threadId,
         cwd: args.cwd,
-        model: defaultThreadModel,
+        model: readSessionModel(config.session.dataDir, args.sessionId)?.model ?? defaultThreadModel,
         modelProvider: defaultThreadModelProvider,
         approvalPolicy: 'never',
         sandbox: 'danger-full-access',
@@ -663,7 +671,7 @@ async function ensureThread(): Promise<string> {
 
   const started = await client.request('thread/start', {
     cwd: args.cwd,
-    model: defaultThreadModel,
+    model: readSessionModel(config.session.dataDir, args.sessionId)?.model ?? defaultThreadModel,
     modelProvider: defaultThreadModelProvider,
     approvalPolicy: 'never',
     sandbox: 'danger-full-access',
@@ -693,6 +701,14 @@ async function runSingleTurn(content: string, autoContinue: boolean): Promise<Tu
   const hookTrustIssue = await currentHookTrustIssue();
   if (hookTrustIssue) throw new Error(hookTrustIssue);
   const tid = await ensureThread();
+  // 每轮重新读，已有进程不重启；已发出的 turn 不会被另一配置半途改写。
+  const requested = readSessionModel(config.session.dataDir, args.sessionId);
+  const selection = { model: requested?.model ?? defaultThreadModel, effort: requested?.effort ?? defaultThreadEffort,
+    serviceTier: requested?.serviceTier ?? defaultServiceTier };
+  const modelReceipt = (phase: 'running' | 'completed' | 'failed', turnId?: string) => writeSessionModelRuntime(config.session.dataDir, {
+    sessionId: args.sessionId, pid: process.pid, threadId: tid, phase, revision: requested?.revision,
+    selection: selection.model && selection.effort ? selection as ModelSelection : undefined, turnId,
+  });
   const outputSchema = agentTeamOutputSchema(content);
   const turn = makeTurn(!!outputSchema);
   activeTurn = turn;
@@ -723,13 +739,17 @@ async function runSingleTurn(content: string, autoContinue: boolean): Promise<Tu
       cwd: args.cwd,
       approvalPolicy: 'never',
       sandboxPolicy: { type: 'dangerFullAccess' },
+      ...selection,
       ...(outputSchema ? { outputSchema } : {}),
     });
     turn.turnId = result.turn?.id ?? turn.turnId;
+    modelReceipt('running', turn.turnId);
     flushSteers(turn);
     await turn.done;
     await turn.steerChain;
     queuePendingSteersAsNextTurns(turn);
+
+    modelReceipt(turn.turnFailed || turn.rateLimitError || turn.criticalHookFailure ? 'failed' : 'completed', turn.turnId);
 
     const finalText = (turn.finalText || turn.allAgentText).trim();
     const completedAtMs = Date.now();
@@ -747,6 +767,9 @@ async function runSingleTurn(content: string, autoContinue: boolean): Promise<Tu
       startedAtMs: turn.startedAtMs,
       rateLimitError: turn.rateLimitError,
     };
+  } catch (error) {
+    modelReceipt('failed', turn.turnId);
+    throw error;
   } finally {
     if (turn.progressTimer) clearInterval(turn.progressTimer);
     queuePendingSteersAsNextTurns(turn);
@@ -865,6 +888,7 @@ async function main(): Promise<void> {
   const hookTrustIssue = await currentHookTrustIssue();
   if (hookTrustIssue) writeLine(`[codex-app] ${hookTrustIssue}`);
   await ensureThread();
+  writeSessionModelRuntime(config.session.dataDir, { sessionId: args.sessionId, pid: process.pid, threadId, phase: 'ready' });
   if (args.threadId) {
     writeLine(args.locale === 'zh'
       ? 'Codex App 已恢复原会话；终端仅显示恢复后的新输出。'

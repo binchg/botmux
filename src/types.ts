@@ -331,6 +331,8 @@ export type DaemonToWorker =
   | { type: 'close' }
   | { type: 'suspend' }
   | { type: 'restart' }
+  /** 仅旧 Codex App runner：等当前 turn 完成后加载会话模型切换能力。 */
+  | { type: 'reload_app_runner_when_idle' }
   // Crash loop: daemon gave up auto-restarting and asks the worker to park a
   // diagnostic shell (bmx-diag-<sid>) preserving the last output. Deferred from
   // onExit so transient auto-restarted exits don't park-then-tear-down.

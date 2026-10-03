@@ -29,7 +29,7 @@ export interface ListCodexAppThreadsOptions {
   timeoutMs?: number;
 }
 
-class CodexAppServerProbe {
+export class CodexAppServerProbe {
   private child: ChildProcessWithoutNullStreams;
   private nextId = 1;
   private stdoutBuffer = '';
@@ -183,4 +183,21 @@ export async function listCodexAppThreads(opts: ListCodexAppThreadsOptions = {})
   } finally {
     client.close();
   }
+}
+
+/** 只读取能力目录；不创建或恢复线程，也不读取会话历史。 */
+export async function listCodexAppModels(opts: ListCodexAppThreadsOptions = {}): Promise<import('./session-model-selection.js').AvailableSessionModel[]> {
+  const timeoutMs = opts.timeoutMs ?? 7000;
+  const client = new CodexAppServerProbe(resolveCommand(opts.codexBin ?? 'codex'), opts.cwd ?? process.cwd());
+  try {
+    await client.initialize(timeoutMs);
+    const models: import('./session-model-selection.js').AvailableSessionModel[] = [];
+    let cursor: string | undefined;
+    do {
+      const result = await client.withTimeout(client.request('model/list', { limit: 100, cursor }), timeoutMs, 'model/list');
+      models.push(...(result.data ?? []));
+      cursor = result.nextCursor || undefined;
+    } while (cursor);
+    return models;
+  } finally { client.close(); }
 }
