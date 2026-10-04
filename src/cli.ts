@@ -3267,6 +3267,25 @@ async function cmdTermLink(rest: string[]): Promise<void> {
   process.exit(1);
 }
 
+/** Explicit local-only password gate; a fresh, short-lived entry is printed for the owner. */
+async function cmdSecureTerm(rest: string[]): Promise<void> {
+  const target = rest[0] ?? process.env.BOTMUX_SESSION_ID;
+  const matches = [...loadSessions().values()].filter(s => s.status === 'active' && (!target || s.sessionId.startsWith(target)));
+  if (matches.length !== 1) throw new Error('请指定唯一活跃会话：botmux secure-term <session-id>');
+  const session = matches[0];
+  const daemon = findDaemon(session.larkAppId);
+  const secret = loadDashboardSecret(join(CONFIG_DIR, '.dashboard-secret'));
+  if (!daemon || !secret) throw new Error('daemon 或本机认证密钥不可用');
+  const ts = Math.floor(Date.now() / 1000).toString(), nonce = randomBytes(8).toString('hex');
+  const sig = createHmac('sha256', secret).update(`${ts}:${nonce}`).digest('base64url');
+  const response = await fetch(`http://127.0.0.1:${daemon.ipcPort}/api/sessions/${encodeURIComponent(session.sessionId)}/secure-terminal-link`, {
+    method: 'POST', headers: { 'X-Botmux-Cli-Ts': ts, 'X-Botmux-Cli-Nonce': nonce, 'X-Botmux-Cli-Auth': sig },
+  });
+  const result = await response.json() as { ok?: boolean; error?: string };
+  if (!response.ok || !result.ok) throw new Error(result.error ?? 'secure_terminal_unavailable');
+  console.log(JSON.stringify(result, null, 2));
+}
+
 function showHelp(): void {
   console.log(`
 botmux v${getVersion()} — IM ↔ AI 编程 CLI 桥接
@@ -3289,6 +3308,7 @@ botmux v${getVersion()} — IM ↔ AI 编程 CLI 桥接
   resume <id>      恢复一个已关闭的会话（支持 ID 前缀匹配）— 会话标记回 active，
                    下条消息会以 --resume 重新拉起 CLI 进程
   model status|list|set|executor|effort|speed  当前会话执行器、模型、推理与速度，详见 botmux model --help
+  secure-term [id] 启用本机会话密码门禁，打印 10 分钟一次性链接；首次由本人设密
   term-link [id]   获取活跃会话的「可操作终端」（带写 token）。不回显链接，改由
                    daemon 把可操作卡片私密发给 owner（群内仅你可见，话题/单聊回退 DM）。
                    单个活跃会话可省略 id
@@ -6295,6 +6315,7 @@ switch (command) {
   case 'rm':      cmdDelete(); break;
   case 'resume':  await cmdResume(); break;
   case 'term-link': await cmdTermLink(process.argv.slice(3)); break;
+  case 'secure-term': await cmdSecureTerm(process.argv.slice(3)); break;
   case 'schedule': await cmdSchedule(process.argv[3] ?? '', process.argv.slice(4)); break;
   case 'ask': {
     // `botmux ask buttons --options ...` → sub='buttons', rest=['--options', ...]

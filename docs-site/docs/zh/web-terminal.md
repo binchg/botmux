@@ -1,5 +1,27 @@
 # Web 终端（可交互）
 
+## 本机二次密码与短时授权
+
+界面示意：[首次设密](https://github.com/binchg/botmux/blob/dev/docs/screenshots/terminal-password-setup.png)、
+[解锁与 Hooks 确认](https://github.com/binchg/botmux/blob/dev/docs/screenshots/terminal-password-unlocked.png)。截图来自隔离测试会话。
+
+`botmux secure-term <session-id>` 为指定活跃会话启用密码门禁，返回本机 URL。
+首次打开时，由本人设置并确认至少 12 个字符的二次密码。一次性链接 10 分钟过期，
+成功使用后立即作废；终端读写授权 5 分钟过期，已连接的 WebSocket 也会断开。
+重新进入时再执行同一命令取得新链接，并输入既有密码。
+
+门禁启用后，旧写 token、只读链接和平台角色头都不能跳过密码。解锁后可点击
+「立即锁定」，或明确确认「同意本会话 Hooks」（从下一轮生效）。该功能保护该会话的
+Web 终端；飞书消息、已运行的任务和本机 CLI 仍按原有权限工作。
+
+密码仅在 localhost 入口提交，服务端保存 scrypt 加盐摘要（权限 0600）。浏览器若在
+另一台机器，先建立 SSH 转发：
+`ssh -N -L <URL端口>:127.0.0.1:<URL端口> <用户>@<运行botmux的主机>`，再打开返回的 URL。
+不支持内网明文 HTTP 提交密码，也不信任代理的 HTTPS 声明。授权 cookie 为
+HttpOnly / SameSite=Strict，worker 重启后授权失效，密码保留。
+密码遗忘或设置中断不会自动解除门禁，应由本机管理员安全确认后处理
+`<session-data>/terminal-access/` 中对应会话的状态文件，不要在聊天中粘贴其内容。
+
 每个会话都带一个基于 xterm.js 的 Web 终端，地址形如 `http://<WEB_EXTERNAL_HOST>:<端口>`。
 
 ![Web 终端](https://magic-builder.tos-cn-beijing.volces.com/uploads/1780033301701_web_terminal.gif)

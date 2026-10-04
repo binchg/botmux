@@ -17,6 +17,8 @@ import * as cardPrefsStore from '../services/card-prefs-store.js';
 import * as observedBotsStore from '../services/observed-bots-store.js';
 import { getDeploymentIdentity } from '../services/deployment-identity.js';
 import { registerSessionModelApi } from './session-model-api.js';
+import { issueTerminalEntry } from '../services/terminal-access.js';
+import { getTerminalProxyPort } from './terminal-url.js';
 import { getBotUnionId } from '../services/bot-union-ids-store.js';
 import * as grantPrefsStore from '../services/grant-prefs-store.js';
 import { findConfigField, applyConfigField, coerceConfigValue } from '../services/bot-config-store.js';
@@ -1233,6 +1235,21 @@ ipcRoute('POST', '/api/sessions/:sessionId/lock', async (req, res, params) => {
  * .dashboard-secret, so a local process that merely knows the ipcPort still
  * can't pull a write token.
  */
+ipcRoute('POST', '/api/sessions/:sessionId/secure-terminal-link', async (req, res, params) => {
+  if (!tokenRouteAuthorized(req)) return jsonRes(res, 401, { ok: false, error: 'unauthorized' });
+  const ds = findActiveBySessionId(params.sessionId);
+  if (!ds) return jsonRes(res, 404, { ok: false, error: 'session_not_active' });
+  const port = getTerminalProxyPort();
+  if (!port || !ds.workerPort) return jsonRes(res, 409, { ok: false, error: 'terminal_unavailable' });
+  // Never claim protection while an old worker still serves the legacy gate.
+  const probe = await fetch(`http://127.0.0.1:${ds.workerPort}/`, { signal: AbortSignal.timeout(3000) });
+  await probe.body?.cancel();
+  if (probe.headers.get('x-botmux-terminal-gate') !== '1') return jsonRes(res, 409, { ok: false, error: 'worker_reload_required' });
+  const entry = issueTerminalEntry(config.session.dataDir, params.sessionId);
+  jsonRes(res, 200, { ok: true, url: `http://localhost:${port}/s/${params.sessionId}/#entry=${entry.token}`,
+    expiresAt: entry.expiresAt, accessSeconds: 300, localOnly: true, port });
+});
+
 ipcRoute('GET', '/api/sessions/:sessionId/write-link', (req, res, params) => {
   if (!tokenRouteAuthorized(req)) return jsonRes(res, 401, { ok: false, error: 'unauthorized' });
   const ds = findActiveBySessionId(params.sessionId);

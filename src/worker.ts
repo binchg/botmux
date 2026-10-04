@@ -92,6 +92,9 @@ import { captureToPng } from './utils/screenshot-renderer.js';
 import { snapshotToPng, snapshotToText, shouldCaptureScreen, isScreenSelfDriven } from './utils/transient-snapshot.js';
 import { chooseWebTerminalSeed } from './utils/web-terminal-seed.js';
 import { parseWorkerRequestUrl } from './utils/worker-http.js';
+import { TerminalAccess, terminalLocalRequest } from './services/terminal-access.js';
+import { sendTerminalLockPage, terminalAccessControls, privateTerminalHtml } from './utils/terminal-access-page.js';
+import { readSessionModel, readSessionModelRuntime, writeSessionModel } from './services/session-model-store.js';
 import { detectCliUsageLimit, usageLimitStateKey, type CliUsageLimitState } from './utils/cli-usage-limit.js';
 import { uploadImageBuffer } from './utils/lark-upload.js';
 import { redactChildEnv } from './utils/child-env.js';
@@ -4993,13 +4996,34 @@ function restartOwnedCli(reason: string, countAsFailure: boolean): void {
 // ─── HTTP + WebSocket Server ─────────────────────────────────────────────────
 
 function startWebServer(host: string, preferredPort?: number): Promise<number> {
+  const terminalAccess = new TerminalAccess(config.session.dataDir, sessionId);
   return new Promise((resolve, reject) => {
-    httpServer = createHttpServer((req, res) => {
+    httpServer = createHttpServer(async (req, res) => {
+      res.setHeader('X-Botmux-Terminal-Gate', '1');
       const url = parseWorkerRequestUrl(req);
       if (!url) {
         log(`Bad worker HTTP URL rejected: ${JSON.stringify(req.url ?? '')}`);
         res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
         res.end('Bad Request');
+        return;
+      }
+      if (terminalAccess.enabled()) {
+        if (await terminalAccess.handle(req, res, url.pathname, () => {
+          const selection = readSessionModel(config.session.dataDir, sessionId)
+            ?? readSessionModelRuntime(config.session.dataDir, sessionId)?.selection;
+          if (!selection) throw new Error('session_model_unavailable');
+          const saved = writeSessionModel(config.session.dataDir, sessionId, { ...selection, hookTrust: 'always' });
+          return { hookTrust: saved.hookTrust, appliesTo: 'next_turn' };
+        })) return;
+        if (!terminalAccess.authorize(req)) { sendTerminalLockPage(res); return; }
+        const nonce = randomBytes(18).toString('base64url');
+        let html: string;
+        try { html = privateTerminalHtml(getTerminalHtml(true).replace('</body>', terminalAccessControls(terminalAccess.expiry(req)) + '</body>'), nonce); }
+        catch { res.writeHead(503); res.end('Local terminal assets unavailable'); return; }
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store',
+          'Referrer-Policy': 'no-referrer', 'X-Frame-Options': 'DENY',
+          'Content-Security-Policy': `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; connect-src 'self'; img-src data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'` });
+        res.end(html);
         return;
       }
       const tokenMatches = url.searchParams.get('token') === writeToken;
@@ -5010,9 +5034,12 @@ function startWebServer(host: string, preferredPort?: number): Promise<number> {
       res.end(getTerminalHtml(hasWrite, platformReadonly, loginUrl));
     });
 
-    wss = new WebSocketServer({ server: httpServer });
+    wss = new WebSocketServer({ server: httpServer, verifyClient: (info: { req: IncomingMessage }) => !terminalAccess.enabled()
+      || (terminalLocalRequest(info.req, true) && terminalAccess.authorize(info.req)) });
 
     wss.on('connection', (ws, req: IncomingMessage) => {
+      if (terminalAccess.enabled() && !terminalAccess.authorize(req)) { ws.close(1008, 'terminal_locked'); return; }
+      terminalAccess.watchSocket(ws, req);
       wsClients.add(ws);
 
       // Check token from query string for write access
@@ -5024,7 +5051,7 @@ function startWebServer(host: string, preferredPort?: number): Promise<number> {
         return;
       }
       const tokenMatches = url.searchParams.get('token') === writeToken;
-      const { hasWrite } = resolveTerminalWrite(req, tokenMatches);
+      const hasWrite = terminalAccess.enabled() ? terminalAccess.authorize(req) : resolveTerminalWrite(req, tokenMatches).hasWrite;
       if (hasWrite) authedClients.add(ws);
       log(`WS client connected (total: ${wsClients.size}, write: ${hasWrite})`);
 
@@ -5079,6 +5106,7 @@ function startWebServer(host: string, preferredPort?: number): Promise<number> {
         const spawnTimer = setTimeout(() => startAttach(150, 40), 500);
 
         ws.on('message', (raw) => {
+          if (terminalAccess.enabled() && !terminalAccess.authorize(req)) { ws.close(1008, 'terminal_locked'); return; }
           try {
             const msg = JSON.parse(String(raw));
             if (msg.type === 'resize' && msg.cols > 0 && msg.rows > 0) {
@@ -5158,6 +5186,7 @@ function startWebServer(host: string, preferredPort?: number): Promise<number> {
         const spawnTimer = setTimeout(() => startAttach(150, 40), 500);
 
         ws.on('message', (raw) => {
+          if (terminalAccess.enabled() && !terminalAccess.authorize(req)) { ws.close(1008, 'terminal_locked'); return; }
           try {
             const msg = JSON.parse(String(raw));
             if (msg.type === 'resize' && msg.cols > 0 && msg.rows > 0) {
@@ -5213,6 +5242,7 @@ function startWebServer(host: string, preferredPort?: number): Promise<number> {
         }
 
         ws.on('message', (raw) => {
+          if (terminalAccess.enabled() && !terminalAccess.authorize(req)) { ws.close(1008, 'terminal_locked'); return; }
           try {
             const msg = JSON.parse(String(raw));
             if (msg.type === 'resize' && msg.cols > 0 && msg.rows > 0) {
