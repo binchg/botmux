@@ -60,6 +60,7 @@ send({id:m.id,result});});
   const stop = async () => { const done = new Promise<void>(resolve=>runner.once('exit',()=>resolve()));runner.kill();await done; };
   try {
     await vi.waitFor(()=>expect(state().runtime?.phase,errors).toBe('ready'),{timeout:15000});
+    expect(state().runtime?.selection?.hookTrust).toBe('review');
     const initial = writeSessionModel(d,'switch-test',{model:'gpt-test',effort:'high',executor:'codex-app'}); send();
     await vi.waitFor(()=>expect(state().runtime?.phase).toBe('running'));
     writeSessionModel(d,'switch-test',{model:'gpt-test',effort:'xhigh',executor:'traex',serviceTier:'default',hookTrust:'always'});

@@ -965,7 +965,7 @@ async function main(): Promise<void> {
   await ensureThread(readSessionModelRuntime(config.session.dataDir, args.sessionId)?.selection?.model ?? defaultThreadModel);
   persistExecutor();
   writeSessionModelRuntime(config.session.dataDir, { sessionId: args.sessionId, pid: process.pid, threadId, phase: 'ready',
-    selection: defaultThreadModel && defaultThreadEffort ? { executor: activeExecutor, model: defaultThreadModel,
+    selection: defaultThreadModel && defaultThreadEffort ? { executor: activeExecutor, hookTrust: activeHookTrust, model: defaultThreadModel,
       effort: defaultThreadEffort, serviceTier: defaultServiceTier } : undefined });
   if (args.threadId) {
     writeLine(args.locale === 'zh'
