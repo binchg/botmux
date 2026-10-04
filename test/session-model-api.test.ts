@@ -37,3 +37,14 @@ it('rejects a session closed while the model catalog was being read', async () =
   const a=session(); vi.mocked(probe.listCodexAppModels).mockImplementation(async()=>{sessions.closeSession(a.sessionId);return [{model:'synthetic-a',defaultReasoningEffort:'high',supportedReasoningEfforts:[{reasoningEffort:'high'}]}];});
   expect((await update(a.sessionId,{model:'synthetic-a'})).code).toBe(409); expect(readSessionModel(dir,a.sessionId)).toBeUndefined();
 });
+it('uses the requested executor catalog and current runtime for executor-only and speed-only changes', async () => {
+  const a=session();
+  writeSessionModelRuntime(dir,{sessionId:a.sessionId,pid:process.pid,phase:'completed',selection:{model:'synthetic-a',effort:'xhigh',serviceTier:'priority',executor:'codex-app'}});
+  const r=await update(a.sessionId,{executor:'traex'});
+  expect(r.code).toBe(200);
+  expect(probe.listCodexAppModels).toHaveBeenLastCalledWith({codexBin:'traex',cwd:dir});
+  expect(readSessionModel(dir,a.sessionId)).toMatchObject({executor:'traex',model:'synthetic-a',effort:'xhigh',serviceTier:'default'});
+  vi.mocked(probe.listCodexAppModels).mockResolvedValue([{model:'synthetic-a',defaultReasoningEffort:'high',supportedReasoningEfforts:[{reasoningEffort:'xhigh'}],serviceTiers:[]}]);
+  expect((await update(a.sessionId,{serviceTier:'priority'})).code).toBe(409);
+  expect(readSessionModel(dir,a.sessionId)?.serviceTier).toBe('default');
+});

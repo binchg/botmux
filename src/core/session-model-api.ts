@@ -3,8 +3,8 @@ import { findActiveBySessionId } from './worker-pool.js';
 import * as sessions from '../services/session-store.js';
 import { config } from '../config.js';
 import { listCodexAppModels } from '../services/codex-app-threads.js';
-import { validateModelSelection } from '../services/session-model-selection.js';
-import { readSessionModel, sessionModelStatus, writeSessionModel } from '../services/session-model-store.js';
+import { normalizeSessionExecutor, validateModelSelection } from '../services/session-model-selection.js';
+import { readSessionModel, readSessionModelRuntime, sessionModelStatus, writeSessionModel } from '../services/session-model-store.js';
 import type { Session } from '../types.js';
 
 export function assertSessionModelScope(session: Session | undefined, appId: string, adopted = false): asserts session is Session {
@@ -28,30 +28,37 @@ export function registerSessionModelApi(appId: string): void {
     try { scope(params.sessionId); jsonRes(res, 200, { ok: true, ...sessionModelStatus(config.session.dataDir, params.sessionId) }); }
     catch (e) { jsonRes(res, 409, { ok: false, error: (e as Error).message }); }
   });
-  ipcRoute('GET', '/api/sessions/:sessionId/model/list', async (_req, res, params) => {
+  ipcRoute('GET', '/api/sessions/:sessionId/model/list', async (req, res, params) => {
     try {
       const { live, session } = scope(params.sessionId);
-      const models = await listCodexAppModels({ codexBin: live?.initConfig?.cliPathOverride, cwd: session.workingDir });
-      jsonRes(res, 200, { ok: true, models: models.map(m => ({ model: m.model,
+      const selected = new URL(req.url!, 'http://localhost').searchParams.get('executor')
+        ?? readSessionModel(config.session.dataDir, params.sessionId)?.executor ?? 'codex-app';
+      const executor = normalizeSessionExecutor(selected);
+      const models = await listCodexAppModels({ codexBin: executor === 'traex' ? 'traex' : live?.initConfig?.cliPathOverride, cwd: session.workingDir });
+      jsonRes(res, 200, { ok: true, executor, models: models.map(m => ({ model: m.configName ?? m.model,
         efforts: m.supportedReasoningEfforts.map(e => e.reasoningEffort), defaultEffort: m.defaultReasoningEffort,
-        serviceTiers: m.serviceTiers?.map(t => t.id) ?? [] })) });
+        serviceTiers: ['default', ...(m.serviceTiers?.map(t => t.id).filter(t => t !== 'default') ?? [])] })) });
     } catch (e) { jsonRes(res, 409, { ok: false, error: (e as Error).message }); }
   });
   ipcRoute('POST', '/api/sessions/:sessionId/model', async (req, res, params) => {
     try {
       const { live, session } = scope(params.sessionId), body = await readJsonBody(req);
-      const models = await listCodexAppModels({ codexBin: live?.initConfig?.cliPathOverride, cwd: session.workingDir });
+      if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('model_selection_required');
+      const previous = readSessionModel(config.session.dataDir, params.sessionId)
+        ?? readSessionModelRuntime(config.session.dataDir, params.sessionId)?.selection;
+      const executor = normalizeSessionExecutor((body as Record<string, unknown>).executor ?? previous?.executor ?? 'codex-app');
+      const models = await listCodexAppModels({ codexBin: executor === 'traex' ? 'traex' : live?.initConfig?.cliPathOverride, cwd: session.workingDir });
       // 探测期间可能关闭了会话；落盘前再次核对，不能复活已停用会话。
       scope(params.sessionId);
-      const selection = validateModelSelection(body, models, readSessionModel(config.session.dataDir, params.sessionId));
+      const selection = validateModelSelection(body, models, previous);
       writeSessionModel(config.session.dataDir, params.sessionId, selection);
       const status = sessionModelStatus(config.session.dataDir, params.sessionId);
       let reloadQueued = false;
-      if (!status.runnerAlive && live?.worker && !live.worker.killed) {
+      if (status.status === 'pending_runner_reload' && live?.worker && !live.worker.killed) {
         try { live.worker.send({ type: 'reload_app_runner_when_idle' }); reloadQueued = true; }
         catch { /* 期望配置已持久保存；状态明确保持 pending，可安全重试。 */ }
       }
-      jsonRes(res, 200, { ok: true, ...status, reloadQueued, appliesTo: 'next_turn', globalConfigChanged: false });
+      jsonRes(res, 200, { ok: true, ...status, reloadQueued, appliesTo: 'next_turn', historyTransfer: 'recent_visible_messages_on_executor_change', globalConfigChanged: false });
     } catch (e) { jsonRes(res, 409, { ok: false, error: (e as Error).message }); }
   });
 }

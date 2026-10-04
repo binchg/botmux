@@ -43,7 +43,7 @@ export function createCodexAppAdapter(pathOverride?: string): CliAdapter {
     id: 'codex-app',
     // Whole ~/.codex kept REAL (see codex.ts): its SQLite state/log DBs can't get
     // fcntl locks on the sandbox home overlay, so codex hangs ~57s then exits 1.
-    authPaths: ['~/.codex'],
+    authPaths: ['~/.codex', '~/.trae'],
     resolvedBin: process.execPath,
 
     // resolvedBin is node-running-the-runner; the REAL codex is spawned later for
@@ -52,7 +52,9 @@ export function createCodexAppAdapter(pathOverride?: string): CliAdapter {
     // masks it and the in-sandbox app-server spawn ENOENTs into a crash-loop. Same
     // lazy resolve+cache as buildArgs; only an executable path, never the cwd.
     sandboxExtraExecPaths() {
-      return [(cachedCodexBin ??= resolveCommand(rawCodexBin))];
+      const paths = [(cachedCodexBin ??= resolveCommand(rawCodexBin))];
+      try { paths.push(resolveCommand('traex')); } catch { /* 未安装时由切换能力探测明确拒绝。 */ }
+      return paths;
     },
 
     buildArgs({ sessionId, resume, resumeSessionId, workingDir, sessionTitle, botName, botOpenId, locale }) {

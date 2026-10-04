@@ -2,7 +2,8 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { Buffer } from 'node:buffer';
 import { config } from './config.js';
-import { readSessionModel, writeSessionModelRuntime, type ModelSelection } from './services/session-model-store.js';
+import { readSessionModel, readSessionModelRuntime, readSessionExecutor, writeSessionExecutor, writeSessionModelRuntime, type ModelSelection, type SessionModelRequest } from './services/session-model-store.js';
+import { executorHandoff } from './services/session-executor-handoff.js';
 import { CodexAppProgressThrottler } from './services/codex-app-progress.js';
 import { normalizeCodexAppTimestampMs } from './services/codex-app-activity.js';
 import { codexAppHookFailure, codexAppHookTrustIssue } from './services/codex-app-hook-health.js';
@@ -20,6 +21,7 @@ type JsonObject = Record<string, any>;
 interface Args {
   sessionId: string;
   codexBin: string;
+  traexBin: string;
   cwd: string;
   threadId?: string;
   title?: string;
@@ -76,6 +78,7 @@ function parseArgs(argv: string[]): Args {
   const out: Args = {
     sessionId: '',
     codexBin: 'codex',
+    traexBin: 'traex',
     cwd: process.cwd(),
   };
   for (let i = 0; i < argv.length; i++) {
@@ -83,6 +86,7 @@ function parseArgs(argv: string[]): Args {
     const val = argv[i + 1];
     if (key === '--session-id' && val !== undefined) { out.sessionId = val; i++; }
     else if (key === '--codex-bin' && val !== undefined) { out.codexBin = val; i++; }
+    else if (key === '--traex-bin' && val !== undefined) { out.traexBin = val; i++; }
     else if (key === '--cwd' && val !== undefined) { out.cwd = val; i++; }
     else if (key === '--thread-id' && val !== undefined) { out.threadId = val; i++; }
     else if (key === '--title' && val !== undefined) { out.title = val; i++; }
@@ -287,8 +291,11 @@ try {
   process.exit(2);
 }
 
-const client = new AppServerClient(args.codexBin, args.cwd);
-let threadId = args.threadId;
+const savedExecutor = readSessionExecutor(config.session.dataDir, args.sessionId);
+let activeExecutor: 'codex-app' | 'traex' = savedExecutor?.executor ?? 'codex-app';
+let client = new AppServerClient(activeExecutor === 'traex' ? args.traexBin : args.codexBin, args.cwd);
+let threadId = savedExecutor?.threadId ?? args.threadId;
+let pendingHandoff = savedExecutor?.handoff ?? '';
 let threadReady = false;
 let defaultThreadModel: string | undefined;
 let defaultThreadModelProvider: string | undefined;
@@ -598,6 +605,8 @@ function handleNotification(msg: JsonObject): void {
 }
 
 async function currentHookTrustIssue(): Promise<string | undefined> {
+  // TraeX 的内置 Hook 信任语义不同，由其 app-server 自行门控；不套用 Codex 的预检查。
+  if (activeExecutor === 'traex') return undefined;
   try {
     const response = await client.request('hooks/list', { cwds: [args.cwd] });
     return codexAppHookTrustIssue(response, args.cwd);
@@ -629,7 +638,7 @@ async function loadDefaultThreadModel(): Promise<void> {
   }
 }
 
-async function ensureThread(): Promise<string> {
+async function ensureThread(model = defaultThreadModel): Promise<string> {
   if (threadReady && threadId) return threadId;
 
   if (threadId) {
@@ -637,7 +646,7 @@ async function ensureThread(): Promise<string> {
       const resumed = await client.request('thread/resume', {
         threadId,
         cwd: args.cwd,
-        model: readSessionModel(config.session.dataDir, args.sessionId)?.model ?? defaultThreadModel,
+        model,
         modelProvider: defaultThreadModelProvider,
         approvalPolicy: 'never',
         sandbox: 'danger-full-access',
@@ -671,7 +680,7 @@ async function ensureThread(): Promise<string> {
 
   const started = await client.request('thread/start', {
     cwd: args.cwd,
-    model: readSessionModel(config.session.dataDir, args.sessionId)?.model ?? defaultThreadModel,
+    model,
     modelProvider: defaultThreadModelProvider,
     approvalPolicy: 'never',
     sandbox: 'danger-full-access',
@@ -697,17 +706,69 @@ async function ensureThread(): Promise<string> {
   return startedThreadId;
 }
 
+function persistExecutor(): void {
+  if (threadId) writeSessionExecutor(config.session.dataDir, { sessionId: args.sessionId,
+    executor: activeExecutor, threadId, ...(pendingHandoff ? { handoff: pendingHandoff } : {}) });
+}
+
+/** 目标初始化成功后才替换旧进程；失败保留原线程，不把下一轮错误路由到旧执行器。 */
+async function ensureExecutor(requested?: SessionModelRequest): Promise<void> {
+  const target = requested?.executor ?? activeExecutor;
+  if (target === activeExecutor) return;
+  const bounded = async <T,>(promise: Promise<T>): Promise<T> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try { return await Promise.race([promise, new Promise<T>((_, reject) => {
+      timer = setTimeout(() => reject(new Error('executor_switch_timeout')), 15000);
+    })]); } finally { if (timer) clearTimeout(timer); }
+  };
+  const previous = await bounded(client.request('thread/read', { threadId, includeTurns: true }));
+  const handoff = executorHandoff(previous.thread);
+  const candidate = new AppServerClient(target === 'traex' ? args.traexBin : args.codexBin, args.cwd);
+  try {
+    await bounded(candidate.initialize());
+    const response = await bounded(candidate.request('config/read', { cwd: args.cwd }));
+    const defaults = response?.config ?? {};
+    const started = await bounded(candidate.request('thread/start', {
+      cwd: args.cwd, model: requested!.model, modelProvider: defaults.model_provider,
+      approvalPolicy: 'never', sandbox: 'danger-full-access',
+      config: { shell_environment_policy: { inherit: 'all' } },
+      serviceTier: requested?.serviceTier ?? 'default',
+      developerInstructions: appDeveloperInstructions(args), ephemeral: false,
+    }));
+    if (!started.thread?.id || (started.model && started.model !== requested!.model)) throw new Error('executor_model_mismatch');
+    // 先持久保存，崩溃恢复时依然找到目标线程和待迁移的可见上下文。
+    writeSessionExecutor(config.session.dataDir, { sessionId: args.sessionId, executor: target,
+      threadId: String(started.thread.id), handoff });
+    const previousClient = client;
+    client = candidate; activeExecutor = target; threadId = String(started.thread.id);
+    threadReady = true; pendingHandoff = handoff;
+    defaultThreadModel = defaults.model; defaultThreadModelProvider = defaults.model_provider;
+    defaultThreadEffort = defaults.model_reasoning_effort; defaultServiceTier = defaults.service_tier;
+    client.onRequest(handleServerRequest); client.onNotification(handleNotification);
+    previousClient.close();
+    emitMarker('thread', { threadId });
+    writeLine(`[botmux] executor=${target}; 最近可见对话已准备迁移，底层线程已切换。`);
+  } catch (error) { candidate.close(); throw error; }
+}
+
 async function runSingleTurn(content: string, autoContinue: boolean): Promise<TurnOutcome> {
+  // 当前轮冻结期望配置；切换只发生在两个 turn 之间。
+  const requested = readSessionModel(config.session.dataDir, args.sessionId);
+  try { await ensureExecutor(requested); } catch (error) {
+    writeSessionModelRuntime(config.session.dataDir, { sessionId: args.sessionId, pid: process.pid,
+      threadId, phase: 'failed', revision: requested?.revision,
+      selection: readSessionModelRuntime(config.session.dataDir, args.sessionId)?.selection });
+    throw error;
+  }
   const hookTrustIssue = await currentHookTrustIssue();
   if (hookTrustIssue) throw new Error(hookTrustIssue);
-  const tid = await ensureThread();
-  // 每轮重新读，已有进程不重启；已发出的 turn 不会被另一配置半途改写。
-  const requested = readSessionModel(config.session.dataDir, args.sessionId);
+  const tid = await ensureThread(requested?.model ?? defaultThreadModel);
+  persistExecutor();
   const selection = { model: requested?.model ?? defaultThreadModel, effort: requested?.effort ?? defaultThreadEffort,
     serviceTier: requested?.serviceTier ?? defaultServiceTier };
   const modelReceipt = (phase: 'running' | 'completed' | 'failed', turnId?: string) => writeSessionModelRuntime(config.session.dataDir, {
     sessionId: args.sessionId, pid: process.pid, threadId: tid, phase, revision: requested?.revision,
-    selection: selection.model && selection.effort ? selection as ModelSelection : undefined, turnId,
+    selection: selection.model && selection.effort ? { ...selection, executor: activeExecutor } as ModelSelection : undefined, turnId,
   });
   const outputSchema = agentTeamOutputSchema(content);
   const turn = makeTurn(!!outputSchema);
@@ -735,7 +796,7 @@ async function runSingleTurn(content: string, autoContinue: boolean): Promise<Tu
 
     const result = await client.request('turn/start', {
       threadId: tid,
-      input: userTextInput(content),
+      input: userTextInput(pendingHandoff + content),
       cwd: args.cwd,
       approvalPolicy: 'never',
       sandboxPolicy: { type: 'dangerFullAccess' },
@@ -743,6 +804,7 @@ async function runSingleTurn(content: string, autoContinue: boolean): Promise<Tu
       ...(outputSchema ? { outputSchema } : {}),
     });
     turn.turnId = result.turn?.id ?? turn.turnId;
+    pendingHandoff = ''; persistExecutor();
     modelReceipt('running', turn.turnId);
     flushSteers(turn);
     await turn.done;
@@ -827,6 +889,13 @@ async function drainQueue(): Promise<void> {
       try {
         await runTurn(next);
       } catch (err: any) {
+        const requested = readSessionModel(config.session.dataDir, args.sessionId);
+        const runtime = readSessionModelRuntime(config.session.dataDir, args.sessionId);
+        if (runtime?.phase !== 'failed' || runtime.revision !== requested?.revision) {
+          writeSessionModelRuntime(config.session.dataDir, { sessionId: args.sessionId, pid: process.pid,
+            threadId, phase: 'failed', revision: requested?.revision,
+            selection: runtime?.selection ? { ...runtime.selection, executor: activeExecutor } : undefined });
+        }
         const message = `Codex App runner error: ${err?.message ?? err}`;
         writeLine(message);
         emitMarker('final', {
@@ -887,8 +956,11 @@ async function main(): Promise<void> {
   await loadDefaultThreadModel();
   const hookTrustIssue = await currentHookTrustIssue();
   if (hookTrustIssue) writeLine(`[codex-app] ${hookTrustIssue}`);
-  await ensureThread();
-  writeSessionModelRuntime(config.session.dataDir, { sessionId: args.sessionId, pid: process.pid, threadId, phase: 'ready' });
+  await ensureThread(readSessionModelRuntime(config.session.dataDir, args.sessionId)?.selection?.model ?? defaultThreadModel);
+  persistExecutor();
+  writeSessionModelRuntime(config.session.dataDir, { sessionId: args.sessionId, pid: process.pid, threadId, phase: 'ready',
+    selection: defaultThreadModel && defaultThreadEffort ? { executor: activeExecutor, model: defaultThreadModel,
+      effort: defaultThreadEffort, serviceTier: defaultServiceTier } : undefined });
   if (args.threadId) {
     writeLine(args.locale === 'zh'
       ? 'Codex App 已恢复原会话；终端仅显示恢复后的新输出。'
