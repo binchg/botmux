@@ -39,7 +39,7 @@ import {
 import { CodexBridgeQueue } from './services/codex-bridge-queue.js';
 import { CodexAppHeartbeat } from './services/codex-app-heartbeat.js';
 import { normalizeCodexAppTimestampMs } from './services/codex-app-activity.js';
-import { shouldReloadPersistentAppRunner } from './services/persistent-app-runner-reload.js';
+import { globalHookPolicyNeedsReload, shouldReloadPersistentAppRunner } from './services/persistent-app-runner-reload.js';
 import { drainCodexRollout, findCodexRolloutBySessionId, findCodexRolloutByPid, splitCodexEventsByCutoff, extractLastCodexTurn, type CodexBridgeEvent } from './services/codex-transcript.js';
 import { findTraexRolloutBySessionId, findTraexRolloutByPid } from './services/traex-transcript.js';
 import { cocoEventsPathForSession, drainCocoEvents, findCocoSessionByPid } from './services/coco-transcript.js';
@@ -4214,6 +4214,7 @@ function spawnCli(cfg: Extract<DaemonToWorker, { type: 'init' }>): void {
   reloadPersistentAppRunnerAtIdle = shouldReloadPersistentAppRunner(
     cfg.cliId,
     willReattachPersistent,
+    !cfg.adoptMode && globalHookPolicyNeedsReload(cfg.cliId, config.session.dataDir, cfg.sessionId),
   );
 
   // Re-arm the startup-commands one-shot ONLY for a genuinely fresh CLI process.
