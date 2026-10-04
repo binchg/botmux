@@ -6,6 +6,7 @@ import { atomicWriteFileSync } from '../utils/atomic-write.js';
 
 export interface ModelSelection {
   executor?: 'codex-app' | 'traex';
+  hookTrust?: 'always' | 'review';
   model: string;
   effort: string;
   serviceTier?: string;
@@ -17,7 +18,7 @@ export interface SessionModelRequest extends ModelSelection {
 }
 export interface SessionModelRuntime {
   sessionId: string;
-  protocol: 1 | 2;
+  protocol: 1 | 2 | 3;
   pid: number;
   threadId?: string;
   phase: 'ready' | 'running' | 'completed' | 'failed';
@@ -45,23 +46,23 @@ export const readSessionModel = (dir: string, id: string) => read<SessionModelRe
 export const readSessionModelRuntime = (dir: string, id: string) => read<SessionModelRuntime>(dir, id, 'runtime');
 export function writeSessionModel(dir: string, sessionId: string, selection: ModelSelection): SessionModelRequest {
   const previous = readSessionModel(dir, sessionId);
-  if (previous && previous.model === selection.model && previous.effort === selection.effort && previous.serviceTier === selection.serviceTier && previous.executor === selection.executor) return previous;
+  if (previous && previous.model === selection.model && previous.effort === selection.effort && previous.serviceTier === selection.serviceTier && previous.executor === selection.executor && previous.hookTrust === selection.hookTrust) return previous;
   const value = { ...selection, sessionId, revision: randomUUID(), updatedAt: new Date().toISOString() };
   write(dir, sessionId, 'desired', value);
   return value;
 }
 export function writeSessionModelRuntime(dir: string, value: Omit<SessionModelRuntime, 'updatedAt' | 'protocol'>): void {
-  write(dir, value.sessionId, 'runtime', { ...value, protocol: 2, updatedAt: new Date().toISOString() });
+  write(dir, value.sessionId, 'runtime', { ...value, protocol: 3, updatedAt: new Date().toISOString() });
 }
 export function modelRuntimeAlive(runtime?: SessionModelRuntime): boolean {
-  if (!runtime || ![1, 2].includes(runtime.protocol) || !Number.isInteger(runtime.pid) || runtime.pid < 1) return false;
+  if (!runtime || ![1, 2, 3].includes(runtime.protocol) || !Number.isInteger(runtime.pid) || runtime.pid < 1) return false;
   try { process.kill(runtime.pid, 0); return true; } catch { return false; }
 }
 export function sessionModelStatus(dir: string, sessionId: string) {
   const desired = readSessionModel(dir, sessionId), runtime = readSessionModelRuntime(dir, sessionId);
   const alive = modelRuntimeAlive(runtime), accepted = alive && !!desired && runtime?.revision === desired.revision;
   return { desired: desired ?? null, runtime: runtime ?? null, runnerAlive: alive,
-    status: !desired ? 'default' : !alive || (!!desired.executor && runtime?.protocol !== 2) ? 'pending_runner_reload' : !accepted ? 'pending_next_turn'
+    status: !desired ? 'default' : !alive || (!!desired.executor && (runtime?.protocol ?? 0) < 2) || (!!desired.hookTrust && (runtime?.protocol ?? 0) < 3) ? 'pending_runner_reload' : !accepted ? 'pending_next_turn'
       : runtime?.phase === 'completed' ? 'verified' : runtime?.phase === 'failed' ? 'failed' : 'accepted' };
 }
 
@@ -70,6 +71,7 @@ export interface SessionExecutorState {
   executor: 'codex-app' | 'traex';
   threadId: string;
   handoff?: string;
+  hookTrust?: 'always' | 'review';
 }
 export const readSessionExecutor = (dir: string, id: string) => read<SessionExecutorState>(dir, id, 'executor');
 export const writeSessionExecutor = (dir: string, value: SessionExecutorState) => write(dir, value.sessionId, 'executor', value);

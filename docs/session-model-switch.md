@@ -9,11 +9,14 @@ botmux model set gpt-6-astra xhigh --executor traex --speed default
 botmux model executor codex-app
 botmux model effort high
 botmux model speed priority
+botmux model hooks always
 botmux model status
 ```
 
 默认从当前进程所属会话定位；从普通终端操作时加 `--session-id <完整会话ID>`。
 模型、推理等级和服务档位均按目标执行器的实时 `model/list` 校验；TraeX 的显示名称映射到目录明确提供的 `configName`。`--service-tier` 与 `--speed` 等价。`default` 用于恢复默认服务档位；`priority` 仅在目录明确支持时允许。跨执行器默认恢复 `default`，不继承另一服务的 priority。执行器缺失、未登录或能力不支持时明确失败。
+
+`hooks always` 是用户对本会话的持续授权：保持所有已启用 Hooks，通过底层线程的 `bypass_hook_trust` 接受执行，模型或执行器切换后继续保留。默认策略为 `review`，未获得授权的会话不会自动同意。只改信任策略时恢复同一底层线程，不丢失历史；用 `botmux model hooks review` 撤销持续授权。
 
 已发出的推理请求继续使用原配置。下一轮，包括自动继续，读取最新会话设置，通过 `turn/start` 应用模型、推理等级和服务档位。同执行器内保留底层线程；跨执行器新建目标线程，迁移最近最多 24 条、约 24000 字符的可见用户/助手对话，不复制隐藏推理及工具输出。旧线程保留，飞书会话 ID 不变。更早历史可通过 `botmux history` 回查。目标初始化失败时保留原线程，当前请求报错，不悄悄使用旧执行器继续。
 
@@ -23,4 +26,4 @@ botmux model status
 
 数据写入 `<session-data>/session-models/`，每会话独立原子文件保存期望配置、运行回执及执行器恢复位置，目录/文件权限为 0700/0600。待迁移的可见对话暂存至新线程接收请求后清除，不保存凭据或修改全局配置。
 
-IPC：`GET /api/sessions/:id/model`、`GET /api/sessions/:id/model/list?executor=traex`、`POST /api/sessions/:id/model`。POST 正文只接受 `executor`、`model`、`effort`、`serviceTier`。
+IPC：`GET /api/sessions/:id/model`、`GET /api/sessions/:id/model/list?executor=traex`、`POST /api/sessions/:id/model`。POST 正文只接受 `executor`、`model`、`effort`、`serviceTier`、`hookTrust`。
