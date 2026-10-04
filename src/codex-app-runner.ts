@@ -2,6 +2,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { Buffer } from 'node:buffer';
 import { config } from './config.js';
+import { invalidateGlobalConfigCache, readGlobalConfig } from './global-config.js';
 import { readSessionModel, readSessionModelRuntime, readSessionExecutor, writeSessionExecutor, writeSessionModelRuntime, type ModelSelection, type SessionModelRequest } from './services/session-model-store.js';
 import { executorHandoff } from './services/session-executor-handoff.js';
 import { CodexAppProgressThrottler } from './services/codex-app-progress.js';
@@ -293,7 +294,7 @@ try {
 
 const savedExecutor = readSessionExecutor(config.session.dataDir, args.sessionId);
 let activeExecutor: 'codex-app' | 'traex' = savedExecutor?.executor ?? 'codex-app';
-let activeHookTrust = savedExecutor?.hookTrust ?? readSessionModel(config.session.dataDir, args.sessionId)?.hookTrust ?? 'review';
+let activeHookTrust = readGlobalConfig().hookTrust ?? savedExecutor?.hookTrust ?? readSessionModel(config.session.dataDir, args.sessionId)?.hookTrust ?? 'review';
 let client = new AppServerClient(activeExecutor === 'traex' ? args.traexBin : args.codexBin, args.cwd);
 let threadId = savedExecutor?.threadId ?? args.threadId;
 let pendingHandoff = savedExecutor?.handoff ?? '';
@@ -715,7 +716,8 @@ function persistExecutor(): void {
 /** 目标初始化成功后才替换旧进程；失败保留原线程，不把下一轮错误路由到旧执行器。 */
 async function ensureExecutor(requested?: SessionModelRequest): Promise<void> {
   const target = requested?.executor ?? activeExecutor;
-  const hookTrust = requested?.hookTrust ?? activeHookTrust;
+  invalidateGlobalConfigCache(); // A persisted global decision applies even to the immediately following turn.
+  const hookTrust = readGlobalConfig().hookTrust ?? requested?.hookTrust ?? activeHookTrust;
   if (target === activeExecutor && hookTrust === activeHookTrust) return;
   const changingExecutor = target !== activeExecutor;
   const bounded = async <T,>(promise: Promise<T>): Promise<T> => {

@@ -27,3 +27,11 @@ botmux model status
 数据写入 `<session-data>/session-models/`，每会话独立原子文件保存期望配置、运行回执及执行器恢复位置，目录/文件权限为 0700/0600。待迁移的可见对话暂存至新线程接收请求后清除，不保存凭据或修改全局配置。
 
 IPC：`GET /api/sessions/:id/model`、`GET /api/sessions/:id/model/list?executor=traex`、`POST /api/sessions/:id/model`。POST 正文只接受 `executor`、`model`、`effort`、`serviceTier`、`hookTrust`。
+
+## 全局 Hooks 授权
+
+`botmux model hooks always --all` 将明确授权保存在 `~/.botmux/config.json` 的 `hookTrust`，覆盖本机所有 Botmux Codex App、Codex TUI、TraeX 会话的单会话 Hook 策略。用 `botmux model hooks review --all` 恢复审阅。模型、速度、执行器及其他全局配置保持原值。默认安装没有全局授权，不会自动同意。
+
+更新后的 App runner 每轮读取全局策略，必要时恢复原线程；CLI 命令同时通知全部在线 daemon，让其自有 Codex/TraeX 进程在安全空闲点重载。返回 `queued` 只表示排队，忙碌轮次完成前不声称已经更新；外部接管终端不被重启。`model status` 的 `globalHookTrust` 与运行回执的实际 `selection.hookTrust` 可分别检查策略和执行结果。
+
+普通终端可安装 `scripts/codex-hook-consent.py` 启动包装器，传入原始可执行文件绝对路径及原参数。它读取同一全局策略：TUI/exec/resume/fork 添加原生 Hook 信任参数；stdio app-server 对 thread/start、resume、fork 注入原生线程配置。协议输出、Hook 本身的 enabled 状态、执行失败及阻断结果原样保留。包装器不覆盖包管理器安装的二进制，因此升级后继续指向稳定安装入口。直接绕过包装器的绝对路径调用以及非 stdio 传输需要调用方传入线程配置，不能由 PATH 包装器保证。

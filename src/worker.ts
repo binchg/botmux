@@ -6077,9 +6077,12 @@ process.on('message', async (raw: unknown) => {
     }
 
     case 'reload_app_runner_when_idle': {
-      if (lastInitConfig?.cliId !== 'codex-app' || lastInitConfig.adoptMode) break;
+      if (!lastInitConfig || !['codex-app','codex','traex'].includes(lastInitConfig.cliId) || lastInitConfig.adoptMode) break;
       reloadPersistentAppRunnerAtIdle = true;
-      if (isPromptReady && pendingMessages.length === 0 && !isFlushing) markPromptReady();
+      if (isPromptReady && pendingMessages.length === 0 && !isFlushing) {
+        reloadPersistentAppRunnerAtIdle = false;
+        restartOwnedCli('Applying explicit Hook policy at safe idle boundary', false);
+      }
       break;
     }
 

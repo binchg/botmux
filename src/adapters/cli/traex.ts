@@ -1,3 +1,4 @@
+import { readGlobalConfig } from '../../global-config.js';
 import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { resolveCommand } from './registry.js';
@@ -158,6 +159,7 @@ export function createTraexAdapter(pathOverride?: string): CliAdapter {
 
     buildArgs({ sessionId, resume, resumeSessionId, workingDir, model, disableCliBypass }) {
       const baseArgs = [
+        ...(readGlobalConfig().hookTrust === 'always' ? ['--dangerously-bypass-hook-trust'] : []),
         ...(!disableCliBypass ? ['--dangerously-bypass-approvals-and-sandbox'] : []),
         '--no-alt-screen',
       ];

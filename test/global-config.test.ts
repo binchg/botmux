@@ -23,6 +23,13 @@ describe('global dashboard config', () => {
     rmSync(home, { recursive: true, force: true });
   });
 
+  it('persists explicit global hook consent without touching other configuration', () => {
+    mergeGlobalConfig({ lang: 'en', hookTrust: 'always' });
+    expect(readGlobalConfig()).toMatchObject({ lang: 'en', hookTrust: 'always' });
+    mergeGlobalConfig({ hookTrust: 'review' });
+    expect(readGlobalConfig()).toMatchObject({ lang: 'en', hookTrust: 'review' });
+  });
+
   it('reads only boolean dashboard settings', () => {
     writeFileSync(globalConfigPath(), JSON.stringify({
       dashboard: {

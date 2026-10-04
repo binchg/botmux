@@ -1,3 +1,4 @@
+import * as globals from '../src/global-config.js';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -47,4 +48,17 @@ it('uses the requested executor catalog and current runtime for executor-only an
   vi.mocked(probe.listCodexAppModels).mockResolvedValue([{model:'synthetic-a',defaultReasoningEffort:'high',supportedReasoningEfforts:[{reasoningEffort:'xhigh'}],serviceTiers:[]}]);
   expect((await update(a.sessionId,{serviceTier:'priority'})).code).toBe(409);
   expect(readSessionModel(dir,a.sessionId)?.serviceTier).toBe('default');
+});
+
+it('reloads only owned active Codex-family sessions for explicit global consent', async () => {
+  vi.spyOn(globals,'readGlobalConfig').mockReturnValue({hookTrust:'always'});
+  const live = ['codex-app','codex','traex','claude-code'].map(cliId=>({session:{...session(),cliId},worker:{send:vi.fn(),killed:false}}));
+  const foreign={session:{...session(),larkAppId:'foreign'},worker:{send:vi.fn(),killed:false}};
+  const adopted={session:session(),worker:{send:vi.fn(),killed:false},adoptedFrom:{}};
+  vi.spyOn(workers,'listActiveSessions').mockReturnValue([...live,foreign,adopted] as any);
+  const r=await fetch(`http://127.0.0.1:${server.port}/api/hooks/reload`,{method:'POST'});
+  expect(r.status).toBe(200);expect((await r.json()).queued).toHaveLength(3);
+  for(const target of live.slice(0,3)) expect(target.worker.send).toHaveBeenCalledExactlyOnceWith({type:'reload_app_runner_when_idle'});
+  for(const target of [live[3],foreign,adopted]) expect(target.worker.send).not.toHaveBeenCalled();
+  for(const target of live) expect(readSessionModel(dir,target.session.sessionId)).toBeUndefined();
 });

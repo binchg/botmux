@@ -1,5 +1,6 @@
+import { invalidateGlobalConfigCache, readGlobalConfig } from '../global-config.js';
 import { ipcRoute, readJsonBody, jsonRes } from './dashboard-ipc-server.js';
-import { findActiveBySessionId } from './worker-pool.js';
+import { findActiveBySessionId, listActiveSessions } from './worker-pool.js';
 import * as sessions from '../services/session-store.js';
 import { config } from '../config.js';
 import { listCodexAppModels } from '../services/codex-app-threads.js';
@@ -19,13 +20,28 @@ export function registerSessionModelApi(appId: string): void {
   modelApiAppId = appId;
   if (registered) return;
   registered = true;
+  ipcRoute('POST', '/api/hooks/reload', (_req, res) => {
+    invalidateGlobalConfigCache();
+    const hookTrust = readGlobalConfig().hookTrust;
+    const queued: string[] = [], failed: string[] = [];
+    if (!hookTrust) { jsonRes(res, 409, { ok: false, error: 'global_hook_policy_not_set' }); return; }
+    for (const live of listActiveSessions()) {
+      const s = live.session;
+      if (s.larkAppId !== modelApiAppId || s.status !== 'active' || !['codex-app','codex','traex'].includes(s.cliId ?? '') || live.adoptedFrom || live.initConfig?.adoptMode) continue;
+      try {
+        if (!live.worker || live.worker.killed) throw new Error('worker_unavailable');
+        live.worker.send({ type: 'reload_app_runner_when_idle' }); queued.push(s.sessionId);
+      } catch { failed.push(s.sessionId); }
+    }
+    jsonRes(res, 200, { ok: true, hookTrust, queued, failed });
+  });
   const scope = (id: string) => {
     const live = findActiveBySessionId(id), session = live?.session ?? sessions.getSession(id);
     assertSessionModelScope(session, modelApiAppId, !!(live?.adoptedFrom || live?.initConfig?.adoptMode));
     return { live, session };
   };
   ipcRoute('GET', '/api/sessions/:sessionId/model', (_req, res, params) => {
-    try { scope(params.sessionId); jsonRes(res, 200, { ok: true, ...sessionModelStatus(config.session.dataDir, params.sessionId) }); }
+    try { scope(params.sessionId); jsonRes(res, 200, { ok: true, ...sessionModelStatus(config.session.dataDir, params.sessionId), globalHookTrust: readGlobalConfig().hookTrust ?? null }); }
     catch (e) { jsonRes(res, 409, { ok: false, error: (e as Error).message }); }
   });
   ipcRoute('GET', '/api/sessions/:sessionId/model/list', async (req, res, params) => {

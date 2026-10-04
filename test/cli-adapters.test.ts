@@ -8,6 +8,9 @@ import { randomUUID } from 'node:crypto';
 import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { readGlobalConfig } from '../src/global-config.js';
+vi.mock('../src/global-config.js', async importOriginal => ({ ...await importOriginal<typeof import('../src/global-config.js')>(), readGlobalConfig: vi.fn(() => ({})) }));
+
 import { codexHome } from '../src/services/codex-paths.js';
 
 // ---------------------------------------------------------------------------
@@ -1428,4 +1431,18 @@ describe('traex/coco sandbox authPaths', () => {
     const adapter = createCocoAdapter('/bin/coco');
     expect(adapter.authPaths).toEqual(['~/.trae/cli', '~/.cache/coco']);
   });
+});
+
+it('applies explicit global hook consent to fresh and resumed native Codex and TraeX without changing sandbox selection', () => {
+  vi.mocked(readGlobalConfig).mockReturnValue({hookTrust:'always'});
+  try {
+    for (const factory of [createCodexAdapter,createTraexAdapter]) {
+      for (const resume of [false,true]) {
+        const args=factory('/fake/native').buildArgs({sessionId:'sample',resume,resumeSessionId:'known-thread',disableCliBypass:true});
+        expect(args).toContain('--dangerously-bypass-hook-trust');
+        expect(args).not.toContain('--dangerously-bypass-approvals-and-sandbox');
+        if(resume) expect(args).toContain('known-thread');
+      }
+    }
+  } finally { vi.mocked(readGlobalConfig).mockReturnValue({}); }
 });

@@ -1,3 +1,4 @@
+import { readGlobalConfig } from '../../global-config.js';
 import { existsSync, statSync, openSync, readSync, closeSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolveCommand } from './registry.js';
@@ -136,6 +137,7 @@ export function createCodexAdapter(pathOverride?: string): CliAdapter {
 
     buildArgs({ sessionId, resume, resumeSessionId, workingDir, model, disableCliBypass }) {
       const baseArgs = [
+        ...(readGlobalConfig().hookTrust === 'always' ? ['--dangerously-bypass-hook-trust'] : []),
         ...(!disableCliBypass ? ['--dangerously-bypass-approvals-and-sandbox'] : []),
         '--no-alt-screen',
         '-c',

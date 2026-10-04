@@ -6364,7 +6364,7 @@ switch (command) {
     const sessionId = argValue(args, '--session-id') ?? findAncestorSessionId() ?? undefined;
     const session = sessionId ? loadSessions().get(sessionId) : undefined;
     const daemon = session?.larkAppId ? findDaemon(session.larkAppId) : null;
-    process.exitCode = await runSessionModelCommand(args, sessionId && daemon ? { sessionId, ipcPort: daemon.ipcPort } : undefined);
+    process.exitCode = await runSessionModelCommand(args, sessionId && daemon ? { sessionId, ipcPort: daemon.ipcPort } : undefined, args.includes('--all') ? listOnlineDaemons() : []);
     break;
   }
   case 'create-group': await cmdCreateGroup(process.argv.slice(3)); break;

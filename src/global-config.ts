@@ -28,6 +28,8 @@ export interface WhiteboardConfig {
 
 export interface GlobalConfig {
   lang?: Locale;
+  /** Explicit machine-wide consent for enabled Codex/TraeX hooks. Overrides session policy. */
+  hookTrust?: 'always' | 'review';
   /** Machine-wide repo picker display mode. Missing / 'all' preserves legacy
    *  behavior (repos + linked worktrees). 'repos' lists only main worktrees in
    *  selection cards; explicit /repo /abs/path/to/worktree still works. */
@@ -264,6 +266,7 @@ export function readGlobalConfig(): GlobalConfig {
   const raw = readRawConfig();
   const out: GlobalConfig = {};
   if (isLocale(raw.lang)) out.lang = raw.lang;
+  if (raw.hookTrust === 'always' || raw.hookTrust === 'review') out.hookTrust = raw.hookTrust;
   const repoPickerMode = readRepoPickerMode(raw.repoPickerMode);
   if (repoPickerMode) out.repoPickerMode = repoPickerMode;
   const dashboard = readDashboard(raw.dashboard);

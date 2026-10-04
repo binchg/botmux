@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -19,6 +19,8 @@ it('normalizes Trae catalog names, resets provider-specific priority and rejects
   expect(validateModelSelection({ model: 'GPT-Test', executor: 'codex', serviceTier: 'default' }, catalog).model).toBe('gpt-test');
   expect(parseModelCommand(['executor','traex']).body).toEqual({ executor: 'traex' });
   expect(parseModelCommand(['speed','default']).body).toEqual({ serviceTier: 'default' });
+  expect(parseModelCommand(['hooks','always','--all'])).toMatchObject({all:true,body:{hookTrust:'always'}});
+  expect(()=>parseModelCommand(['hooks','always','--all','--session-id','x'])).toThrow('invalid_global_hook_command');
   expect(parseModelCommand(['hooks','always']).body).toEqual({ hookTrust: 'always' });
   expect(validateModelSelection({hookTrust:'always'},catalog,{model:'gpt-test',effort:'high'}).hookTrust).toBe('always');
   expect(()=>validateModelSelection({hookTrust:'disable'},catalog,{model:'gpt-test',effort:'high'})).toThrow('unsupported_hook_trust');
@@ -50,7 +52,7 @@ if(m.method==='thread/read')result={thread:{turns:[{items:[{type:'userMessage',c
 if(m.method==='turn/start'){const id='turn-'+(++n);send({id:m.id,result:{turn:{id}}});setTimeout(()=>{send({method:'item/completed',params:{threadId:name+'-thread',item:{type:'agentMessage',id:'answer-'+n,text:'synthetic complete',phase:'final_answer'}}});send({method:'turn/completed',params:{threadId:name+'-thread',turn:{id,status:'completed'}}});},150);return;}
 send({id:m.id,result});});
 `, { mode:0o700 });
-  const start = () => spawn(process.execPath, ['--import','tsx',resolve('src/codex-app-runner.ts'),'--session-id','switch-test','--codex-bin',join(d,'codex'),'--traex-bin',join(d,'traex'),'--cwd',d], { cwd:process.cwd(),env:{...process.env,SESSION_DATA_DIR:d,EXECUTOR_TEST_CALLS:calls},stdio:['pipe','pipe','pipe'] });
+  const start = () => spawn(process.execPath, ['--import','tsx',resolve('src/codex-app-runner.ts'),'--session-id','switch-test','--codex-bin',join(d,'codex'),'--traex-bin',join(d,'traex'),'--cwd',d], { cwd:process.cwd(),env:{...process.env,HOME:d,SESSION_DATA_DIR:d,EXECUTOR_TEST_CALLS:calls},stdio:['pipe','pipe','pipe'] });
   let runner = start(); let errors = '';
   const attach = () => { runner.stdout.on('data',()=>{});runner.stderr.on('data',x=>{errors+=x;}); };
   attach(); const state = () => sessionModelStatus(d,'switch-test');
@@ -78,6 +80,14 @@ send({id:m.id,result});});
     await vi.waitFor(()=>expect(state().status).toBe('verified'));
     expect(state().runtime?.threadId).toBe('traex-thread');
     expect(state().runtime?.selection?.hookTrust).toBe('review');
+    mkdirSync(join(d,'.botmux'),{recursive:true});
+    for (const hookTrust of ['always','review']) {
+      writeFileSync(join(d,'.botmux','config.json'),JSON.stringify({hookTrust}));send();
+      await vi.waitFor(()=>expect(state().runtime?.phase).toBe('running'));
+      await vi.waitFor(()=>expect(state().runtime?.phase).toBe('completed'));
+      expect(state().runtime?.selection?.hookTrust).toBe(hookTrust);
+      expect(state().runtime?.threadId).toBe('traex-thread');
+    }
     writeSessionModel(d,'switch-test',{model:'wrong-target',effort:'high',executor:'codex-app'}); send();
     await vi.waitFor(()=>expect(state().status).toBe('failed'));
     expect(readSessionExecutor(d,'switch-test')?.executor).toBe('traex');
