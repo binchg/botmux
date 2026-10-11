@@ -22,6 +22,8 @@ export interface TerminalProxyOptions {
   host?: string;
   /** Resolve a sessionId to its live worker HTTP port (undefined if not running). */
   resolvePort: (sessionId: string) => number | undefined;
+  /** Enforce access on the original socket before it becomes a loopback request. */
+  authorizeRequest?: (sessionId: string, req: IncomingMessage) => boolean;
   /**
    * Optional on-demand wake: when `resolvePort` finds no live worker, re-fork it
    * (re-attaching the surviving tmux/zellij pane) and resolve once its port is
@@ -76,6 +78,11 @@ export function startTerminalProxy(opts: TerminalProxyOptions): Promise<Terminal
       return;
     }
     resolvePortMaybeWake(parsed.sessionId).then((port) => {
+    if (opts.authorizeRequest && !opts.authorizeRequest(parsed.sessionId, req)) {
+      res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' });
+      res.end('Please use localhost or an SSH tunnel.');
+      return;
+    }
     if (!port) {
       res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' });
       res.end('session not running');
@@ -103,6 +110,10 @@ export function startTerminalProxy(opts: TerminalProxyOptions): Promise<Terminal
     const parsed = parseTarget(req.url ?? '');
     if (!parsed) return clientSocket.destroy();
     resolvePortMaybeWake(parsed.sessionId).then((port) => {
+    if (opts.authorizeRequest && !opts.authorizeRequest(parsed.sessionId, req)) {
+      clientSocket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+      return;
+    }
     if (!port) return clientSocket.destroy();
 
     const upstream = httpRequest({

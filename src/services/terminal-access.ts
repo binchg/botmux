@@ -72,6 +72,10 @@ export function terminalLocalRequest(req: IncomingMessage, requireOrigin: boolea
     return !requireOrigin || req.headers.origin === url.origin;
   } catch { return false; }
 }
+/** Check the real client socket at every proxy boundary, before loopback forwarding. */
+export function terminalProxyRequestAllowed(dir: string, id: string, req: IncomingMessage): boolean {
+  return !terminalAccessEnabled(dir, id) || terminalLocalRequest(req, req.method !== 'GET' || !!req.headers.upgrade);
+}
 async function passwordHash(password: string, salt: string): Promise<string> {
   const derived = await new Promise<Buffer>((resolve, reject) => scrypt(password, salt, 32,
     { N: 32768, r: 8, p: 1, maxmem: 64 * 1024 * 1024 }, (error, key) => error ? reject(error) : resolve(key)));

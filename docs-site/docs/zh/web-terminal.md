@@ -1,5 +1,16 @@
 # Web 终端（可交互）
 
+## 独立本机 Shell
+
+需要先进入普通 Shell，再手动执行 `codex`、`/hooks` 等命令时，使用
+`node dist/local-shell-server.js --config <配置文件>`。它连接独立的 tmux Shell，
+不连接聊天会话，也不提供会话 Hooks 授权按钮。浏览器锁定或断开后，Shell 进程保留。
+
+配置包含 `dataDir`、`id`、`port`、`cwd`、`shell`、`tmuxSocket`、`publicBaseUrl`。
+首次启动前用同一命令加 `--link` 初始化密码门禁并生成一次性链接；密码仍由本人在浏览器设置。
+服务仅监听回环地址；HTTPS 网关须在转发前校验真实来源、HTTPS 协议和同源 Origin，
+并设置 Secure Cookie。桌面和手机均支持终端输入、窗口缩放及 Esc、Ctrl-C、方向键。
+
 ## 本机二次密码与短时授权
 
 界面示意：[首次设密](https://github.com/binchg/botmux/blob/dev/docs/screenshots/terminal-password-setup.png)、

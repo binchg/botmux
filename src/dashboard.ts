@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { randomBytes, createHmac } from 'node:crypto';
 import { logger } from './utils/logger.js';
 import { config } from './config.js';
+import { terminalProxyRequestAllowed } from './services/terminal-access.js';
 import { listenWithProbe } from './utils/listen-with-probe.js';
 import {
   generateToken, parseCookie, buildSetCookie, verifyHmac, cliAuthBind, decideDashboardAuth,
@@ -1041,6 +1042,10 @@ const server = createServer(async (req, res) => {
     // token / platform role).
     if (url.pathname === '/s' || url.pathname.startsWith('/s/')) {
       const sessionId = parseTerminalSessionId(url.pathname);
+      if (sessionId && !terminalProxyRequestAllowed(config.session.dataDir, sessionId, req)) {
+        res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' });
+        return res.end('Please use localhost or an SSH tunnel.');
+      }
       const tport = sessionId ? aggregator.terminalProxyPortOf(sessionId) : undefined;
       if (!tport) {
         res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
@@ -2631,6 +2636,10 @@ server.on('upgrade', (req: IncomingMessage, clientSocket: Duplex, head: Buffer) 
     // Strip query/hash before extracting the sessionId path segment.
     const pathname = rawUrl.split(/[?#]/)[0];
     const sessionId = parseTerminalSessionId(pathname);
+    if (sessionId && !terminalProxyRequestAllowed(config.session.dataDir, sessionId, req)) {
+      clientSocket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+      return;
+    }
     const tport = sessionId ? aggregator.terminalProxyPortOf(sessionId) : undefined;
     if (!tport) return clientSocket.destroy();
 

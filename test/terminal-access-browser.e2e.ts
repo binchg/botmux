@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chromium, type Browser } from 'playwright';
 import { WebSocket } from 'ws';
-import { issueTerminalEntry } from '../src/services/terminal-access.js';
+import { issueTerminalEntry, terminalProxyRequestAllowed } from '../src/services/terminal-access.js';
 import { writeSessionModel, readSessionModel } from '../src/services/session-model-store.js';
 import { startTerminalProxy, type TerminalProxyHandle } from '../src/core/terminal-proxy.js';
 
@@ -30,7 +30,8 @@ it('real worker enforces the gate and browser setup, control, hooks, lock and un
     worker.send({ type: 'init', sessionId: id, workingDir: dir, cliId: 'codex', prompt: '',
       larkAppId: '', larkAppSecret: '', adoptMode: true, adoptTmuxTarget: pane, locale: 'zh' });
     const { port, token } = await ready;
-    proxy = await startTerminalProxy({ port: 0, host: '127.0.0.1', resolvePort: sid => sid === id ? port : undefined });
+    proxy = await startTerminalProxy({ port: 0, host: '127.0.0.1', resolvePort: sid => sid === id ? port : undefined,
+      authorizeRequest: (sid, req) => terminalProxyRequestAllowed(dir, sid, req) });
     const base = `http://127.0.0.1:${proxy.port}/s/${id}/`;
     const first = issueTerminalEntry(dir, id);
     // Actual worker, direct-port legacy token + spoofed role, before any browser setup.

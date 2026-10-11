@@ -8,7 +8,7 @@ describe('codex-app runner steering', () => {
   it('uses app-server turn/steer for busy follow-up guidance', () => {
     expect(source).toContain("client.request('turn/steer'");
     expect(source).toContain('expectedTurnId');
-    expect(source).toContain('input: userTextInput(content)');
+    expect(source).toContain('input: userTextInput(sharedContextPrefix() + content)');
   });
 
   it('falls back to next-turn queueing when steering is unavailable', () => {

@@ -42,6 +42,7 @@ import type { DaemonSession } from './core/types.js';
 import { sessionKey, sessionAnchorId } from './core/types.js';
 import { buildTerminalUrl, setTerminalProxyPort, setTerminalExternalPort } from './core/terminal-url.js';
 import { startTerminalProxy, type TerminalProxyHandle } from './core/terminal-proxy.js';
+import { terminalProxyRequestAllowed } from './services/terminal-access.js';
 import type { CliId } from './adapters/cli/types.js';
 import * as scheduler from './core/scheduler.js';
 import { scanProjects, scanMultipleProjects } from './services/project-scanner.js';
@@ -3927,6 +3928,7 @@ export async function startDaemon(botIndex?: number): Promise<void> {
     terminalProxy = await startTerminalProxy({
       port: proxyPort,
       host: config.web.host,
+      authorizeRequest: (sessionId, req) => terminalProxyRequestAllowed(config.session.dataDir, sessionId, req),
       resolvePort: (sessionId) => {
         for (const ds of activeSessions.values()) {
           if (ds.session.sessionId === sessionId && ds.workerPort) return ds.workerPort;
