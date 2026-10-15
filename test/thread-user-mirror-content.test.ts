@@ -16,7 +16,7 @@ describe('用户追加消息的发送者标注', () => {
     const body = JSON.stringify(wrapped ? { zh_cn: post } : post);
     const result = attributedMirrorContent({ message_id: 'om_post', msg_type: 'post', body: { content: body } }, '陈金彬');
     const parsed = JSON.parse(result!.content);
-    const actual = wrapped ? parsed.zh_cn : parsed;
+    const actual = parsed.zh_cn;
     expect(actual).toEqual({ ...post, content: [[{ tag: 'text', text: '陈金彬追加：' }], ...post.content] });
     expect(JSON.stringify(wrapped ? { zh_cn: post } : post)).toBe(body);
   });

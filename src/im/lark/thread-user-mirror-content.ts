@@ -30,5 +30,6 @@ export function attributedMirrorContent(source: MirrorSource, senderName: string
   for (const post of posts as Array<{ content: unknown[][] }>) {
     post.content.unshift([{ tag: 'text', text: prefix }]);
   }
-  return { msg_type: 'post', content: JSON.stringify(body) };
+  // 回读是无语言包装的正文，发送协议必须恢复 zh_cn，不能直接复用回读外形。
+  return { msg_type: 'post', content: JSON.stringify(Array.isArray(body.content) ? { zh_cn: body } : body) };
 }
