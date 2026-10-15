@@ -16,12 +16,12 @@ export interface MirrorInput {
   message: ThreadMessage;
 }
 
-/** 平台调用与持久去重均可独立验证；正文、图片和附件由原生转发接口保留。 */
+/** 平台调用与持久去重均可独立验证；发送端用已核验原消息保留正文和附件。 */
 export interface MirrorPort {
   chatMode(chatId: string): Promise<string>;
   read(id: string): Promise<MirrorSource | undefined>;
   claim(key: string, source: MirrorSource): boolean;
-  forward(id: string, chatId: string, uuid: string): Promise<string>;
+  forward(id: string, chatId: string, uuid: string, source: MirrorSource): Promise<string>;
   record(key: string, status: 'sent' | 'failed', mirrorId?: string): void;
 }
 
@@ -42,7 +42,7 @@ export async function mirrorThreadUserMessage(input: MirrorInput, port: MirrorPo
   const key = createHash('sha256').update(`${source.chat_id}:${source.message_id}`).digest('hex');
   if (!port.claim(key, source)) return 'duplicate';
   try {
-    const mirrorId = await port.forward(source.message_id, message.chat_id, key.slice(0, 32));
+    const mirrorId = await port.forward(source.message_id, message.chat_id, key.slice(0, 32), source);
     port.record(key, 'sent', mirrorId);
     return 'sent';
   } catch (error) {

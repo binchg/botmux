@@ -15,10 +15,10 @@ function portFor(detail: MirrorSource | undefined = source): MirrorPort {
 }
 
 describe('普通群用户话题消息自动补发', () => {
-  it('只转发准确原消息到原群，正文和附件交给平台原生接口保留', async () => {
+  it('只将已核验的原消息交给发送端，准确原群和去重键保持不变', async () => {
     const port = portFor();
     expect(await mirrorThreadUserMessage(input, port)).toBe('sent');
-    expect(port.forward).toHaveBeenCalledWith('om_user', 'oc_group', expect.stringMatching(/^[0-9a-f]{32}$/));
+    expect(port.forward).toHaveBeenCalledWith('om_user', 'oc_group', expect.stringMatching(/^[0-9a-f]{32}$/), source);
     expect(port.record).toHaveBeenCalledWith(expect.any(String), 'sent', 'om_forwarded');
   });
 

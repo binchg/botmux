@@ -8,6 +8,8 @@ import { logger } from '../../utils/logger.js';
 import { getChatModeStrict, getMessageDetail } from './client.js';
 import { mirrorThreadUserMessage, type MirrorSource } from './thread-user-mirror.js';
 import type { ThreadMessage } from './thread-sync.js';
+import { resolveSender } from './identity-cache.js';
+import { attributedMirrorContent } from './thread-user-mirror-content.js';
 
 interface MirrorTarget { appId: string; chatId: string; userOpenId: string }
 
@@ -47,14 +49,22 @@ export async function maybeMirrorThreadUserMessage(
       read: async id => (await getMessageDetail(appId, id, { userCardContent: false })).items
         ?.find((item: MirrorSource) => item.message_id === id),
       claim: (key, source) => claimMirror(directory, key, source),
-      forward: async (id, chatId, uuid) => {
-        const result = await getBotClient(appId).im.v1.message.forward({
-          path: { message_id: id }, params: { receive_id_type: 'chat_id', uuid }, data: { receive_id: chatId },
-        });
-        if (result.code !== 0 || !result.data?.message_id || result.data.chat_id !== chatId) {
+      forward: async (id, chatId, uuid, source) => {
+        const sender = await resolveSender(appId, senderOpenId, 'user');
+        const content = attributedMirrorContent(source, sender?.name || `用户（${senderOpenId}）`);
+        const client = getBotClient(appId).im.v1.message;
+        // 文本与图文一次发送即带姓名；其它附件用原生聊天记录保留发送者和资源。
+        const result = content
+          ? await client.create({ params: { receive_id_type: 'chat_id' },
+            data: { receive_id: chatId, uuid, ...content } })
+          : await client.mergeForward({ params: { receive_id_type: 'chat_id', uuid },
+            data: { receive_id: chatId, message_id_list: [id] } });
+        const sent = result.data && ('message_id' in result.data ? result.data
+          : 'message' in result.data ? result.data.message : undefined);
+        if (result.code !== 0 || !sent?.message_id || sent.chat_id !== chatId) {
           throw new Error(`用户消息转发未获有效回执：${result.code ?? 'missing-code'}`);
         }
-        return result.data.message_id;
+        return sent.message_id;
       },
       record: (key, state, mirrorId) => {
         const path = join(directory, `${key}.json`);
