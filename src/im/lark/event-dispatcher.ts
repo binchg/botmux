@@ -1884,6 +1884,14 @@ export function startLarkEventDispatcher(larkAppId: string, larkAppSecret: strin
         let replyRootId: string | undefined;
         const explicitlyMentionedThisBot = isBotMentioned(larkAppId, message, senderOpenId);
 
+        // ambient 下明确交给他人的群消息直接忽略，避免单人群和新话题免 @ 兜底重新放行。
+        if (chatType === 'group' && !explicitlyMentionedThisBot
+            && resolveGroupMentionMode(larkAppId) === 'ambient'
+            && mentionsAnotherMember(larkAppId, message)) {
+          logger.debug(`Ignoring group message addressed to another member: ${messageId}`);
+          return;
+        }
+
         // Shared-mode follow-up: a non-@ message inside a Lark thread can belong
         // to the regular group's chat-scope session when that root was registered
         // as a shared-topic alias. Whether a 普通群 answers it without an @mention
