@@ -1,15 +1,16 @@
 /** 用户授权的普通群补发入口；按机器人、群和用户启用，默认不复制任何消息。 */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { getBotClient } from '../../bot-registry.js';
 import { config } from '../../config.js';
 import { atomicWriteFileSync } from '../../utils/atomic-write.js';
 import { logger } from '../../utils/logger.js';
-import { getChatModeStrict, getMessageDetail } from './client.js';
+import { downloadMessageResource, getChatModeStrict, getMessageDetail, uploadImage } from './client.js';
 import { mirrorThreadUserMessage, type MirrorSource } from './thread-user-mirror.js';
 import type { ThreadMessage } from './thread-sync.js';
 import { resolveSender } from './identity-cache.js';
-import { attributedMirrorContent } from './thread-user-mirror-content.js';
+import { prepareAttributedMirrorContent } from './thread-user-mirror-content.js';
 
 interface MirrorTarget { appId: string; chatId: string; userOpenId: string }
 
@@ -51,7 +52,17 @@ export async function maybeMirrorThreadUserMessage(
       claim: (key, source) => claimMirror(directory, key, source),
       forward: async (id, chatId, uuid, source) => {
         const sender = await resolveSender(appId, senderOpenId, 'user');
-        const content = attributedMirrorContent(source, sender?.name || `用户（${senderOpenId}）`);
+        const temporary = mkdtempSync(join(tmpdir(), 'botmux-user-mirror-'));
+        let content;
+        try {
+          content = await prepareAttributedMirrorContent(source, sender?.name || `用户（${senderOpenId}）`, async key => {
+            const file = join(temporary, 'image');
+            await downloadMessageResource(appId, id, key, 'image', file);
+            return uploadImage(appId, file);
+          });
+        } finally {
+          rmSync(temporary, { recursive: true, force: true });
+        }
         const client = getBotClient(appId).im.v1.message;
         // 文本与图文一次发送即带姓名；其它附件用原生聊天记录保留发送者和资源。
         const result = content

@@ -27,9 +27,37 @@ export function attributedMirrorContent(source: MirrorSource, senderName: string
   if (!posts.length || posts.some((post: any) => !Array.isArray(post?.content))) {
     throw new Error('用户富文本消息结构不完整');
   }
-  for (const post of posts as Array<{ content: unknown[][] }>) {
+  // 音视频和文件资源保留原生转发，不能把用户资源键作为机器人资源重发。
+  if (posts.some((post: any) => post.content.flat().some((node: any) => node.file_key))) return undefined;
+  for (const post of posts as Array<{ content: unknown[][]; content_v2?: unknown }>) {
     post.content.unshift([{ tag: 'text', text: prefix }]);
+    // content_v2 是平台回读副本；发送时只提供已处理的正文，避免夹带旧图片键。
+    delete post.content_v2;
   }
   // 回读是无语言包装的正文，发送协议必须恢复 zh_cn，不能直接复用回读外形。
   return { msg_type: 'post', content: JSON.stringify(Array.isArray(body.content) ? { zh_cn: body } : body) };
+}
+
+/** 用户上传的图片键不能直接发送；同一原图只重新上传一次，任何失败都在发消息前终止。 */
+export async function prepareAttributedMirrorContent(
+  source: MirrorSource, senderName: string, reupload: (imageKey: string) => Promise<string>,
+): Promise<ReturnType<typeof attributedMirrorContent>> {
+  const result = attributedMirrorContent(source, senderName);
+  if (!result || result.msg_type !== 'post') return result;
+  const body = JSON.parse(result.content);
+  const uploaded = new Map<string, string>();
+  for (const post of Object.values(body) as Array<{ content: Array<Array<Record<string, any>>> }>) {
+    for (const row of post.content) for (const node of row) {
+      if (node.tag !== 'img' || !node.image_key) continue;
+      const original = node.image_key as string;
+      let key = uploaded.get(original);
+      if (!key) {
+        key = await reupload(original);
+        if (!key) throw new Error('用户追加图片上传未返回图片键');
+        uploaded.set(original, key);
+      }
+      node.image_key = key;
+    }
+  }
+  return { ...result, content: JSON.stringify(body) };
 }
