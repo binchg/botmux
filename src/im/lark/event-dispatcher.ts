@@ -11,6 +11,7 @@ import { getBot, getAllBots, findOncallChat, getOwnerOpenId, type BotState } fro
 import { config } from '../../config.js';
 import { getChatInfo, getChatMode, getCachedChatMode, getMessageDetail, listChatBotMembers, replyMessage, sendMessage, sendUserMessage, isHumanOpenId, updateMessage } from './client.js';
 import { canonicalThreadMessage, syncedMessageKey } from './thread-sync.js';
+import { maybeMirrorThreadUserMessage } from './thread-user-mirror-runtime.js';
 import { logger } from '../../utils/logger.js';
 import { BoundedMap } from '../../utils/bounded-map.js';
 import { serializeByAnchor } from '../../utils/anchor-serializer.js';
@@ -2110,6 +2111,9 @@ export function startLarkEventDispatcher(larkAppId: string, larkAppSecret: strin
           logger.debug(`Ignoring p2p message from non-allowed user: ${senderOpenId}`);
           return;
         }
+
+        // 只补发已经通过权限检查的真实用户追加消息，补发自身不会进入此路径。
+        void maybeMirrorThreadUserMessage(larkAppId, message, senderType, senderOpenId ?? '', ownsSession);
 
         const promptOverride = summaryCommandTriggered && summaryCommandMatch
           ? await buildSummaryCommandPrompt({ larkAppId, chatId, message, match: summaryCommandMatch })
