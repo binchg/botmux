@@ -90,4 +90,5 @@ export function syncReplyTargetState(ds: DaemonSession, s?: Session): void {
   const source = s ?? ds.session;
   ds.replyThreadAliases = source.replyThreadAliases;
   ds.currentReplyTarget = source.currentReplyTarget;
+  ds.session.replyTargetsByTurn = source.replyTargetsByTurn;
 }

@@ -9,7 +9,6 @@ import { config } from './config.js';
 import { invalidateGlobalConfigCache, readGlobalConfig } from './global-config.js';
 import { readSessionModel, readSessionModelRuntime, readSessionExecutor, writeSessionExecutor, writeSessionModelRuntime, type ModelSelection, type SessionModelRequest } from './services/session-model-store.js';
 import { executorHandoff } from './services/session-executor-handoff.js';
-import { CodexAppProgressThrottler } from './services/codex-app-progress.js';
 import { normalizeCodexAppTimestampMs } from './services/codex-app-activity.js';
 import { codexAppHookFailure, codexAppHookTrustIssue } from './services/codex-app-hook-health.js';
 import { agentTeamOutputSchema } from './services/agent-team-result-schema.js';
@@ -51,8 +50,6 @@ interface ActiveTurn {
   itemEpoch: Map<string, number>;
   emittedProgressItemIds: Set<string>;
   guidanceEpoch: number;
-  progress: CodexAppProgressThrottler;
-  progressTimer?: ReturnType<typeof setInterval>;
   pendingSteers: string[];
   steerChain: Promise<void>;
   done: Promise<void>;
@@ -82,7 +79,6 @@ interface TurnOutcome {
 
 const OSC_PREFIX = '\x1b]777;botmux:';
 const OSC_END = '\x07';
-const PROGRESS_TICK_MS = 250;
 
 function asError(value: unknown): Error {
   return value instanceof Error ? value : new Error(String(value));
@@ -346,7 +342,6 @@ function makeTurn(structuredOutput = false): ActiveTurn {
     itemEpoch: new Map(),
     emittedProgressItemIds: new Set(),
     guidanceEpoch: 0,
-    progress: new CodexAppProgressThrottler(),
     pendingSteers: [],
     steerChain: Promise.resolve(),
     done,
@@ -359,20 +354,8 @@ function userTextInput(content: string): JsonObject[] {
   return [{ type: 'text', text: content, text_elements: [] }];
 }
 
-function maybeEmitProgress(turn: ActiveTurn, force = false): void {
-  if (turn.structuredOutput) return;
-  if (turn.finalText) return;
-  const snapshots = turn.progress.drainSnapshots({
-    turnId: turn.turnId,
-    text: turn.allAgentText,
-    startedAtMs: turn.startedAtMs,
-    nowMs: Date.now(),
-    force,
-  });
-  for (const snapshot of snapshots) emitMarker('progress', { ...snapshot, complete: force });
-}
-
-function emitCompletedStructuredMessage(turn: ActiveTurn, itemId: string, content: string): void {
+/** 每条完整 assistant 消息只投递一次，避免流式分句刷屏和最终答案提前泄露。 */
+function emitCompletedAssistantMessage(turn: ActiveTurn, itemId: string, content: string): void {
   const text = content.trim();
   if (!text || turn.emittedProgressItemIds.has(itemId) || isAgentTeamMachineOutput(text)) return;
   turn.emittedProgressItemIds.add(itemId);
@@ -457,7 +440,6 @@ function handleUserMessage(content: string): void {
   // A busy follow-up is a new visible progress epoch even though app-server
   // keeps it inside the same turn/steer lifecycle. Do not let the previous
   // assistant text cursor suppress commentary produced for this guidance.
-  activeTurn.progress.resetTo();
   activeTurn.pendingSteers.push(content);
   flushSteers(activeTurn);
 }
@@ -592,7 +574,6 @@ function handleNotification(msg: JsonObject): void {
       activeTurn.finalItemId = undefined;
     }
     activeTurn.allAgentText += delta;
-    maybeEmitProgress(activeTurn);
     return;
   }
 
@@ -608,12 +589,6 @@ function handleNotification(msg: JsonObject): void {
       const itemEpoch = activeTurn.itemEpoch.get(itemId) ?? activeTurn.guidanceEpoch;
       if (itemEpoch !== activeTurn.guidanceEpoch) return;
       const completedText = String(item.text ?? activeTurn.itemText.get(itemId) ?? '');
-      if (activeTurn.structuredOutput && item.phase !== 'final_answer') {
-        // Structured Outputs applies to the terminal item, not commentary.
-        // Buffer the complete item so split result JSON cannot escape, then
-        // forward only content that is strictly not a machine result.
-        emitCompletedStructuredMessage(activeTurn, itemId, completedText);
-      }
       if (item.phase === 'final_answer') {
         activeTurn.finalText = String(item.text ?? '');
         activeTurn.finalItemId = itemId;
@@ -621,9 +596,7 @@ function handleNotification(msg: JsonObject): void {
         if (!activeTurn.itemText.has(item.id) && item.text) {
           activeTurn.allAgentText += String(item.text);
         }
-        // Delta-backed items already populated allAgentText, but their final
-        // unpunctuated/Markdown tail still needs one semantic-completion flush.
-        maybeEmitProgress(activeTurn, true);
+        emitCompletedAssistantMessage(activeTurn, itemId, completedText);
       }
     }
     return;
@@ -860,13 +833,6 @@ async function runSingleTurn(content: string, autoContinue: boolean, attempted =
     turn.adaptiveCheck = () => { void check(); };
     queueTimer = setInterval(turn.adaptiveCheck, 1000); queueTimer.unref();
   }
-  // Agent-message deltas are event driven, but a short unpunctuated delta may
-  // be followed by a long tool call. Tick independently so the first progress
-  // snapshot is not held until another model delta happens to arrive.
-  turn.progressTimer = setInterval(() => {
-    if (activeTurn === turn) maybeEmitProgress(turn);
-  }, PROGRESS_TICK_MS);
-  turn.progressTimer.unref();
   try {
     writeLine();
     writeLine(autoContinue ? '[auto continue]' : '[user]');
@@ -924,7 +890,6 @@ async function runSingleTurn(content: string, autoContinue: boolean, attempted =
     turn.adaptiveCheck = undefined;
     if (queueTimer) clearInterval(queueTimer);
     queueReader?.close();
-    if (turn.progressTimer) clearInterval(turn.progressTimer);
     queuePendingSteersAsNextTurns(turn);
     if (activeTurn === turn) activeTurn = null;
   }

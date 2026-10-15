@@ -13,6 +13,7 @@
  *   7. On 'restart', kills CLI and re-spawns with --resume
  */
 import { randomBytes } from 'node:crypto';
+import { codexAppReplyOwner } from './services/codex-app-reply-owner.js';
 import { mkdirSync, writeFileSync, unlinkSync, existsSync, statSync, readdirSync, readlinkSync, readFileSync, watch as fsWatch, createWriteStream, type FSWatcher, type WriteStream } from 'node:fs';
 import { atomicWriteFileSync } from './utils/atomic-write.js';
 import { isAbsolute, join, basename } from 'node:path';
@@ -2909,7 +2910,7 @@ function beginCodexAppHeartbeat(startedAtMs = Date.now(), turnId = currentBotmux
 }
 
 function ensureCodexAppHeartbeat(startedAtMs: number, turnId?: string): void {
-  if (!codexAppHeartbeat) beginCodexAppHeartbeat(startedAtMs, turnId);
+  if (!codexAppHeartbeat) beginCodexAppHeartbeat(startedAtMs, codexAppReplyOwner(currentBotmuxTurnId, turnId));
 }
 
 function noteCodexAppVisibleProgress(nowMs = Date.now(), summary?: string): void {

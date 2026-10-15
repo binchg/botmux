@@ -395,6 +395,23 @@ describe('worker-pool lifecycle hook integration', () => {
     expect(deleteMessageMock).not.toHaveBeenCalled();
   });
 
+  it('普通群未知模型轮次的进度不得回落成群广播，已知轮次保持原话题', async () => {
+    const worker = makeFakeWorker();
+    const ds = makeDs({ worker, scope: 'chat' });
+    ds.currentReplyTarget = { rootMessageId: 'om_topic', turnId: 'om_user', updatedAt: 'now' };
+    __testOnly_setupWorkerHandlers(ds, worker);
+    worker.emit('message', { type: 'progress_output', kind: 'assistant',
+      turnId: 'native-turn-after-restart', content: '第一句。第二句。', complete: true });
+    await flush();
+    expect(sessionReplyMock).not.toHaveBeenCalled();
+    worker.emit('message', { type: 'progress_output', kind: 'assistant',
+      turnId: 'om_user', content: '第一句。第二句。', complete: true });
+    await flush();
+    expect(sessionReplyMock).toHaveBeenCalledTimes(1);
+    expect(sessionReplyMock.mock.calls[0][4]).toBe('om_user');
+    expect(String(sessionReplyMock.mock.calls[0][1])).toContain('第一句。第二句。');
+  });
+
   it('appends assistant progress but suppresses heartbeat output across turn ids', async () => {
     const worker = makeFakeWorker();
     const ds = makeDs({ worker });

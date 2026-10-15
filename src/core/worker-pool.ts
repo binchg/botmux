@@ -17,7 +17,7 @@ import { config } from '../config.js';
 import { readGlobalConfig } from '../global-config.js';
 import * as sessionStore from '../services/session-store.js';
 import { persistStreamCardState, rememberLastCliInput } from './session-manager.js';
-import { fallbackTurnId } from './reply-target.js';
+import { fallbackTurnId, resolveSessionReplyTarget } from './reply-target.js';
 import { updateMessage, deleteMessage, sendEphemeralCard, sendUserMessage, addReaction, removeReaction, uploadImage, MessageWithdrawnError } from '../im/lark/client.js';
 import { buildStreamingCard, buildPrivateSnapshotCard, buildSessionCard, buildTuiPromptCard, buildTuiPromptResolvedCard, buildRelayedFrozenCard, getCliDisplayName } from '../im/lark/card-builder.js';
 import { loadFrozenCards, saveFrozenCards } from '../services/frozen-card-store.js';
@@ -2524,6 +2524,11 @@ function setupWorkerHandlers(ds: DaemonSession, worker: ChildProcess): void {
       }
 
       case 'progress_output': {
+        // 普通群进度必须有可核验的话题归属；未知轮次保留日志，不能退化为群广播。
+        if (ds.scope === 'chat' && resolveSessionReplyTarget(ds, msg.turnId).mode !== 'thread') {
+          logger.warn(`[${t}] Progress withheld: no thread owner for turn ${msg.turnId.substring(0, 8)}`);
+          break;
+        }
         let rawProgress = msg.content;
         if (ds.session.agentTeam?.role === 'worker') {
           if (msg.kind === 'heartbeat' || msg.kind === 'activity') {

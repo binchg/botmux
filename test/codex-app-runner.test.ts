@@ -17,25 +17,26 @@ describe('codex-app runner steering', () => {
     expect(source).toContain('queuePendingSteersAsNextTurns(turn)');
   });
 
-  it('ticks progress independently from app-server delta arrival', () => {
-    expect(source).toContain('const PROGRESS_TICK_MS = 250');
-    expect(source).toContain('turn.progressTimer = setInterval');
-    expect(source).toContain('clearInterval(turn.progressTimer)');
+  it('完整 assistant 消息才投递，不按定时器逐句发卡', () => {
+    expect(source).not.toContain('turn.progressTimer = setInterval');
+    expect(source).not.toContain('maybeEmitProgress(');
+    expect(source).toContain('turn.emittedProgressItemIds.has(itemId)');
   });
 
   it('marks completed commentary and flushes delta-backed Markdown tails', () => {
     const progressEmitter = source.slice(
-      source.indexOf('function maybeEmitProgress'),
+      source.indexOf('function emitCompletedAssistantMessage'),
       source.indexOf('function userContent'),
     );
-    expect(progressEmitter).toContain("emitMarker('progress', { ...snapshot, complete: force })");
+    expect(progressEmitter).toContain("emitMarker('progress', {");
+    expect(progressEmitter).toContain('complete: true');
 
     const completedHandler = source.slice(
       source.indexOf("if (msg.method === 'item/completed')"),
       source.indexOf("if (msg.method === 'turn/completed')"),
     );
-    expect(completedHandler).toContain('maybeEmitProgress(activeTurn, true)');
-    expect(completedHandler.indexOf('maybeEmitProgress(activeTurn, true)'))
+    expect(completedHandler).toContain('emitCompletedAssistantMessage(activeTurn, itemId, completedText)');
+    expect(completedHandler.indexOf('emitCompletedAssistantMessage(activeTurn, itemId, completedText)'))
       .toBeGreaterThan(completedHandler.indexOf("activeTurn.allAgentText += String(item.text)"));
   });
 
@@ -48,7 +49,7 @@ describe('codex-app runner steering', () => {
   });
 
   it('starts a new progress epoch when busy follow-up guidance arrives', () => {
-    expect(source).toContain('activeTurn.progress.resetTo()');
+    expect(source).toContain('activeTurn.guidanceEpoch += 1');
   });
 
   it('reopens progress when guidance races with a completed final answer item', () => {
@@ -112,9 +113,8 @@ describe('codex-app runner steering', () => {
   it('buffers Team items and forwards only completed non-machine commentary', () => {
     expect(source).toContain('structuredOutput: boolean');
     expect(source).toContain('const turn = makeTurn(!!outputSchema)');
-    expect(source).toContain('if (turn.structuredOutput) return');
     expect(source).toContain('if (!activeTurn.structuredOutput) process.stdout.write(delta)');
-    expect(source).toContain('emitCompletedStructuredMessage(activeTurn, itemId, completedText)');
+    expect(source).toContain('emitCompletedAssistantMessage(activeTurn, itemId, completedText)');
     expect(source).toContain('isAgentTeamMachineOutput(text)');
     expect(source).toContain('complete: true');
   });
