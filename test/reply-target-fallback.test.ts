@@ -13,7 +13,7 @@
  * Run:  pnpm vitest run test/reply-target-fallback.test.ts
  */
 import { describe, it, expect } from 'vitest';
-import { fallbackTurnId, resolveSessionReplyTarget } from '../src/core/reply-target.js';
+import { beginReplyTargetTurn, fallbackTurnId, resolveSessionReplyTarget } from '../src/core/reply-target.js';
 import type { DaemonSession } from '../src/core/types.js';
 
 const NOW = new Date().toISOString();
@@ -93,5 +93,17 @@ describe('fallbackTurnId × resolveSessionReplyTarget (the leak fix)', () => {
     const ds = makeDs();
     const target = resolveSessionReplyTarget(ds, fallbackTurnId(ds as DaemonSession, undefined));
     expect(target).toEqual({ mode: 'plain', chatId: 'oc_chat' });
+  });
+});
+
+// 追加消息改变当前目标后，已知旧轮次的结果仍回原话题。
+describe('按轮次保留回复目标', () => {
+  it('两个话题追加不串线，未知轮次不借用任一旧目标', () => {
+    const ds = makeDs() as DaemonSession;
+    beginReplyTargetTurn(ds, 'om_first', 'turn-first');
+    beginReplyTargetTurn(ds, 'om_second', 'turn-second');
+    expect(resolveSessionReplyTarget(ds, 'turn-first')).toEqual({ mode: 'thread', rootMessageId: 'om_first' });
+    expect(resolveSessionReplyTarget(ds, 'turn-second')).toEqual({ mode: 'thread', rootMessageId: 'om_second' });
+    expect(resolveSessionReplyTarget(ds, 'turn-unknown')).toEqual({ mode: 'plain', chatId: 'oc_chat' });
   });
 });

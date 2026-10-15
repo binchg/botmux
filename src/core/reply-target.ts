@@ -11,6 +11,8 @@ export function resolveSessionReplyTarget(
 ): SessionReplyTarget {
   const target = ds.currentReplyTarget ?? ds.session.currentReplyTarget;
   if (ds.scope === 'chat') {
+    const savedRoot = turnId ? ds.session.replyTargetsByTurn?.[turnId] : undefined;
+    if (savedRoot) return { mode: 'thread', rootMessageId: savedRoot };
     if (target?.rootMessageId && !!turnId && target.turnId === turnId) {
       return { mode: 'thread', rootMessageId: target.rootMessageId };
     }
@@ -47,6 +49,11 @@ export function beginReplyTargetTurn(
 ): void {
   if (ds.scope !== 'chat') return;
   if (replyRootId) {
+    const targets = { ...ds.session.replyTargetsByTurn };
+    const previous = ds.currentReplyTarget ?? ds.session.currentReplyTarget;
+    if (previous) targets[previous.turnId] = previous.rootMessageId;
+    targets[turnId] = replyRootId;
+    ds.session.replyTargetsByTurn = Object.fromEntries(Object.entries(targets).slice(-64));
     const aliases = { ...(ds.replyThreadAliases ?? ds.session.replyThreadAliases ?? {}) };
     aliases[replyRootId] = {
       createdAt: aliases[replyRootId]?.createdAt ?? nowIso,

@@ -22,6 +22,7 @@ import { updateMessage, deleteMessage, sendEphemeralCard, sendUserMessage, addRe
 import { buildStreamingCard, buildPrivateSnapshotCard, buildSessionCard, buildTuiPromptCard, buildTuiPromptResolvedCard, buildRelayedFrozenCard, getCliDisplayName } from '../im/lark/card-builder.js';
 import { loadFrozenCards, saveFrozenCards } from '../services/frozen-card-store.js';
 import { logger } from '../utils/logger.js';
+import { deliverRegularGroupFinal } from '../services/regular-group-final.js';
 import { createCliAdapterSync } from '../adapters/cli/registry.js';
 import { botLocale, localeForBot, t as tr } from '../i18n/index.js';
 import { claudeJsonlPathForSession } from '../adapters/cli/claude-code.js';
@@ -2908,7 +2909,9 @@ function deliverFinalOutput(
       // Always deliver the answer as a fresh message — never PATCH a card in
       // place. message.patch is silent (no Feishu notification / unread), which
       // used to swallow the answer; a brand-new message always pings.
-      await scopedReply(delivery.cardJson, 'interactive', msg.turnId);
+      if (!await deliverRegularGroupFinal(ds, msg.turnId, delivery.cardJson)) {
+        await scopedReply(delivery.cardJson, 'interactive', msg.turnId);
+      }
       ds.lastBridgeEmittedUuid = msg.lastUuid;
       logger.info(`[${t}] ${teamDelivery ? 'Agent Team short card' : 'Bridge final_output'} forwarded (turn ${msg.turnId.substring(0, 8)}, ${delivery.outwardContentLength} chars, kind=${msg.kind ?? 'bridge'}, attempt ${attempt + 1})`);
     } catch (err: any) {

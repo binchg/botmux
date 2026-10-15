@@ -2297,6 +2297,30 @@ describe('im.message.receive_v1 — regular group reply mode (tri-state: chat | 
     startLarkEventDispatcher(MY_APP_ID, 'secret', handlers);
   });
 
+  it.each([['om_mirror', 'om_original'], ['om_original', 'om_mirror']])('同步到群两份推送只注入一次，顺序 %s → %s', async (first, second) => {
+    __resetEventClaimsForTest();
+    setupBotState({ regularGroupReplyMode: 'shared', regularGroupMentionMode: 'never', allowedUsers: [USER_OPEN_ID] });
+    handlers.isSessionOwner.mockReturnValue(true);
+    const detail: Record<string, any> = {
+      om_original: { message_id: 'om_original', chat_id: 'chat-sync', root_id: 'om_original_root', thread_id: 'omt_sync',
+        sync_to_chat_info: { type: 2, related_message_id: 'om_mirror' } },
+      om_mirror: { message_id: 'om_mirror', chat_id: 'chat-sync',
+        sync_to_chat_info: { type: 1, related_message_id: 'om_original', thread_id: 'omt_sync' } },
+    };
+    mockGetMessageDetail.mockImplementation(async (_app: string, id: string) => ({ items: [detail[id]] }));
+    for (const id of [first, second]) {
+      const event = makeUserMessageEvent({ senderOpenId: USER_OPEN_ID, content: JSON.stringify({ text: '继续任务' }),
+        messageId: id, chatId: 'chat-sync', rootId: detail[id].root_id, threadId: detail[id].thread_id });
+      await capturedHandlers['im.message.receive_v1'](event);
+    }
+    await flushEventWork();
+    const calls = [...handlers.handleNewTopic.mock.calls, ...handlers.handleThreadReply.mock.calls];
+    expect(calls).toHaveLength(1);
+    expect(calls[0][0].message.message_id).toBe('om_original');
+    expect(calls[0][1]).toEqual(expect.objectContaining({ scope: 'chat', anchor: 'chat-sync', replyRootId: 'om_original_root' }));
+    mockGetMessageDetail.mockImplementation(async () => ({ items: [] }));
+  });
+
   it('per-chat new-topic forks a thread-scope session even when the per-bot default is off', async () => {
     setupBotState({ chatReplyModes: { 'chat-tri-newtopic': 'new-topic' }, allowedUsers: [USER_OPEN_ID] });
     handlers.isSessionOwner.mockReturnValue(false);

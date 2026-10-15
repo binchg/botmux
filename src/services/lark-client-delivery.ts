@@ -2,6 +2,7 @@
 import { privateCardContent } from '../im/lark/outbound-privacy.js';
 import type { LarkReplyOutbox, OutboundRequest } from './lark-reply-outbox.js';
 import { assertSessionReplyAllowed, peerHandoffContent } from './session-reply-policy.js';
+import { repairThreadReply } from '../im/lark/thread-sync.js';
 
 const protectedClients = new WeakSet<object>();
 
@@ -23,6 +24,17 @@ export function protectLarkClientDelivery(client: any, outbox: LarkReplyOutbox, 
       const request: OutboundRequest = { method, url: '/open-apis/im/v1/messages' + suffix,
         data: { ...body, content: privateCardContent(larkAppId
           ? peerHandoffContent(body.content, payload.path?.message_id, larkAppId) : body.content) }, params: payload.params };
+      if (typeof methods.get === 'function') {
+        await repairThreadReply(request, async id => {
+          const result = await methods.get({ path: { message_id: id } });
+          if (result.code !== 0) throw new Error('Thread reply target lookup failed');
+          return result.data;
+        });
+        if (request.url !== '/open-apis/im/v1/messages' + suffix) {
+          payload = { ...payload, path: { ...payload.path, message_id: request.url!.split('/').at(-2) } };
+        }
+      }
+      if (larkAppId) assertSessionReplyAllowed(request, larkAppId);
       outbox.prepare(request);
       try {
         const result = await original({ ...payload, data: request.data }, ...options);

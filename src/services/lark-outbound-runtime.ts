@@ -8,6 +8,7 @@ import { LarkReplyOutbox } from './lark-reply-outbox.js';
 import { protectLarkClientDelivery } from './lark-client-delivery.js';
 import { assertSessionReplyAllowed } from './session-reply-policy.js';
 import { registerSessionHandoffApi } from '../core/session-handoff-api.js';
+import { repairThreadReply } from '../im/lark/thread-sync.js';
 
 /** 在注册机器人前准备队列；首次后台补发晚于同步注册，不阻塞 daemon 启动。 */
 export function startLarkOutboundDelivery(botIndex: number): { outbox: LarkReplyOutbox; protectClient: () => void } | undefined {
@@ -19,7 +20,16 @@ export function startLarkOutboundDelivery(botIndex: number): { outbox: LarkReply
   let outbox: LarkReplyOutbox;
   try {
     outbox = new LarkReplyOutbox(join(config.session.dataDir, 'reply-outbox', bot.larkAppId),
-      request => getBotClient(bot.larkAppId).request(request as any), Date.now, message => logger.info(message));
+      async request => {
+        const client = getBotClient(bot.larkAppId);
+        await repairThreadReply(request, async id => {
+          const result = await client.im.v1.message.get({ path: { message_id: id } });
+          if (result.code !== 0) throw new Error('Thread reply target lookup failed');
+          return result.data ?? {};
+        });
+        assertSessionReplyAllowed(request, bot.larkAppId);
+        return client.request(request as any);
+      }, Date.now, message => logger.info(message));
   } catch {
     // 持久目录故障只降低补发能力，不阻止后台任务和即时回复启动。
     installLarkOutboundPrivacy(undefined, undefined, deliveryGuard);

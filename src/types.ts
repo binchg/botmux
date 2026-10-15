@@ -90,6 +90,8 @@ export interface Session {
    * topic target from being confused with a later group-top-level turn.
    */
   currentReplyTarget?: { rootMessageId: string; turnId: string; updatedAt: string };
+  /** 保留有界的已知轮次落点，接收追加消息后旧轮次的结果仍返回原话题。 */
+  replyTargetsByTurn?: { [turnId: string]: string };
   /**
    * 文档评论入口（/subscribe-lark-doc）：当本会话「当前这一轮」由飞书文档评论
    * 触发时，`botmux send` 的用户可见回复要回到该文档评论（而非飞书）。因 botmux

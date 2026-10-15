@@ -556,6 +556,8 @@ export interface BotConfig {
    *   • 'shared'              — replies fold into a topic but reuse the one chat-scope session
    */
   regularGroupReplyMode?: ChatReplyMode;
+  /** 普通群最终结果在原话题送达后同步一份到群，默认关闭。 */
+  regularGroupFinalToChat?: boolean;
   /**
    * Per-bot (bot-global) policy for when an @mention is required to get a reply
    * in regular Lark groups — a 4-tier ladder:
@@ -1200,6 +1202,7 @@ export function parseBotConfigsFromText(jsonText: string): BotConfig[] {
         const mode = normalizeChatReplyModeConfig(entry.regularGroupReplyMode);
         return mode === 'new-topic' || mode === 'shared' || mode === 'chat-topic' ? mode : undefined;
       })(),
+      regularGroupFinalToChat: entry.regularGroupFinalToChat === true || undefined,
       // 4-tier @ policy. Only 'topic' | 'never' | 'ambient' are meaningful;
       // 'always' (the default) and anything else normalize to undefined so
       // bots.json stays clean.

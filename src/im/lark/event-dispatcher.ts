@@ -9,7 +9,8 @@ import { atomicWriteFileSync } from '../../utils/atomic-write.js';
 import { join } from 'node:path';
 import { getBot, getAllBots, findOncallChat, getOwnerOpenId, type BotState } from '../../bot-registry.js';
 import { config } from '../../config.js';
-import { getChatInfo, getChatMode, getCachedChatMode, listChatBotMembers, replyMessage, sendMessage, sendUserMessage, isHumanOpenId, updateMessage } from './client.js';
+import { getChatInfo, getChatMode, getCachedChatMode, getMessageDetail, listChatBotMembers, replyMessage, sendMessage, sendUserMessage, isHumanOpenId, updateMessage } from './client.js';
+import { canonicalThreadMessage, syncedMessageKey } from './thread-sync.js';
 import { logger } from '../../utils/logger.js';
 import { BoundedMap } from '../../utils/bounded-map.js';
 import { serializeByAnchor } from '../../utils/anchor-serializer.js';
@@ -1299,7 +1300,7 @@ async function maybeApplySharedTopicSeed(input: {
   routing.scope = 'chat';
   routing.anchor = chatId;
   logger.info(`[reply-mode] shared turn msg=${messageId.substring(0, 12)} routes through chat=${chatId.substring(0, 12)}`);
-  return messageId;
+  return message.thread_id ? (message.root_id ?? messageId) : messageId;
 }
 
 async function maybeFoldMentionedRegularGroupThreadToChat(input: {
@@ -1631,9 +1632,18 @@ export function startLarkEventDispatcher(larkAppId: string, larkAppSecret: strin
         : () => claimEventOnce(eventKey);
       scheduleAckSafeEvent(eventKey, async () => {
       try {
-        const message = data.message;
+        let message = data.message;
         const sender = data.sender;
         if (!message) return;
+
+        // 群副本和话题原消息分别推送；ACK 后归一，不能覆盖正确的话题锚点或重复注入。
+        if (message.chat_type !== 'p2p') {
+          message = await canonicalThreadMessage(message,
+            id => getMessageDetail(larkAppId, id, { userCardContent: false }));
+          const syncKey = syncedMessageKey(message);
+          if (syncKey && !claimMessageOnce(larkAppId, syncKey)) return;
+          data = { ...data, message };
+        }
 
         // Close the open_id startup race: probeBotOpenId is fire-and-forget at
         // startup, so an @ arriving in that window would hit isBotMentioned with
