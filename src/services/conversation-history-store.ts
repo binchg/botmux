@@ -14,7 +14,7 @@ const SESSION_RE = /^[A-Za-z0-9_-]{1,100}$/;
 
 export interface HistoryMessage {
   id: string;
-  kind: 'user' | 'assistant_final';
+  kind: 'user' | 'assistant_final' | 'assistant_progress';
   content: string;
   at: number;
 }
@@ -80,20 +80,21 @@ export function ensureConversationHistory(session: Session, dataDir = config.ses
   return value;
 }
 
-/** 只记录输入与最终回复；新的输入续期，进度、重复事件、最终回复均不续期。 */
+/** 保存全部可见输入与回复；仅新的输入续期，进度和最终回复不续期。 */
 export function recordConversationHistory(
   session: Session,
   input: { kind: string; content: string; at: number; id?: string; turnId?: string },
   dataDir = config.session.dataDir,
 ): void {
-  if (input.kind !== 'user' && input.kind !== 'assistant_final') return;
+  if (!['user', 'assistant_final', 'assistant_progress'].includes(input.kind)) return;
   if (terminalAccessEnabled(dataDir, session.sessionId)) return;
-  const content = visibleHistoryText(input.content, input.kind);
+  const kind = input.kind as HistoryMessage['kind'];
+  const content = visibleHistoryText(input.content, kind);
   if (!content || !Number.isFinite(input.at)) return;
   const value = ensureConversationHistory(session, dataDir, input.at);
   const id = input.id ?? createHash('sha256').update(`${input.kind}:${input.turnId ?? input.at}:${content}`).digest('hex');
   if (value.messages.some(message => message.id === id)) return;
-  value.messages.push({ id, kind: input.kind, content, at: input.at });
+  value.messages.push({ id, kind, content, at: input.at });
   if (input.kind === 'user') value.expiresAt = Math.max(value.expiresAt, input.at + HISTORY_TTL_MS);
   save(join(dataDir, 'conversation-history', `${value.token}.json`), value);
 }

@@ -1,5 +1,7 @@
 /** 为已有会话补读用户输入和最终回复；不读取工具输出、推理或开发者上下文。 */
 import { createReadStream } from 'node:fs';
+import { config } from '../config.js';
+import { historyLineage } from './conversation-history-lineage.js';
 import { resolveSessionTranscriptPath } from './transcript-resolver.js';
 import { visibleHistoryText, type ConversationHistory, type HistoryMessage } from './conversation-history-store.js';
 
@@ -20,7 +22,8 @@ export function parseHistoryRecord(record: any, sourceKind: string): HistoryMess
     if (record?.type !== 'response_item' || message?.type !== 'message') return;
     if (message.channel === 'analysis') return;
     if (message.role === 'user') kind = 'user';
-    else if (message.role === 'assistant' && message.phase === 'final_answer') kind = 'assistant_final';
+    else if (message.role === 'assistant' && (message.phase === 'final_answer' || message.channel === 'final')) kind = 'assistant_final';
+    else if (message.role === 'assistant' && (message.phase === 'commentary' || message.channel === 'commentary')) kind = 'assistant_progress';
     else return;
     text = textBlocks(message.content);
   } else if (sourceKind === 'claude') {
@@ -37,15 +40,20 @@ export function parseHistoryRecord(record: any, sourceKind: string): HistoryMess
 }
 
 /** 流式补读历史，避免把包含大量工具输出的整个 rollout 一次装入内存。 */
-export async function readHistoryMessages(history: ConversationHistory): Promise<HistoryMessage[]> {
-  const cliId = history.source.cliId === 'codex-app' ? 'codex' : history.source.cliId;
-  const source = resolveSessionTranscriptPath({ ...history.source, cliId,
-    sessionId: history.sessionId, cwd: history.source.workingDir, fresh: true });
+export async function readHistoryBundle(history: ConversationHistory, dataDir = config.session.dataDir) {
+  const sessions = historyLineage(history, dataDir);
   const old: HistoryMessage[] = [];
-  if (source && ['codex', 'claude', 'traex'].includes(source.kind)) {
+  const paths = new Set<string>();
+  let unavailableSources = 0;
+  let bytes = 0;
+  for (const session of sessions) {
+    const cliId = session.cliId === 'codex-app' ? 'codex' : session.cliId;
+    const source = resolveSessionTranscriptPath({ ...session, cliId, cwd: session.workingDir, fresh: true });
+    if (!source || !['codex', 'claude', 'traex'].includes(source.kind)) { unavailableSources++; continue; }
+    if (paths.has(source.path)) continue;
+    paths.add(source.path);
     const stream = createReadStream(source.path, { encoding: 'utf8', highWaterMark: 64 * 1024 });
     let pending = '';
-    let bytes = 0;
     try {
       for await (const chunk of stream) {
         pending += chunk;
@@ -73,5 +81,10 @@ export async function readHistoryMessages(history: ConversationHistory): Promise
     if (count) remaining.set(key(message), count - 1);
     else old.push(message);
   }
-  return old.sort((a, b) => a.at - b.at);
+  return { messages: old.sort((a, b) => a.at - b.at), sourceCount: paths.size, unavailableSources };
+}
+
+/** 兼容只需消息数组的内部调用。 */
+export async function readHistoryMessages(history: ConversationHistory, dataDir = config.session.dataDir): Promise<HistoryMessage[]> {
+  return (await readHistoryBundle(history, dataDir)).messages;
 }

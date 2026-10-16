@@ -2,7 +2,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { config } from '../config.js';
 import { readConversationHistory } from './conversation-history-store.js';
-import { readHistoryMessages } from './conversation-history-reader.js';
+import { readHistoryBundle } from './conversation-history-reader.js';
 import { renderConversationHistory } from './conversation-history-page.js';
 import { terminalAccessEnabled } from './terminal-access.js';
 
@@ -50,8 +50,8 @@ export async function handleConversationHistoryRequest(
   }
   if (req.method === 'HEAD') { finish(200, '', expiry); return true; }
   try {
-    const messages = await readHistoryMessages(history);
-    const page = renderConversationHistory(history, messages);
+    const bundle = await readHistoryBundle(history, opts.dataDir ?? config.session.dataDir);
+    const page = renderConversationHistory(history, bundle.messages, bundle);
     finish(200, page.html, { ...expiry, 'content-security-policy': `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${page.nonce}'; base-uri 'none'; frame-ancestors 'none'` });
   } catch { finish(503, '暂时无法读取完整对话历史，请稍后重试。'); }
   return true;

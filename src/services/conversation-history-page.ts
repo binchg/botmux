@@ -21,8 +21,8 @@ export function escapeHistoryHtml(value: string): string {
   return value.replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]!));
 }
 
-/** 历史页面展示用户输入和最终回复，禁止加载正文提供的远程图片或本地文件。 */
-export function renderConversationHistory(history: ConversationHistory, messages: HistoryMessage[]): { html: string; nonce: string } {
+/** 历史页面展示用户输入、阶段回复和最终回复，禁止加载正文提供的远程图片或本地文件。 */
+export function renderConversationHistory(history: ConversationHistory, messages: HistoryMessage[], coverage?: { sourceCount: number; unavailableSources: number }): { html: string; nonce: string } {
   const md = new MarkdownIt({ html: false, linkify: true });
   md.renderer.rules.image = (tokens, index) => escapeHistoryHtml(`[图片：${tokens[index].content || '附件'}]`);
   md.renderer.rules.link_open = (tokens, index, options, _env, renderer) => {
@@ -35,8 +35,10 @@ export function renderConversationHistory(history: ConversationHistory, messages
   const formatTime = (at: number) => new Date(at).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false });
   const body = messages.map(message => message.kind === 'user'
     ? `<h3>输入 · ${formatTime(message.at)}</h3>${md.render(message.content)}`
-    : `<blockquote><p>当轮最后回复 · ${formatTime(message.at)}</p>${md.render(message.content)}</blockquote>`).join('\n');
+    : `<blockquote><p>${message.kind === 'assistant_progress' ? '阶段回复' : '当轮最后回复'} · ${formatTime(message.at)}</p>${md.render(message.content)}</blockquote>`).join('\n');
+  const coverageText = `${messages.filter(item => item.kind === 'user').length} 条输入 · ${messages.filter(item => item.kind !== 'user').length} 条回复${coverage ? ` · ${coverage.sourceCount} 段关联会话` : ''}${messages.length ? ` · 起于 ${formatTime(messages[0].at)}` : ''}`;
+  const missing = coverage?.unavailableSources ? `<p>有 ${coverage.unavailableSources} 段会话的原始记录暂不可读，当前展示已恢复内容。</p>` : '';
   const title = escapeHistoryHtml(scrubSecrets(history.title || '对话历史'));
   const nonce = randomBytes(16).toString('base64url');
-  return { nonce, html: `<!doctype html><html lang="zh-CN" data-theme="light"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><style>${css}</style></head><body><main><header><div><h1>${title}</h1><p>有效期至 ${formatTime(history.expiresAt)} · 北京时间 · 新追问后续期一天</p></div><button id="theme" type="button" aria-label="切换深浅色">深色</button></header><article>${body || '<p>当前会话暂无已记录的输入或最终回复。</p>'}</article><footer>会话历史摘录 · 蓝色为输入，绿色为当轮最后回复。</footer></main><script nonce="${nonce}">(()=>{const r=document.documentElement,b=document.getElementById('theme');try{r.dataset.theme=localStorage.getItem('secure-md-theme')==='dark'?'dark':'light'}catch{}const s=()=>b.textContent=r.dataset.theme==='dark'?'浅色':'深色';b.onclick=()=>{r.dataset.theme=r.dataset.theme==='dark'?'light':'dark';try{localStorage.setItem('secure-md-theme',r.dataset.theme)}catch{}s()};s()})()</script></body></html>` };
+  return { nonce, html: `<!doctype html><html lang="zh-CN" data-theme="light"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><style>${css}</style></head><body><main><header><div><h1>${title}</h1><p>有效期至 ${formatTime(history.expiresAt)} · 北京时间 · 新追问后续期一天</p><p>${coverageText}</p>${missing}</div><button id="theme" type="button" aria-label="切换深浅色">深色</button></header><article>${body || '<p>当前会话暂无已记录的输入或回复。</p>'}</article><footer>对话历史 · 蓝色为输入，绿色为阶段及最终回复；按明确引用关联旧会话。</footer></main><script nonce="${nonce}">(()=>{const r=document.documentElement,b=document.getElementById('theme');try{r.dataset.theme=localStorage.getItem('secure-md-theme')==='dark'?'dark':'light'}catch{}const s=()=>b.textContent=r.dataset.theme==='dark'?'浅色':'深色';b.onclick=()=>{r.dataset.theme=r.dataset.theme==='dark'?'light':'dark';try{localStorage.setItem('secure-md-theme',r.dataset.theme)}catch{}s()};s()})()</script></body></html>` };
 }

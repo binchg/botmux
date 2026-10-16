@@ -86,7 +86,7 @@ describe('conversation history', () => {
     const current = ensureConversationHistory(session, dir, now + 10_800_000);
     expect(current.token).toBe(first.token);
     expect(current.expiresAt).toBe(expiry);
-    expect(current.messages.map(item => item.kind)).toEqual(['user', 'assistant_final']);
+    expect(current.messages.map(item => item.kind)).toEqual(['user', 'assistant_final', 'assistant_progress']);
   });
 
   it('过期返回410，新追问恢复同一链接，HEAD与GET都不续期', async () => {
@@ -114,12 +114,12 @@ describe('conversation history', () => {
     expect((await request(dir, `/conversation/${a.token}`, now, 'POST')).status).toBe(405);
   });
 
-  it('排除启动规则、工具、推理与中途消息，只提取真实用户信封及最终答复', () => {
+  it('排除启动规则、工具与推理，保留真实用户信封及全部可见答复', () => {
     const base = { type: 'response_item', timestamp: new Date(now).toISOString() };
     const record = (payload: unknown) => ({ ...base, payload });
     expect(parseHistoryRecord(record({ type: 'function_call_output', output: 'SECRET' }), 'codex')).toBeUndefined();
     expect(parseHistoryRecord(record({ type: 'message', role: 'developer', content: 'SECRET' }), 'codex')).toBeUndefined();
-    expect(parseHistoryRecord(record({ type: 'message', role: 'assistant', phase: 'commentary', content: '进展' }), 'codex')).toBeUndefined();
+    expect(parseHistoryRecord(record({ type: 'message', role: 'assistant', phase: 'commentary', content: '进展' }), 'codex')?.kind).toBe('assistant_progress');
     expect(visibleHistoryText('# AGENTS.md instructions for /private', 'user')).toBe('');
     const user = parseHistoryRecord(record({ type: 'message', role: 'user', content: [
       { type: 'input_text', text: '<botmux_reminder>内部</botmux_reminder><user_message>继续测试</user_message><sender id="private" />' },
