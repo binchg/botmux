@@ -50,6 +50,7 @@ import { GITHUB_REPO } from './core/restart-report.js';
 import { spawnDetachedRestart, npmGlobalUpdateLockTarget } from './core/maintenance.js';
 import { writeRestartIntent } from './services/restart-intent-store.js';
 import { handleLocalFileShareRequest } from './services/local-file-share.js';
+import { handleConversationHistoryRequest } from './services/conversation-history-http.js';
 import { withFileLock } from './utils/file-lock.js';
 import { execFileSync, spawn } from 'node:child_process';
 import {
@@ -1029,6 +1030,7 @@ const server = createServer(async (req, res) => {
     // filesystem path: only a 256-bit token created when botmux actually sends
     // a local-file markdown link can resolve a single allow-root-contained file.
     if (handleLocalFileShareRequest(req, res, url, { dataDir: config.session.dataDir })) return;
+    if (await handleConversationHistoryRequest(req, res, url)) return;
 
     // Web terminal reverse-proxy: `/s/<sessionId>/*` → the owning bot daemon's
     // terminal proxy. The central platform only tunnels the dashboard port, so

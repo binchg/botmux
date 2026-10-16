@@ -9,6 +9,7 @@ import { t, type Locale } from '../../i18n/index.js';
 import { localTerminalCapable } from '../../core/local-terminal-opener.js';
 import { readGlobalConfig } from '../../global-config.js';
 import type { ConfigCardData } from '../../services/bot-config-store.js';
+import { conversationHistoryButtons } from './conversation-history-button.js';
 
 /** select_static 里代表「清回默认 / 未设置」的哨兵值（model / lang 下拉用）。 */
 export const CONFIG_UNSET = '__unset__';
@@ -292,6 +293,7 @@ export function buildSessionCard(
       type: 'primary',
       multi_url: terminalMultiUrl(terminalUrl),
     },
+    ...conversationHistoryButtons(sessionId, locale),
     ...openLocalTerminalButtons(actionBase, cliName, locale),
   ];
   if (!showManageButtons) {
@@ -738,6 +740,7 @@ export function buildStreamingCard(
     multi_url: terminalMultiUrl(terminalUrl),
   });
   headerActions.push(...openLocalTerminalButtons(actionBase, cliName, locale));
+  headerActions.push(...conversationHistoryButtons(sessionId, locale));
   if (status === 'limited' && usageLimit?.retryReady) {
     headerActions.push({
       tag: 'button',
@@ -902,6 +905,7 @@ export function buildPrivateSnapshotCard(
         type: 'primary',
         multi_url: terminalMultiUrl(terminalUrl),
       },
+      ...conversationHistoryButtons(sessionId, locale),
       ...openLocalTerminalButtons(actionBase, cliName, locale),
       {
         tag: 'button',

@@ -1,4 +1,6 @@
 import type { DaemonSession, SessionLiveEvent } from './types.js';
+import { recordConversationHistory } from '../services/conversation-history-store.js';
+import { logger } from '../utils/logger.js';
 
 const MAX_LIVE_EVENTS = 80;
 const MAX_LIVE_EVENT_CHARS = 4_000;
@@ -16,6 +18,9 @@ export function appendSessionLiveEvent(
   ds: DaemonSession,
   input: Omit<SessionLiveEvent, 'id' | 'content'> & { id?: string; content: string },
 ): SessionLiveEvent[] {
+  // 保存原始可见正文，不能复用仪表盘的 4000 字压缩预览。
+  try { recordConversationHistory(ds.session, input); }
+  catch { logger.warn('Conversation history could not be persisted'); }
   const content = compactLiveEventContent(input.content);
   if (!content) return ds.liveEvents ?? [];
   const event: SessionLiveEvent = {
