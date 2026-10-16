@@ -56,6 +56,7 @@ describe('conversation history', () => {
   it('新会话卡和追问流式卡都给出同一直接跳转链接，重绘不续期', () => {
     const dir = storage();
     vi.stubEnv('SESSION_DATA_DIR', dir);
+    vi.stubEnv('BOTMUX_FILE_SHARE_BASE_URL', 'https://files-only.invalid');
     vi.spyOn(sessionStore, 'getSession').mockReturnValue(session);
     const a = JSON.parse(buildSessionCard(session.sessionId, 'root', 'http://localhost/terminal', '测试'));
     const expiry = ensureConversationHistory(session, dir).expiresAt;
@@ -67,6 +68,7 @@ describe('conversation history', () => {
     };
     const first = findButton(a);
     expect(first.multi_url.url).toMatch(/\/conversation\/[A-Za-z0-9_-]{43}$/);
+    expect(first.multi_url.url).not.toContain('files-only.invalid');
     expect(first.value).toBeUndefined();
     expect(findButton(b).multi_url.url).toBe(first.multi_url.url);
     expect(ensureConversationHistory(session, dir).expiresAt).toBe(expiry);
