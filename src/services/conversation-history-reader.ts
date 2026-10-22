@@ -1,9 +1,10 @@
 /** 为已有会话补读用户输入和最终回复；不读取工具输出、推理或开发者上下文。 */
-import { createReadStream } from 'node:fs';
+import { statSync } from 'node:fs';
 import { config } from '../config.js';
 import { historyLineage } from './conversation-history-lineage.js';
 import { resolveSessionTranscriptPath } from './transcript-resolver.js';
 import { visibleHistoryText, type ConversationHistory, type HistoryMessage } from './conversation-history-store.js';
+import { readCachedHistoryTranscript } from './conversation-history-transcript-cache.js';
 
 /** 提取文本块，明确拒绝 tool_result 等复合内容。 */
 function textBlocks(content: unknown): string {
@@ -39,38 +40,33 @@ export function parseHistoryRecord(record: any, sourceKind: string): HistoryMess
   return { id: String(record.uuid ?? `${at}:${kind}`), kind, content, at };
 }
 
-/** 流式补读历史，避免把包含大量工具输出的整个 rollout 一次装入内存。 */
-export async function readHistoryBundle(history: ConversationHistory, dataDir = config.session.dataDir) {
+/** 每次重验关联关系、私密保护和文件身份，使页面缓存不会越过来源变化。 */
+export function historySources(history: ConversationHistory, dataDir: string) {
   const sessions = historyLineage(history, dataDir);
-  const old: HistoryMessage[] = [];
-  const paths = new Set<string>();
+  const sources = new Map<string, { path: string; kind: string; signature: string }>();
   let unavailableSources = 0;
-  let bytes = 0;
   for (const session of sessions) {
     const cliId = session.cliId === 'codex-app' ? 'codex' : session.cliId;
     const source = resolveSessionTranscriptPath({ ...session, cliId, cwd: session.workingDir, fresh: true });
     if (!source || !['codex', 'claude', 'traex'].includes(source.kind)) { unavailableSources++; continue; }
-    if (paths.has(source.path)) continue;
-    paths.add(source.path);
-    const stream = createReadStream(source.path, { encoding: 'utf8', highWaterMark: 64 * 1024 });
-    let pending = '';
     try {
-      for await (const chunk of stream) {
-        pending += chunk;
-        const rows = pending.split('\n');
-        pending = rows.pop()!;
-        if (pending.length > 8 * 1024 * 1024) throw new Error('conversation_history_line_too_large');
-        for (const line of rows) {
-          let value: any;
-          try { value = JSON.parse(line); } catch { continue; }
-          const message = parseHistoryRecord(value, source.kind);
-          if (!message) continue;
-          bytes += Buffer.byteLength(message.content);
-          if (bytes > 8 * 1024 * 1024) throw new Error('conversation_history_too_large');
-          old.push(message);
-        }
-      }
-    } finally { stream.destroy(); }
+      const stat = statSync(source.path);
+      sources.set(source.path, { ...source, signature: `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}` });
+    } catch { unavailableSources++; }
+  }
+  return { sources: [...sources.values()], unavailableSources };
+}
+
+/** 复用历史文件的可见正文缓存，只有追加部分重新解析，保持原来的去重语义。 */
+export async function readHistoryBundle(history: ConversationHistory, dataDir = config.session.dataDir,
+  snapshot = historySources(history, dataDir)) {
+  const old: HistoryMessage[] = [];
+  let bytes = 0;
+  for (const source of snapshot.sources) {
+    const messages = await readCachedHistoryTranscript(source.path, source.kind, parseHistoryRecord);
+    bytes += messages.reduce((sum, item) => sum + Buffer.byteLength(item.content), 0);
+    if (bytes > 8 * 1024 * 1024) throw new Error('conversation_history_too_large');
+    old.push(...messages);
   }
   // 两路只按正文出现次数去重，保留用户重复追问及尚未写入 transcript 的新消息。
   const remaining = new Map<string, number>();
@@ -81,7 +77,8 @@ export async function readHistoryBundle(history: ConversationHistory, dataDir = 
     if (count) remaining.set(key(message), count - 1);
     else old.push(message);
   }
-  return { messages: old.sort((a, b) => a.at - b.at), sourceCount: paths.size, unavailableSources };
+  return { messages: old.sort((a, b) => a.at - b.at), sourceCount: snapshot.sources.length,
+    unavailableSources: snapshot.unavailableSources };
 }
 
 /** 兼容只需消息数组的内部调用。 */
