@@ -1,7 +1,7 @@
-/** 一天有效的单会话历史页面；公开路由仅接受随机 token，不接受会话 ID 或文件路径。 */
+/** 七天有效的单会话历史页面；公开路由仅接受随机 token，不接受会话 ID 或文件路径。 */
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { config } from '../config.js';
-import { readConversationHistory } from './conversation-history-store.js';
+import { HISTORY_TTL_DAYS, readConversationHistory } from './conversation-history-store.js';
 import { cachedHistoryPage } from './conversation-history-page-cache.js';
 import { renderConversationHistory } from './conversation-history-page.js';
 import { terminalAccessEnabled } from './terminal-access.js';
@@ -35,7 +35,7 @@ export async function handleConversationHistoryRequest(
     finish(405, 'Method not allowed', { allow: 'GET, HEAD' }); return true;
   }
   if (url.pathname === '/conversation') {
-    finish(200, '<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Botmux 对话历史</title><h1>Botmux 对话历史</h1><p>请从飞书会话卡片的「对话历史」按钮打开对应记录。链接有效期为一天，新追问后续期。</p></html>'); return true;
+    finish(200, `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Botmux 对话历史</title><h1>Botmux 对话历史</h1><p>请从飞书会话卡片的「对话历史」按钮打开对应记录。链接有效期为 ${HISTORY_TTL_DAYS} 天，新追问后续期。</p></html>`); return true;
   }
   const token = url.pathname.slice('/conversation/'.length);
   if (!allowedRequest(`${req.socket.remoteAddress ?? 'unknown'}:${token}`, now)) {
@@ -49,7 +49,7 @@ export async function handleConversationHistoryRequest(
   }
   const expiry = { 'x-botmux-history-expires-at': new Date(history.expiresAt).toISOString() };
   if (history.expiresAt <= now) {
-    finish(410, '<h1>链接已过期</h1><p>在原会话发送新的追问后，有效期将刷新为一天。</p>', expiry); return true;
+    finish(410, `<h1>链接已过期</h1><p>在原会话发送新的追问后，有效期将刷新为 ${HISTORY_TTL_DAYS} 天。</p>`, expiry); return true;
   }
   if (req.method === 'HEAD') { finish(200, '', expiry); return true; }
   try {

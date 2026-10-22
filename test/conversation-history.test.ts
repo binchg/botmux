@@ -1,6 +1,6 @@
 /** 验证历史链接的续期、隔离、正文边界与过期路由，不使用真实会话内容。 */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -76,10 +76,11 @@ describe('conversation history', () => {
     expect(ensureConversationHistory(session, dir).expiresAt).toBe(expiry);
   });
 
-  it('首次一天，只有新输入续期，重复事件及卡片渲染不续期', () => {
+  it('首次七天，只有新输入续期，重复事件及卡片渲染不续期', () => {
     const dir = storage();
     const first = ensureConversationHistory(session, dir, now);
     expect(first.expiresAt).toBe(now + HISTORY_TTL_MS);
+    expect(first.expiresAt - now).toBe(7 * 24 * 60 * 60 * 1000);
     recordConversationHistory(session, { kind: 'user', content: '继续', id: 'u1', at: now + 3600_000 }, dir);
     const expiry = now + 3600_000 + HISTORY_TTL_MS;
     recordConversationHistory(session, { kind: 'assistant_final', content: '结果', id: 'a1', at: now + 7200_000 }, dir);
@@ -89,6 +90,22 @@ describe('conversation history', () => {
     expect(current.token).toBe(first.token);
     expect(current.expiresAt).toBe(expiry);
     expect(current.messages.map(item => item.kind)).toEqual(['user', 'assistant_final', 'assistant_progress']);
+  });
+
+  it('旧一天链接按原起算点顺延六天，反复读取和保存都不重复延长', async () => {
+    const dir = storage();
+    const grant = ensureConversationHistory(session, dir, now);
+    const day = 24 * 60 * 60 * 1000;
+    const legacy = { ...grant, expiresAt: now + day, ttlMs: undefined };
+    writeFileSync(join(dir, 'conversation-history', `${grant.token}.json`), JSON.stringify(legacy));
+    const path = `/conversation/${grant.token}`;
+    expect((await request(dir, path, now + 6 * day, 'HEAD')).status).toBe(200);
+    expect((await request(dir, path, now + 7 * day, 'HEAD')).status).toBe(410);
+    expect(readConversationHistory(grant.token, dir)!.expiresAt).toBe(now + 7 * day);
+    recordConversationHistory(session, { kind: 'assistant_final', content: '新回复不续期', at: now + 2 * day }, dir);
+    expect(readConversationHistory(grant.token, dir)!.expiresAt).toBe(now + 7 * day);
+    expect(readConversationHistory(grant.token, dir)!.ttlMs).toBe(7 * day);
+    expect(ensureConversationHistory(session, dir, now + 3 * day).expiresAt).toBe(now + 7 * day);
   });
 
   it('过期返回410，新追问恢复同一链接，HEAD与GET都不续期', async () => {

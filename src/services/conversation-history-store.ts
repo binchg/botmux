@@ -8,7 +8,9 @@ import { scrubSecrets } from './insight/scrub.js';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { terminalAccessEnabled } from './terminal-access.js';
 
-export const HISTORY_TTL_MS = 24 * 60 * 60 * 1000;
+export const HISTORY_TTL_DAYS = 7;
+const LEGACY_HISTORY_TTL_MS = 24 * 60 * 60 * 1000;
+export const HISTORY_TTL_MS = HISTORY_TTL_DAYS * LEGACY_HISTORY_TTL_MS;
 export const HISTORY_TOKEN_RE = /^[A-Za-z0-9_-]{43}$/;
 const SESSION_RE = /^[A-Za-z0-9_-]{1,100}$/;
 
@@ -25,6 +27,7 @@ export interface ConversationHistory {
   sessionId: string;
   title: string;
   expiresAt: number;
+  ttlMs?: number;
   source: Pick<Session, 'cliId' | 'cliSessionId' | 'workingDir'>;
   messages: HistoryMessage[];
 }
@@ -51,12 +54,18 @@ export function readConversationHistory(token: string, dataDir = config.session.
   if (!HISTORY_TOKEN_RE.test(token)) return undefined;
   try {
     const value = JSON.parse(readFileSync(join(dataDir, 'conversation-history', `${token}.json`), 'utf8'));
-    return value.version === 1 && value.token === token && SESSION_RE.test(value.sessionId)
-      && Number.isFinite(value.expiresAt) && Array.isArray(value.messages) ? value : undefined;
+    if (value.version !== 1 || value.token !== token || !SESSION_RE.test(value.sessionId)
+      || !Number.isFinite(value.expiresAt) || !Array.isArray(value.messages)) return undefined;
+    const previousTtl = value.ttlMs ?? LEGACY_HISTORY_TTL_MS;
+    if (!Number.isFinite(previousTtl) || previousTtl <= 0) return undefined;
+    // 旧授权按原到期时刻顺延六天，保留原始起算点；反复查看或后续保存不会重复续期。
+    value.expiresAt += HISTORY_TTL_MS - previousTtl;
+    value.ttlMs = HISTORY_TTL_MS;
+    return value;
   } catch { return undefined; }
 }
 
-/** 首次建立一天链接；之后只更新来源元数据，绝不因卡片刷新续期。 */
+/** 首次建立七天链接；之后只更新来源元数据，绝不因卡片刷新续期。 */
 export function ensureConversationHistory(session: Session, dataDir = config.session.dataDir, now = Date.now()): ConversationHistory {
   if (!SESSION_RE.test(session.sessionId)) throw new Error('invalid_history_session');
   if (terminalAccessEnabled(dataDir, session.sessionId)) throw new Error('protected_session_history_disabled');
@@ -69,7 +78,7 @@ export function ensureConversationHistory(session: Session, dataDir = config.ses
   const source = { cliId: session.cliId, cliSessionId: session.cliSessionId, workingDir: session.workingDir };
   const value: ConversationHistory = old ?? {
     version: 1, token: randomBytes(32).toString('base64url'), sessionId: session.sessionId,
-    title: session.title, expiresAt: now + HISTORY_TTL_MS, source, messages: [],
+    title: session.title, expiresAt: now + HISTORY_TTL_MS, ttlMs: HISTORY_TTL_MS, source, messages: [],
   };
   if (!old || JSON.stringify(old.source) !== JSON.stringify(source) || old.title !== session.title) {
     value.source = source;
