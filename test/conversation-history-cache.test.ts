@@ -93,3 +93,15 @@ it('来源追加时不复用旧页面', async () => {
   expect(second).not.toBe(first);
   await vi.waitFor(() => expect(second.page?.html).toContain('新增正文'));
 });
+
+it('后台读取失败立即反馈并短暂退避，避免浏览器反复扫描损坏文件', async () => {
+  const dir = storage();
+  const grant = ensureConversationHistory({ sessionId: 'failed-session', title: '合成标题' } as Session, dir);
+  vi.spyOn(resolver, 'resolveSessionTranscriptPath').mockReturnValue(null);
+  const read = vi.spyOn(reader, 'readHistoryBundle').mockRejectedValue(new Error('synthetic_read_failure'));
+  const state = cachedHistoryPage(grant, dir);
+  await vi.waitFor(() => expect(state.error).toBe(true));
+  expect((await request(dir, grant.token, Date.now(), '?complete=1')).status).toBe(503);
+  expect(cachedHistoryPage(grant, dir)).toBe(state);
+  expect(read).toHaveBeenCalledTimes(1);
+});

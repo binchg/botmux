@@ -7,6 +7,7 @@ import type { ConversationHistory } from './conversation-history-store.js';
 interface PageState {
   page?: ReturnType<typeof renderConversationHistory>;
   error?: boolean;
+  retryAt?: number;
   pending: boolean;
 }
 const pages = new Map<string, PageState>();
@@ -18,7 +19,8 @@ export function cachedHistoryPage(history: ConversationHistory, dataDir: string)
   const key = createHash('sha256').update(dataDir).update(JSON.stringify(history))
     .update(JSON.stringify(snapshot)).digest('hex');
   const old = pages.get(key);
-  if (old) return old;
+  if (old && (!old.error || Date.now() < (old.retryAt ?? 0))) return old;
+  if (old) pages.delete(key);
   if ([...pages.values()].filter(item => item.pending).length >= 8) return { pending: false, error: true };
   const state: PageState = { pending: true };
   pages.set(key, state);
@@ -28,7 +30,7 @@ export function cachedHistoryPage(history: ConversationHistory, dataDir: string)
     try {
       const bundle = await readHistoryBundle(history, dataDir, snapshot);
       state.page = renderConversationHistory(history, bundle.messages, bundle);
-    } catch { state.error = true; }
+    } catch { state.error = true; state.retryAt = Date.now() + 5000; }
     finally { state.pending = false; }
     let bytes = [...pages.values()].reduce((sum, item) => sum + Buffer.byteLength(item.page?.html ?? ''), 0);
     for (const [entryKey, entry] of pages) {
@@ -36,8 +38,7 @@ export function cachedHistoryPage(history: ConversationHistory, dataDir: string)
       if (entry.pending) continue;
       bytes -= Buffer.byteLength(entry.page?.html ?? ''); pages.delete(entryKey);
     }
-    // 短暂文件错误允许后续访问重试；不把失败永久缓存。
-    if (state.error) pages.delete(key);
+    // 错误短暂保留供页面显示，退避结束后再读，避免每次轮询反复扫描坏文件。
   });
   return state;
 }
