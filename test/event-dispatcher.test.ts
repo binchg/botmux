@@ -11,6 +11,7 @@
  * Run:  pnpm vitest run test/event-dispatcher.test.ts
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { registerOwnerContinuationCases } from './regular-group-continuation.cases.js';
 
 // ─── Mock external modules ──────────────────────────────────────────────────
 
@@ -150,6 +151,7 @@ function setupBotState(opts?: {
   configAllowedUsers?: string[];
   restrictGrantCommands?: boolean;
   regularGroupReplyMode?: 'chat' | 'new-topic' | 'shared' | 'chat-topic';
+  regularGroupOwnerContinuation?: boolean;
 	  regularGroupMentionMode?: 'always' | 'topic' | 'never';
 	  autoStartOnNewTopic?: boolean;
 	  autoGrantRequestCards?: boolean;
@@ -169,6 +171,8 @@ function setupBotState(opts?: {
       globalGrants: opts?.globalGrants,
       restrictGrantCommands: opts?.restrictGrantCommands,
       regularGroupReplyMode: opts?.regularGroupReplyMode,
+      // 原路由用例显式保留旧策略；新默认策略由独立回归组覆盖。
+      regularGroupOwnerContinuation: opts?.regularGroupOwnerContinuation ?? false,
       regularGroupMentionMode: opts?.regularGroupMentionMode,
       autoStartOnNewTopic: opts?.autoStartOnNewTopic,
       autoGrantRequestCards: opts?.autoGrantRequestCards,
@@ -269,6 +273,15 @@ function makeUserMessageEvent(opts: {
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
+
+registerOwnerContinuationCases({
+  appId: MY_APP_ID, ownerId: USER_OPEN_ID, botId: MY_OPEN_ID,
+  setup: setupBotState, getBot: () => mockGetBot(), owner: mockGetOwnerOpenId,
+  chatMode: mockGetChatMode, chatInfo: mockGetChatInfo, handlers: makeHandlers,
+  start: handlers => startLarkEventDispatcher(MY_APP_ID, 'secret', handlers),
+  reset: () => { __resetAnchorQueues(); __resetEventClaimsForTest(); _resetGrantPending(); },
+  event: makeUserMessageEvent, emit: data => capturedHandlers['im.message.receive_v1'](data), flush: flushEventWork,
+});
 
 describe('decideRouting — p2p p2pMode (thread | chat)', () => {
   // Build a p2p DM message object (decideRouting takes message, not the full event).

@@ -556,6 +556,8 @@ export interface BotConfig {
    *   • 'shared'              — replies fold into a topic but reuse the one chat-scope session
    */
   regularGroupReplyMode?: ChatReplyMode;
+  /** 普通群话题外默认单会话：主人免 @、其他人需 @；false 显式保留旧模式。 */
+  regularGroupOwnerContinuation?: boolean;
   /** 普通群最终结果在原话题送达后同步一份到群，默认关闭。 */
   regularGroupFinalToChat?: boolean;
   /**
@@ -1203,6 +1205,7 @@ export function parseBotConfigsFromText(jsonText: string): BotConfig[] {
         return mode === 'new-topic' || mode === 'shared' || mode === 'chat-topic' ? mode : undefined;
       })(),
       regularGroupFinalToChat: entry.regularGroupFinalToChat === true || undefined,
+      regularGroupOwnerContinuation: entry.regularGroupOwnerContinuation === false ? false : undefined,
       // 4-tier @ policy. Only 'topic' | 'never' | 'ambient' are meaningful;
       // 'always' (the default) and anything else normalize to undefined so
       // bots.json stays clean.

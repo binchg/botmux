@@ -38,6 +38,7 @@ import { ensureDefaultOncallBound } from '../../services/oncall-store.js';
 import { resolveRegularGroupMode, resolveGroupMentionMode } from '../../services/chat-reply-mode-store.js';
 import { buildSummaryCommandPrompt, type SummaryChatKind, type SummaryCommandMatch, type SummaryCommandRuntimeContext } from './summary-command.js';
 import { DEFAULT_SUMMARY_PROMPT, summaryRangeFromBotConfig } from '../../services/summary-range-store.js';
+import { ownerContinuationEnabled, isContinuationOwner, requestsSeparateSession, dispatchSessionMessage } from './regular-group-continuation.js';
 
 // 大厅回执互教的防环闸：每进程对同一打卡者只回一次（见 hall swallow 分支）。
 const hallEchoReplied = new Set<string>();
@@ -1282,6 +1283,7 @@ async function maybeApplySharedTopicSeed(input: {
   const { larkAppId, chatId, chatType, message, senderOpenId, messageId, routing, forceTopicApplied } = input;
   if (forceTopicApplied) return undefined;
   if (chatType !== 'group') return undefined;
+  if (!message.thread_id && ownerContinuationEnabled(larkAppId)) return undefined;
   if (resolveRegularGroupMode(larkAppId, chatId) !== 'shared') return undefined;
   // Seeding a shared topic normally needs an @mention. But the 'never' and
   // 'ambient' mention policies answer non-@ messages too — and in shared mode it
@@ -1376,6 +1378,9 @@ type RoutingDecision = {
 };
 
 function regularGroupRouting(larkAppId: string, messageId: string, chatId: string): RoutingDecision {
+  if (ownerContinuationEnabled(larkAppId)) {
+    return { scope: 'chat', anchor: chatId, source: 'regular-group-chat' };
+  }
   // Only `new-topic` forks a fresh thread-scope session for a TOP-LEVEL @.
   // `shared` stays chat-scope here (the topic fold happens post-routing, see
   // maybeApplySharedTopicSeed); `chat` is the flat default; `chat-topic` is also
@@ -1747,6 +1752,11 @@ export function startLarkEventDispatcher(larkAppId: string, larkAppSecret: strin
           if (!isBotMentioned(larkAppId, message, undefined)) return;
           const decision = await decideRoutingWithSource(larkAppId, message);
           const ctx = { scope: decision.scope, anchor: decision.anchor };
+          const ownerContinuation = decision.source === 'regular-group-chat'
+            && ownerContinuationEnabled(larkAppId);
+          if (ownerContinuation && requestsSeparateSession(stripLeadingMentions(
+            extractMessageTextForRouting(message) ?? '', message.mentions ?? [],
+          ))) return;
           // Honor `/t` / `/topic` from bot senders too, aligning with the human
           // path so an explicit `@bot /t …` handoff seeds a fresh topic instead of
           // sticking to chat-scope. Applied BEFORE the gate (and the shared-topic
@@ -1827,7 +1837,8 @@ export function startLarkEventDispatcher(larkAppId: string, larkAppSecret: strin
           // Serialize per anchor — a sub-bot dispatched a /repo prime + kickoff
           // back-to-back into this thread must be handled in order, not raced.
           await serializeByAnchor(ctx.anchor, () =>
-            handlers.handleThreadReply(data, { ...ctx, chatId, messageId, chatType, larkAppId, replyRootId }))
+            handlers.handleThreadReply(data, { ...ctx, chatId, messageId, chatType, larkAppId, replyRootId }),
+          ctx.scope === 'chat' && chatType === 'group' ? 0 : undefined)
             .catch(err => logger.error(`Error handling bot @mention: ${err}`));
           return;
         }
@@ -1958,10 +1969,25 @@ export function startLarkEventDispatcher(larkAppId: string, larkAppSecret: strin
         const autoTopicSeedScope = routingSource === 'topic-chat' ? routing.scope : 'chat';
         const autoTopicSeedAnchor = routingSource === 'topic-chat' ? routing.anchor : chatId;
 
+        const ownerContinuation = routingSource === 'regular-group-chat'
+          && ownerContinuationEnabled(larkAppId);
+        const continuationOwner = isContinuationOwner(larkAppId, senderOpenId);
+        const separateSession = ownerContinuation && requestsSeparateSession(stripLeadingMentions(
+          extractMessageTextForRouting(message) ?? '', message.mentions ?? [],
+        ));
+        if (separateSession && !continuationOwner) {
+          logger.info(`[routing] 非主人不能在普通群话题外新开会话: ${messageId}`);
+          return;
+        }
+        if (separateSession) {
+          routing.scope = 'thread';
+          routing.anchor = messageId;
+        }
+
         // /t / /topic in 普通群: flip routing to thread-scope so the bot's
         // first reply seeds a fresh Lark thread, even if a chat-scope session
         // is currently active in this chat.
-        const forceTopicApplied = maybeApplyForceTopicOverride(routing, message, messageId);
+        const forceTopicApplied = separateSession || maybeApplyForceTopicOverride(routing, message, messageId);
         if (forceTopicApplied) {
           logger.info(`[/t] Force-topic override: msg=${messageId.substring(0, 12)} → thread-scope, anchor=msg`);
         }
@@ -2063,6 +2089,9 @@ export function startLarkEventDispatcher(larkAppId: string, larkAppSecret: strin
           // permitted senders. (The shared fold-back's replyRootId is already
           // handled by the first clause.)
           const mentionMode = resolveGroupMentionMode(larkAppId);
+          // 只覆盖真实普通群话题外入口；转换为话题群后恢复原来的权限与路由。
+          const ownerTopLevel = ownerContinuation && routingSource === 'regular-group-chat';
+          if (ownerTopLevel && !continuationOwner && !explicitlyMentionedThisBot) return;
           // 话题群 owned-topic 免@续话 — single-bot groups only. In a multi-bot
           // topic every co-resident bot owns a session on the same thread anchor,
           // so relaxing here would make ALL of them answer a message that
@@ -2080,7 +2109,8 @@ export function startLarkEventDispatcher(larkAppId: string, larkAppSecret: strin
             && routing.scope === 'thread'
             && !!message.thread_id
             && await getChatMode(larkAppId, chatId) === 'topic';
-          const relax = (!!replyRootId && isAllowed)
+          const relax = (ownerTopLevel && continuationOwner && isAllowed)
+            || (!!replyRootId && isAllowed)
             || (isAllowed && mentionMode === 'never')
             || (isAllowed && mentionMode === 'ambient' && !mentionsAnotherMember(larkAppId, message))
             || ownedTopicGroupFollowup
@@ -2148,9 +2178,7 @@ export function startLarkEventDispatcher(larkAppId: string, larkAppSecret: strin
         // processed in arrival order — never concurrently. Without this a fast
         // second message interleaves with the first's async session-spawn and is
         // dropped (worker-not-ready → re-fork branch). See anchor-serializer.ts.
-        await serializeByAnchor(ctx.anchor, () => ownsSession
-          ? handlers.handleThreadReply(data, ctx)
-          : handlers.handleNewTopic(data, ctx))
+        await dispatchSessionMessage(handlers, data, ctx, ownsSession)
           .catch(err => logger.error(`Error handling message event: ${err}`));
       } catch (err) {
         logger.error(`Error handling message event: ${err}`);
