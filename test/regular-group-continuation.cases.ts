@@ -1,4 +1,5 @@
-import { beforeEach, afterEach, describe, expect, it } from 'vitest';
+import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
+import * as groupSettings from '../src/services/regular-group-settings.js';
 
 /** 复用真实事件入口的隔离夹具，避免复制整份 Lark SDK mock。 */
 export function registerOwnerContinuationCases(f: {
@@ -16,7 +17,9 @@ export function registerOwnerContinuationCases(f: {
   describe('普通群话题外默认单会话', () => {
     let handlers: any;
     let seq = 0;
+    let overrides: ReturnType<typeof vi.spyOn>;
     beforeEach(() => {
+      overrides = vi.spyOn(groupSettings, 'regularGroupOverrides').mockReturnValue({});
       f.reset();
       handlers = f.handlers();
       f.setup({ allowedUsers: [f.ownerId, 'ou_other'] });
@@ -28,6 +31,7 @@ export function registerOwnerContinuationCases(f: {
       f.start(handlers);
     });
     afterEach(() => {
+      overrides.mockRestore();
       f.owner.mockReturnValue(undefined);
       f.chatInfo.mockResolvedValue({ userCount: 1, botCount: 1 });
     });
@@ -44,6 +48,35 @@ export function registerOwnerContinuationCases(f: {
       return data;
     }
 
+    it('关闭本群复用后群外消息新开，其他群不受影响', async () => {
+      overrides.mockImplementation((_app: string, chat: string) => chat === 'owner-chat' ? { reuse: false } : {});
+      handlers.isSessionOwner.mockImplementation((anchor: string) => anchor === 'owner-chat' || anchor === 'other-chat');
+      const event = await send('独立任务');
+      expect(handlers.handleNewTopic).toHaveBeenCalledWith(event, expect.objectContaining({ scope: 'thread', anchor: event.message.message_id }));
+      await send('继续原任务', { chatId: 'other-chat' });
+      expect(handlers.handleThreadReply).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ scope: 'chat', anchor: 'other-chat' }));
+    });
+    it('关闭复用不放宽其他成员的免 @ 权限，也不改变已有话题的会话', async () => {
+      overrides.mockReturnValue({ reuse: false });
+      f.getBot().config.regularGroupMentionMode = 'never';
+      await send('群里普通聊天', { senderOpenId: 'ou_other' });
+      expect(handlers.handleNewTopic).not.toHaveBeenCalled();
+      expect(handlers.handleThreadReply).not.toHaveBeenCalled();
+      handlers.isSessionOwner.mockImplementation((anchor: string) => anchor === 'existing-root');
+      await send('@_bot 继续已有话题', { rootId: 'existing-root', threadId: 'thread' }, true);
+      expect(handlers.handleThreadReply).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ scope: 'thread', anchor: 'existing-root' }));
+      expect(handlers.handleNewTopic).not.toHaveBeenCalled();
+    });
+    it('开启本群复用覆盖旧的新话题策略，显式新开仍保留', async () => {
+      overrides.mockReturnValue({ reuse: true });
+      f.getBot().config.regularGroupOwnerContinuation = false;
+      f.getBot().config.regularGroupReplyMode = 'new-topic';
+      handlers.isSessionOwner.mockImplementation((anchor: string) => anchor === 'owner-chat');
+      await send('继续任务');
+      expect(handlers.handleThreadReply).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ scope: 'chat', anchor: 'owner-chat' }));
+      const event = await send('/t 独立任务');
+      expect(handlers.handleNewTopic).toHaveBeenCalledWith(event, expect.objectContaining({ scope: 'thread', anchor: event.message.message_id }));
+    });
     it.each(['chat', 'shared', 'new-topic', 'chat-topic'])('主人免 @，%s 配置的话题外仍复用群锚点', async mode => {
       f.getBot().config.regularGroupReplyMode = mode;
       handlers.isSessionOwner.mockReturnValue(true);

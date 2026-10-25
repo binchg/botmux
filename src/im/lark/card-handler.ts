@@ -6,6 +6,8 @@
 import { execSync } from 'node:child_process';
 import { basename as pathBasename, dirname, join } from 'node:path';
 import { config } from '../../config.js';
+import { GROUP_SETTING_ACTION } from './regular-group-settings-card.js';
+import { handleGroupSettingAction } from './regular-group-settings-action.js';
 import { getBot, getAllBots, getOwnerOpenId } from '../../bot-registry.js';
 import { canOperate, canTalk } from './event-dispatcher.js';
 import { updateMessage, deleteMessage, replyMessage, sendMessage, sendUserMessage, sendEphemeralCard, getMessageDetail, isHumanOpenId, resolveUserUnionId as defaultResolveUserUnionId } from './client.js';
@@ -493,6 +495,7 @@ export async function handleCardAction(data: CardActionData, deps: CardHandlerDe
   // Use the receiving bot's allowedUsers — the operator open_id in card actions
   // is scoped to the app that received the callback.
   const operatorOpenId = data?.operator?.open_id;
+  if (value?.action === GROUP_SETTING_ACTION && larkAppId) return handleGroupSettingAction(data, larkAppId);
   // ─── 沙盒落盘卡（land_apply / land_discard）──────────────────────────────────
   // 不绑 session（sessionId + workingDir 都在 value 里）。owner 强闸门：只有 owner 能把
   // 隔离副本的改动应用回真实磁盘。agent 在沙盒里无感，不参与。

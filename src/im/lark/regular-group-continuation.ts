@@ -1,10 +1,18 @@
 import { getBot, getOwnerOpenId } from '../../bot-registry.js';
 import { serializeByAnchor } from '../../utils/anchor-serializer.js';
 import type { EventHandlers, RoutingContext } from './event-dispatcher.js';
+import { regularGroupOverrides } from '../../services/regular-group-settings.js';
 
 /** 仅约束普通群的话题外入口；话题内继续使用原来的路由和免 @ 设置。 */
-export function ownerContinuationEnabled(larkAppId: string): boolean {
-  return getBot(larkAppId).config.regularGroupOwnerContinuation !== false;
+export function ownerContinuationEnabled(larkAppId: string, chatId?: string): boolean {
+  return (chatId ? regularGroupOverrides(larkAppId, chatId).reuse === true : false)
+    || getBot(larkAppId).config.regularGroupOwnerContinuation !== false;
+}
+
+/** 关闭复用只改变会话落点，不取消主人免 @ 或放宽其他成员的接收规则。 */
+export function ownerContinuationAtTopLevel(appId: string, chatId: string, source: string): boolean {
+  return (source === 'regular-group-chat' || (source === 'regular-group-thread'
+    && regularGroupOverrides(appId, chatId).reuse === false)) && ownerContinuationEnabled(appId, chatId);
 }
 
 export function isContinuationOwner(larkAppId: string, senderOpenId?: string): boolean {

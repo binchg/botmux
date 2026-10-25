@@ -38,7 +38,8 @@ import { ensureDefaultOncallBound } from '../../services/oncall-store.js';
 import { resolveRegularGroupMode, resolveGroupMentionMode } from '../../services/chat-reply-mode-store.js';
 import { buildSummaryCommandPrompt, type SummaryChatKind, type SummaryCommandMatch, type SummaryCommandRuntimeContext } from './summary-command.js';
 import { DEFAULT_SUMMARY_PROMPT, summaryRangeFromBotConfig } from '../../services/summary-range-store.js';
-import { ownerContinuationEnabled, isContinuationOwner, requestsSeparateSession, dispatchSessionMessage } from './regular-group-continuation.js';
+import { ownerContinuationEnabled, ownerContinuationAtTopLevel, isContinuationOwner, requestsSeparateSession, dispatchSessionMessage } from './regular-group-continuation.js';
+import { regularGroupOverrides } from '../../services/regular-group-settings.js';
 
 // 大厅回执互教的防环闸：每进程对同一打卡者只回一次（见 hall swallow 分支）。
 const hallEchoReplied = new Set<string>();
@@ -1283,7 +1284,8 @@ async function maybeApplySharedTopicSeed(input: {
   const { larkAppId, chatId, chatType, message, senderOpenId, messageId, routing, forceTopicApplied } = input;
   if (forceTopicApplied) return undefined;
   if (chatType !== 'group') return undefined;
-  if (!message.thread_id && ownerContinuationEnabled(larkAppId)) return undefined;
+  if (!message.thread_id && (ownerContinuationEnabled(larkAppId, chatId)
+    || regularGroupOverrides(larkAppId, chatId).reuse === false)) return undefined;
   if (resolveRegularGroupMode(larkAppId, chatId) !== 'shared') return undefined;
   // Seeding a shared topic normally needs an @mention. But the 'never' and
   // 'ambient' mention policies answer non-@ messages too — and in shared mode it
@@ -1378,7 +1380,10 @@ type RoutingDecision = {
 };
 
 function regularGroupRouting(larkAppId: string, messageId: string, chatId: string): RoutingDecision {
-  if (ownerContinuationEnabled(larkAppId)) {
+  if (regularGroupOverrides(larkAppId, chatId).reuse === false) {
+    return { scope: 'thread', anchor: messageId, source: 'regular-group-thread' };
+  }
+  if (ownerContinuationEnabled(larkAppId, chatId)) {
     return { scope: 'chat', anchor: chatId, source: 'regular-group-chat' };
   }
   // Only `new-topic` forks a fresh thread-scope session for a TOP-LEVEL @.
@@ -1752,8 +1757,7 @@ export function startLarkEventDispatcher(larkAppId: string, larkAppSecret: strin
           if (!isBotMentioned(larkAppId, message, undefined)) return;
           const decision = await decideRoutingWithSource(larkAppId, message);
           const ctx = { scope: decision.scope, anchor: decision.anchor };
-          const ownerContinuation = decision.source === 'regular-group-chat'
-            && ownerContinuationEnabled(larkAppId);
+          const ownerContinuation = ownerContinuationAtTopLevel(larkAppId, chatId, decision.source);
           if (ownerContinuation && requestsSeparateSession(stripLeadingMentions(
             extractMessageTextForRouting(message) ?? '', message.mentions ?? [],
           ))) return;
@@ -1969,8 +1973,7 @@ export function startLarkEventDispatcher(larkAppId: string, larkAppSecret: strin
         const autoTopicSeedScope = routingSource === 'topic-chat' ? routing.scope : 'chat';
         const autoTopicSeedAnchor = routingSource === 'topic-chat' ? routing.anchor : chatId;
 
-        const ownerContinuation = routingSource === 'regular-group-chat'
-          && ownerContinuationEnabled(larkAppId);
+        const ownerContinuation = ownerContinuationAtTopLevel(larkAppId, chatId, routingSource);
         const continuationOwner = isContinuationOwner(larkAppId, senderOpenId);
         const separateSession = ownerContinuation && requestsSeparateSession(stripLeadingMentions(
           extractMessageTextForRouting(message) ?? '', message.mentions ?? [],
@@ -2090,7 +2093,7 @@ export function startLarkEventDispatcher(larkAppId: string, larkAppSecret: strin
           // handled by the first clause.)
           const mentionMode = resolveGroupMentionMode(larkAppId);
           // 只覆盖真实普通群话题外入口；转换为话题群后恢复原来的权限与路由。
-          const ownerTopLevel = ownerContinuation && routingSource === 'regular-group-chat';
+          const ownerTopLevel = ownerContinuation;
           if (ownerTopLevel && !continuationOwner && !explicitlyMentionedThisBot) return;
           // 话题群 owned-topic 免@续话 — single-bot groups only. In a multi-bot
           // topic every co-resident bot owns a session on the same thread anchor,

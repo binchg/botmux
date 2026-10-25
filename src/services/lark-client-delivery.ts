@@ -3,6 +3,9 @@ import { privateCardContent } from '../im/lark/outbound-privacy.js';
 import type { LarkReplyOutbox, OutboundRequest } from './lark-reply-outbox.js';
 import { assertSessionReplyAllowed, peerHandoffContent } from './session-reply-policy.js';
 import { repairThreadReply } from '../im/lark/thread-sync.js';
+import { decorateGroupSettings, GROUP_SETTING_ACTION } from '../im/lark/regular-group-settings-card.js';
+import { saveGroupCardSnapshot } from './regular-group-card-snapshots.js';
+import { logger } from '../utils/logger.js';
 
 const protectedClients = new WeakSet<object>();
 
@@ -35,9 +38,15 @@ export function protectLarkClientDelivery(client: any, outbox: LarkReplyOutbox, 
         }
       }
       if (larkAppId) assertSessionReplyAllowed(request, larkAppId);
+      if (larkAppId) request.data.content = await decorateGroupSettings(request.data.content, larkAppId, name, payload);
       outbox.prepare(request);
       try {
         const result = await original({ ...payload, data: request.data }, ...options);
+        const deliveredId = result.data?.message_id ?? payload.path?.message_id;
+        if (result.code === 0 && larkAppId && deliveredId && request.data.content.includes(GROUP_SETTING_ACTION)) {
+          try { saveGroupCardSnapshot(larkAppId, deliveredId, JSON.parse(request.data.content)); }
+          catch { logger.warn('群设置卡快照保存失败，原消息已发送'); }
+        }
         // 回执清理故障不能把已经送达的回复重新当成发送失败。
         try { outbox.accepted(request, result); } catch { /* HTTP 层已记录收据清理诊断。 */ }
         return result;
