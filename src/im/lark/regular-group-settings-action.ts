@@ -20,7 +20,8 @@ export async function handleGroupSettingAction(data: CardActionData, appId: stri
   const field = value?.field;
   const messageId = data.context?.open_message_id ?? data.open_message_id;
   const fail = (content: string) => ({ toast: { type: 'error', content } });
-  if (!messageId || !value || (field !== 'sync' && field !== 'reuse') || typeof value.next_value !== 'boolean') {
+  if (!messageId || !data.operator?.open_id || !value
+    || (field !== 'sync' && field !== 'reuse') || typeof value.next_value !== 'boolean') {
     return fail('按钮已失效');
   }
   try {

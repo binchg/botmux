@@ -100,6 +100,11 @@ describe('点击保存并刷新原卡', () => {
     expect((await handleGroupSettingAction(action(), 'app')).toast.type).toBe('error');
     expect(mocks.save).not.toHaveBeenCalled();
   });
+  it('缺少平台操作者身份时拒绝写入，即使机器人没有操作白名单', async () => {
+    const event = action(); delete event.operator;
+    expect((await handleGroupSettingAction(event, 'app')).toast.type).toBe('error');
+    expect(mocks.save).not.toHaveBeenCalled();
+  });
   it.each(['topic', 'p2p', 'unknown'])('%s 不能写配置', async mode => {
     mocks.mode.mockResolvedValue(mode);
     expect((await handleGroupSettingAction(action(), 'app')).toast.type).toBe('error');
