@@ -1,5 +1,6 @@
 /** 出站内容脱敏：只删除个人资料和凭据，不修改传给后台任务的原始输入。 */
 const email = /[\p{L}\p{N}._%+\-]+@[\p{L}\p{N}.\-]+(?:\.[\p{L}]{2,})?/gu;
+const versionedGitReference = /(?<![\p{L}\p{N}._%+@-])[\p{L}\p{N}._-]+\/v?\d+(?:\.\d+){1,3}@[a-f\d]{7,40}(?![\p{L}\p{N}._%+@-])/giu;
 const mobile = /(?<!\d)(?:\+?86[ -]?)?1[3-9]\d[ -]?\d{4}[ -]?\d{4}(?!\d)/g;
 const identity = /(?<!\d)\d{6}(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx](?!\d)/g;
 const secretField = /^(?:email|e_mail|phone|mobile|id_card|idcard|identity_number|password|secret|access_token|refresh_token)$/i;
@@ -9,9 +10,17 @@ function decoded(value: string): string {
   try { return decodeURIComponent(value); } catch { return value; }
 }
 
+/** 等长遮罩只供邮箱识别使用：带路径的版本分支加 7～40 位十六进制提交号属于技术引用。 */
+export function maskVersionedGitReferences(text: string): string {
+  return text.replace(versionedGitReference, value => ' '.repeat(value.length));
+}
+
 /** 标记式替换不会保留仍可识别的邮箱域名或完整号码。 */
 function redactValues(text: string): string {
-  return text.replace(email, '［邮箱已隐藏］').replace(mobile, '［手机号已隐藏］')
+  const emailCandidates = maskVersionedGitReferences(text);
+  return text.replace(email, (value, offset: number) =>
+    emailCandidates.slice(offset, offset + value.length).trim() === '' ? value : '［邮箱已隐藏］')
+    .replace(mobile, '［手机号已隐藏］')
     .replace(identity, '［证件号已隐藏］')
     .replace(/((?:身份证|证件|护照)(?:号|号码|尾号)?\s*[:：]?\s*)\d[\dXx -]{2,}/g, '$1［已隐藏］')
     .replace(/\b\d[\dXx -]{2,}\s*((?:身份证|证件|护照)(?:号|号码|尾号)?)/g, '［已隐藏］ $1')

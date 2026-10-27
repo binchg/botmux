@@ -2,7 +2,7 @@
 import { defaultHttpInstance } from '@larksuiteoapi/node-sdk';
 import { logger } from '../../utils/logger.js';
 import { isMessageWrite, type LarkReplyOutbox, type OutboundRequest } from '../../services/lark-reply-outbox.js';
-import { cardPlainText, objectBody, redactOutboundContent } from './outbound-redaction.js';
+import { cardPlainText, maskVersionedGitReferences, objectBody, redactOutboundContent } from './outbound-redaction.js';
 
 const installed = new WeakSet<object>();
 const fallbackFlag = '__botmuxPrivacyNotice';
@@ -11,7 +11,8 @@ const notice = '本条回复被飞书内容审核拦截，原回复未送达。�
 /** 自动标题不得包含邮箱、手机或证件信息，包括被截断的邮箱。 */
 export function privateCardTitle(title: string): string {
   const plain = title.replace(/\\/g, '');
-  return /@|mailto:|(?<!\d)(?:\+?86[ -]?)?1[3-9]\d{9}(?!\d)|(?:身份证|证件|护照).{0,8}\d/i.test(plain)
+  return /@|mailto:/i.test(maskVersionedGitReferences(plain))
+    || /(?<!\d)(?:\+?86[ -]?)?1[3-9]\d{9}(?!\d)|(?:身份证|证件|护照).{0,8}\d/i.test(plain)
     ? '任务进度（个人资料已隐藏）' : title;
 }
 

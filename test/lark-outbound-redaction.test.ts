@@ -35,4 +35,42 @@ describe('出站正文自动脱敏', () => {
     const text = 'BITS 230028，日期 2026-09-18，de39b1dcf646169aa8de5aab0164483d95e6088b https://github.com/example/repo';
     expect(redactOutboundText(text)).toBe(text);
   });
+
+  it.each([
+    'ohos/release/6.7.6.33@6c0d8af6',
+    'release/6.7.6@6c0d8af68fde1619f51ab2965cdbb4c7889be4c9',
+    'refs/heads/ohos/release/6.7.6.33@6C0D8AF6',
+    'refs/tags/v6.7.6@6c0d8af6',
+  ])('版本分支与提交号不是邮箱：%s', (reference) => {
+    const url = `https://code.byted.org/reading/demo/tree/${reference}`;
+    const text = `分支 \`${reference}\`，来源 [${reference}](${url})`;
+    expect(redactOutboundText(text)).toBe(text);
+    const card = JSON.stringify({ elements: [{ tag: 'markdown', content: text }],
+      actions: [{ tag: 'button', url }] });
+    expect(redactOutboundContent(card)).toBe(card);
+  });
+
+  it.each([
+    '6.7.6.33@example.invalid',
+    '6.7.6.33@6c0d8af6',
+    'ohos/release/6.7.6.33@6c0d8af6.example.invalid',
+    'ohos/release/test.person@example.invalid',
+    'ohos/release/6.7.6.33@6c0d8a',
+    'ohos/release/6.7.6.33@6c0d8af6z',
+    `ohos/release/6.7.6.33@${'a'.repeat(41)}`,
+    'test.person@exa…',
+  ])('仅技术格式例外，真实或不确定的邮箱仍隐藏：%s', (text) => {
+    expect(redactOutboundText(text)).toContain('［邮箱已隐藏］');
+    expect(redactOutboundText(text)).not.toContain('@');
+  });
+
+  it('同条消息里的技术引用不会放过旁边的邮箱或敏感字段', () => {
+    const reference = 'ohos/release/6.7.6.33@6c0d8af6';
+    const safe = redactOutboundText(`${reference} 联系 test.person@example.invalid`);
+    expect(safe).toBe(`${reference} 联系 ［邮箱已隐藏］`);
+    expect(redactOutboundText(`[联系](mailto:${reference})`)).not.toContain('mailto:');
+    expect(redactOutboundText(`https://example.invalid/?email=${reference}`)).not.toContain('http');
+    expect(JSON.parse(redactOutboundContent(JSON.stringify({ email: reference }))).email)
+      .toBe('［个人资料已隐藏］');
+  });
 });
