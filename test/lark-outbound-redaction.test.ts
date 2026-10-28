@@ -73,4 +73,37 @@ describe('出站正文自动脱敏', () => {
     expect(JSON.parse(redactOutboundContent(JSON.stringify({ email: reference }))).email)
       .toBe('［个人资料已隐藏］');
   });
+
+  it.each([
+    '@bytedance-dev/xgit@latest', '@bytedance-dev/xbytecli@0.3.11',
+    '@scope/tool', '@scope/tool@next', '@scope/tool@0.4.42-beta.1',
+    '@scope/tool@^1.2.3', '@scope/tool@~1.2', '@scope/tool@1.2.3+build.4',
+  ])('scoped npm 包引用不是邮箱：%s', (reference) => {
+    const command = `npm i -g ${reference} --registry=https://bnpm.byted.org`;
+    const text = `1. ${command}\n2. xgit init\n\n\`\`\`bash\n${command}\n\`\`\``;
+    expect(redactOutboundText(text)).toBe(text);
+    const url = `https://www.npmjs.com/package/${reference}`;
+    const card = JSON.stringify({ elements: [{ tag: 'markdown', content: text }],
+      actions: [{ tag: 'button', url }] });
+    expect(redactOutboundContent(card)).toBe(card);
+  });
+
+  it.each([
+    '@scope/test.person@example.invalid', '@scope/tool@latest.example.invalid',
+    '@scope/tool@latest…', '@scope/tool@exa…', 'xgit@latest',
+  ])('不确定的邮箱或截断引用不因 npm 例外泄露：%s', (text) => {
+    expect(redactOutboundText(text)).toContain('［邮箱已隐藏］');
+  });
+
+  it('npm 命令旁的邮箱、邮件链接、敏感参数和结构化字段仍被隐藏', () => {
+    const reference = '@bytedance-dev/xgit@latest';
+    expect(redactOutboundText(`${reference} 联系 test.person@example.invalid`))
+      .toBe(`${reference} 联系 ［邮箱已隐藏］`);
+    expect(redactOutboundText(`\`\`\`bash\nnpm i ${reference}\n# test.person@example.invalid\n\`\`\``))
+      .not.toContain('test.person');
+    expect(redactOutboundText(`[联系](mailto:${reference})`)).not.toContain('mailto:');
+    expect(redactOutboundText(`https://example.invalid/?email=${reference}`)).not.toContain('http');
+    expect(JSON.parse(redactOutboundContent(JSON.stringify({ email: reference }))).email)
+      .toBe('［个人资料已隐藏］');
+  });
 });

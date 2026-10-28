@@ -1,6 +1,8 @@
 /** 出站内容脱敏：只删除个人资料和凭据，不修改传给后台任务的原始输入。 */
 const email = /[\p{L}\p{N}._%+\-]+@[\p{L}\p{N}.\-]+(?:\.[\p{L}]{2,})?/gu;
 const versionedGitReference = /(?<![\p{L}\p{N}._%+@-])[\p{L}\p{N}._-]+\/v?\d+(?:\.\d+){1,3}@[a-f\d]{7,40}(?![\p{L}\p{N}._%+@-])/giu;
+// 仅识别有 scope 的 npm 包，以及常用标签或数字版本；邮箱域名和截断后缀不属于例外。
+const scopedNpmReference = /(?<![\p{L}\p{N}._%+@-])@[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*(?:@(?:latest|next|canary|alpha|beta|rc|stable|nightly|dev|[~^]?v?\d+(?:\.\d+){0,2}(?:-[a-z0-9-]+(?:\.[a-z0-9-]+)*)?(?:\+[a-z0-9-]+(?:\.[a-z0-9-]+)*)?))?(?![\p{L}\p{N}._%+@~^/-]|…)/gu;
 const mobile = /(?<!\d)(?:\+?86[ -]?)?1[3-9]\d[ -]?\d{4}[ -]?\d{4}(?!\d)/g;
 const identity = /(?<!\d)\d{6}(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx](?!\d)/g;
 const secretField = /^(?:email|e_mail|phone|mobile|id_card|idcard|identity_number|password|secret|access_token|refresh_token)$/i;
@@ -15,9 +17,14 @@ export function maskVersionedGitReferences(text: string): string {
   return text.replace(versionedGitReference, value => ' '.repeat(value.length));
 }
 
+/** 邮箱和标题判定共用等长遮罩；命令、代码块、链接中的 npm 包引用保持原始字节。 */
+export function maskTechnicalReferences(text: string): string {
+  return maskVersionedGitReferences(text).replace(scopedNpmReference, value => ' '.repeat(value.length));
+}
+
 /** 标记式替换不会保留仍可识别的邮箱域名或完整号码。 */
 function redactValues(text: string): string {
-  const emailCandidates = maskVersionedGitReferences(text);
+  const emailCandidates = maskTechnicalReferences(text);
   return text.replace(email, (value, offset: number) =>
     emailCandidates.slice(offset, offset + value.length).trim() === '' ? value : '［邮箱已隐藏］')
     .replace(mobile, '［手机号已隐藏］')

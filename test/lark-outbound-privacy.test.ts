@@ -31,6 +31,16 @@ async function request(content: string, failures: number[] = [], options: Record
 }
 
 describe('出站标题隐私', () => {
+  it('SDK 出站保留 npm 命令标题与正文，旁边的真实邮箱仍触发脱敏', async () => {
+    const command = 'npm i -g @bytedance-dev/xgit@latest --registry=https://bnpm.byted.org';
+    const original = JSON.stringify({ header: { title: { tag: 'plain_text', content: command } },
+      elements: [{ tag: 'markdown', content: `1. ${command}\n2. xgit init` }] });
+    const { calls } = await request(original);
+    expect(calls[0].data.content).toBe(original);
+    const mixed = original.replace(command, `${command} test.person@exa…`);
+    expect(JSON.parse(privateCardContent(mixed)).header.title.content).toBe('任务进度（个人资料已隐藏）');
+  });
+
   it('SDK 出站标题和正文保留版本分支及提交号', async () => {
     const reference = 'ohos/release/6.7.6.33@6c0d8af6';
     const original = JSON.stringify({ header: { title: { tag: 'plain_text', content: reference } },
