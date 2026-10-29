@@ -102,7 +102,8 @@ function main() {
     'test/codex-app-hook-health.test.ts', 'test/codex-app-runner.test.ts',
     'test/codex-app-thread-title.test.ts', 'test/cli-adapters.test.ts',
     'test/agent-team-store.test.ts', 'test/agent-team-capacity-reconcile.test.ts', 'test/agent-team-human-output.test.ts',
-    'test/agent-team-command.test.ts', 'test/build-atomic.test.ts']);
+    'test/agent-team-command.test.ts', 'test/build-atomic.test.ts',
+    'test/group-direct-mention-gate.test.ts', 'test/group-topic-followup-delivery.test.ts']);
   run('corepack', ['pnpm', 'build']);
 
   git(['add', '-A'], false);
