@@ -1,6 +1,13 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import * as groupSettings from '../src/services/regular-group-settings.js';
 
+// 事件入口的共享夹具不读取真实运行策略；新门禁用例显式开启。
+const directMention = vi.hoisted(() => ({ enabled: false }));
+vi.mock('../src/services/group-direct-mention-policy.js', () => ({
+  requiresDirectGroupMention: () => directMention.enabled,
+}));
+beforeEach(() => { directMention.enabled = false; });
+
 /** 复用真实事件入口的隔离夹具，避免复制整份 Lark SDK mock。 */
 export function registerOwnerContinuationCases(f: {
   appId: string; ownerId: string; botId: string;
@@ -43,10 +50,48 @@ export function registerOwnerContinuationCases(f: {
         mentions: mentioned ? [{ key: '@_bot', name: 'BotA', id: { open_id: f.botId } }] : [],
         ...options,
       });
+      data.message.message_type = 'text';
       await f.emit(data);
       await f.flush();
       return data;
     }
+
+    it.each(['group', 'topic'])('严格门禁拦截 %s 的主人免 @ 与已有话题续聊', async mode => {
+      directMention.enabled = true;
+      f.chatMode.mockResolvedValue(mode);
+      f.chatInfo.mockResolvedValue({ userCount: 1, botCount: 1 });
+      f.getBot().config.regularGroupMentionMode = 'ambient';
+      f.getBot().config.autoStartOnNewTopic = true;
+      await send('新任务');
+      handlers.isSessionOwner.mockReturnValue(true);
+      await send('继续', { rootId: 'existing-root', threadId: 'thread' });
+      expect(handlers.handleNewTopic).not.toHaveBeenCalled();
+      expect(handlers.handleThreadReply).not.toHaveBeenCalled();
+    });
+    it.each(['share_chat', 'merge_forward'])('严格门禁忽略带提及元数据的 %s', async type => {
+      directMention.enabled = true;
+      const data = f.event({
+        senderOpenId: f.ownerId, chatId: 'owner-chat', messageId: 'forward-' + type,
+        content: '{"chat_id":"oc_shared","text":"@_bot"}',
+        mentions: [{ key: '@_bot', name: 'BotA', id: { open_id: f.botId } }],
+      });
+      data.message.message_type = type;
+      await f.emit(data);
+      await f.flush();
+      expect(handlers.handleNewTopic).not.toHaveBeenCalled();
+      expect(handlers.handleThreadReply).not.toHaveBeenCalled();
+    });
+    it('严格门禁允许主人直接 @ 创建与续聊，但不放宽其他人的权限', async () => {
+      directMention.enabled = true;
+      await send('@_bot 开始', {}, true);
+      expect(handlers.handleNewTopic).toHaveBeenCalledTimes(1);
+      handlers.isSessionOwner.mockReturnValue(true);
+      await send('@_bot 继续', {}, true);
+      expect(handlers.handleThreadReply).toHaveBeenCalledTimes(1);
+      await send('@_bot 越权', { senderOpenId: 'ou_denied' }, true);
+      expect(handlers.handleNewTopic).toHaveBeenCalledTimes(1);
+      expect(handlers.handleThreadReply).toHaveBeenCalledTimes(1);
+    });
 
     it('关闭本群复用后群外消息新开，其他群不受影响', async () => {
       overrides.mockImplementation((_app: string, chat: string) => chat === 'owner-chat' ? { reuse: false } : {});

@@ -6,6 +6,30 @@ import { mentionOpenId } from './message-parser.js';
 
 export let warnedStringMentionShape = false;
 
+/** 只认当前文本或富文本正文中的结构化 @，不遍历转发、引用或卡片内容。 */
+export function isBotDirectlyMentioned(larkAppId: string, message: any): boolean {
+  if (message?.message_type !== 'text' && message?.message_type !== 'post') return false;
+  const botOpenId = getBot(larkAppId).botOpenId;
+  const mentions: any[] = Array.isArray(message.mentions) ? message.mentions : [];
+  const matched = mentions.filter(m => mentionMatchesBot(m, larkAppId, botOpenId));
+  try {
+    const content = JSON.parse(message.content ?? '{}');
+    if (message.message_type === 'text') {
+      // 元数据单独出现不能触发；对应占位符必须实际位于本条正文。
+      return typeof content?.text === 'string' && matched.some(m =>
+        typeof m.key === 'string' && m.key.length > 0
+        && new RegExp(m.key.replace(/[.*+?^{}()|[\]\\$]/g, '\\$&') + '(?![\\w])').test(content.text));
+    }
+    const inner = content?.zh_cn ?? content?.en_us ?? content;
+    if (!Array.isArray(inner?.content)) return false;
+    return inner.content.some((paragraph: any) => Array.isArray(paragraph)
+      && paragraph.some((node: any) => node?.tag === 'at'
+        && typeof node.user_id === 'string'
+        && (node.user_id === botOpenId || node.user_id === larkAppId
+          || matched.some(m => typeof m.key === 'string' && node.user_id === m.key))));
+  } catch { return false; }
+}
+
 /** Check if the bot was @mentioned in this message */
 export function isBotMentioned(larkAppId: string, message: any, _senderOpenId: string | undefined): boolean {
   const botOpenId = getBot(larkAppId).botOpenId;
