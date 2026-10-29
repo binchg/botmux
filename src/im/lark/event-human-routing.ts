@@ -9,6 +9,7 @@ import { tryHandleGrantCommand } from './grant-command.js';
 import { decideRoutingWithSource, regularGroupRouting, extractMessageTextForRouting, maybeApplyForceTopicOverride, maybeFoldMentionedRegularGroupThreadToChat, maybeApplySharedTopicSeed } from './event-routing.js';
 import { isBotMentioned, mentionsAnotherMember } from './event-mentions.js';
 import { resolveGroupMentionMode } from '../../services/chat-reply-mode-store.js';
+import { requiresDirectGroupMention } from '../../services/group-direct-mention-policy.js';
 import { getChatMode } from './client.js';
 import { ownerContinuationAtTopLevel, isContinuationOwner, requestsSeparateSession } from './regular-group-continuation.js';
 import { stripLeadingMentions } from './message-parser.js';
@@ -88,7 +89,7 @@ export async function prepareHumanRouting(context: IncomingMessageContext) {
         // back off, don't fold it in (mentionsAnotherMember). 'never'
         // (unconditional) and 'topic' are unaffected.
         if (!explicitlyMentionedThisBot
-            && resolveGroupMentionMode(larkAppId) !== 'always'
+            && (resolveGroupMentionMode(larkAppId) !== 'always' || requiresDirectGroupMention(larkAppId))
             && !(resolveGroupMentionMode(larkAppId) === 'ambient' && mentionsAnotherMember(larkAppId, message))
             && routing.scope === 'thread' && message.root_id && message.thread_id && chatType === 'group') {
           const alias = handlers.resolveReplyThreadAlias?.(message.root_id, chatId, larkAppId) ?? null;

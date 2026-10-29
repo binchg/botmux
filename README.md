@@ -92,7 +92,7 @@ botmux 可以管理 CLI 无关的自定义 Skill Registry，并按 bot 配置在
 
 ### 多机器人协作
 
-需要群内仅在直接 @ 时响应，可按机器人启用[群消息直接 @ 门禁](docs/group-direct-mention.md)，覆盖主人免 @ 和话题续聊，避免群名片或转发误触发。
+需要群内会话外仅在直接 @ 时响应，可按机器人启用[群消息直接 @ 门禁](docs/group-direct-mention.md)，避免群名片或转发误触发；已有会话话题内仍可免 @ 续聊。
 
 同一台机器上可运行多个飞书机器人，每个机器人可对应不同的 CLI。同一群聊中通过 @mention 路由消息，仅有一个机器人时无需 @ 自动响应；多机器人时 `@<bot1> @<bot2> /t xxx` 可让每个被 @ 的机器人在同一条消息上各自独立开新话题。先发一次 `@<bot1> @<bot2> /introduce` 让它们互相登记 open_id，之后各 bot 就能在自己的会话里显式 @mention 对方协作（命令详见 [📖 文档 · 斜杠命令](https://bytedance.aiforce.cloud/app/app_4k9smq6rdxher/slash-commands)）。
 

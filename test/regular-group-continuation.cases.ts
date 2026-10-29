@@ -56,7 +56,7 @@ export function registerOwnerContinuationCases(f: {
       return data;
     }
 
-    it.each(['group', 'topic'])('严格门禁拦截 %s 的主人免 @ 与已有话题续聊', async mode => {
+    it.each(['group', 'topic'])('严格门禁拦截 %s 的群顶层但允许已有话题续聊', async mode => {
       directMention.enabled = true;
       f.chatMode.mockResolvedValue(mode);
       f.chatInfo.mockResolvedValue({ userCount: 1, botCount: 1 });
@@ -66,7 +66,20 @@ export function registerOwnerContinuationCases(f: {
       handlers.isSessionOwner.mockReturnValue(true);
       await send('继续', { rootId: 'existing-root', threadId: 'thread' });
       expect(handlers.handleNewTopic).not.toHaveBeenCalled();
-      expect(handlers.handleThreadReply).not.toHaveBeenCalled();
+      expect(handlers.handleThreadReply).toHaveBeenCalledTimes(1);
+    });
+    it('共享会话话题在 always 模式也能免 @，群顶层仍不能免 @', async () => {
+      directMention.enabled = true;
+      f.getBot().config.regularGroupMentionMode = 'always';
+      f.getBot().config.regularGroupReplyMode = 'shared';
+      handlers.isSessionOwner.mockImplementation((anchor: string) => anchor === 'owner-chat');
+      handlers.resolveReplyThreadAlias.mockReturnValue({ chatId: 'owner-chat', sessionId: 'session' });
+      await send('继续', { rootId: 'shared-root', threadId: 'thread' });
+      expect(handlers.handleThreadReply).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        scope: 'chat', anchor: 'owner-chat', replyRootId: 'shared-root',
+      }));
+      await send('群外聊天');
+      expect(handlers.handleThreadReply).toHaveBeenCalledTimes(1);
     });
     it.each(['share_chat', 'merge_forward'])('严格门禁忽略带提及元数据的 %s', async type => {
       directMention.enabled = true;

@@ -6,6 +6,7 @@ import { getGroupStats } from './event-group-stats.js';
 import { resolveGroupMentionMode } from '../../services/chat-reply-mode-store.js';
 import { isBotDirectlyMentioned, mentionsAnotherMember } from './event-mentions.js';
 import { requiresDirectGroupMention } from '../../services/group-direct-mention-policy.js';
+import { isExistingGroupConversation } from './group-conversation-followup.js';
 import { getChatMode } from './client.js';
 import { checkGroupMessageAccess, maybeSendGrantRequestCard } from './event-access.js';
 import { logger } from '../../utils/logger.js';
@@ -20,9 +21,11 @@ import { dispatchSessionMessage } from './regular-group-continuation.js';
 /** 已确定落点的消息继续完成准入、总结和串行会话投递。 */
 export async function handleHumanMessage(context: IncomingMessageContext): Promise<void> {
   const { data, larkAppId, handlers, message, sender, chatId, chatType, messageId } = context;
-  // 严格入口先于命令、自动绑定、主人续聊与话题免 @，这些路径不能重新放行。
-  if (chatType === 'group' && requiresDirectGroupMention(larkAppId)
-      && !isBotDirectlyMentioned(larkAppId, message)) {
+  const strictGroupEntry = chatType === 'group' && requiresDirectGroupMention(larkAppId);
+  const conversationFollowup = strictGroupEntry && isExistingGroupConversation(context)
+    && !mentionsAnotherMember(larkAppId, message);
+  // 会话话题内可免 @ 续聊；群顶层、未绑定话题和引用气泡仍先经过直接 @ 门禁。
+  if (strictGroupEntry && !conversationFollowup && !isBotDirectlyMentioned(larkAppId, message)) {
     logger.debug(`Ignoring group message without direct mention: ${messageId}`);
     return;
   }
@@ -94,7 +97,8 @@ export async function handleHumanMessage(context: IncomingMessageContext): Promi
             && routing.scope === 'thread'
             && !!message.thread_id
             && await getChatMode(larkAppId, chatId) === 'topic';
-          const relax = (ownerTopLevel && continuationOwner && isAllowed)
+          const relax = (conversationFollowup && isAllowed)
+            || (ownerTopLevel && continuationOwner && isAllowed)
             || (!!replyRootId && isAllowed)
             || (isAllowed && mentionMode === 'never')
             || (isAllowed && mentionMode === 'ambient' && !mentionsAnotherMember(larkAppId, message))

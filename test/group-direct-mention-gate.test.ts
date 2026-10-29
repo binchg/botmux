@@ -21,7 +21,7 @@ function context(chatType: 'group' | 'p2p', message: Record<string, unknown>): I
     data, message: data.message, sender: data.sender, larkAppId: 'app', chatId: 'chat',
     chatType, messageId: 'message', handlers: {
       handleCardAction: vi.fn(), handleNewTopic: vi.fn(), handleThreadReply: vi.fn(),
-      isSessionOwner: () => true,
+      isSessionOwner: () => false,
     },
   };
 }
@@ -58,6 +58,29 @@ it('私聊无需 @', async () => {
   const input = context('p2p', { message_type: 'text', content: '{"text":"继续"}' });
   await handleHumanMessage(input);
   expect(mocks.prepare).toHaveBeenCalledWith(input);
+});
+
+it('已有独立话题内无需 @，但只有引用气泡的群消息仍需 @', async () => {
+  const input = context('group', { message_type: 'text', content: '{"text":"继续"}', root_id: 'root', thread_id: 'thread' });
+  input.handlers.isSessionOwner = () => true;
+  await handleHumanMessage(input);
+  expect(mocks.prepare).toHaveBeenCalledWith(input);
+  mocks.prepare.mockClear();
+  delete input.message.thread_id;
+  await handleHumanMessage(input);
+  expect(mocks.prepare).not.toHaveBeenCalled();
+});
+
+it('共享话题别名仅在本群仍绑定本机器人时免 @', async () => {
+  const input = context('group', { message_type: 'text', content: '{"text":"继续"}', root_id: 'root', thread_id: 'thread' });
+  input.handlers.isSessionOwner = anchor => anchor === 'chat';
+  input.handlers.resolveReplyThreadAlias = () => ({ chatId: 'chat', sessionId: 'session' });
+  await handleHumanMessage(input);
+  expect(mocks.prepare).toHaveBeenCalledWith(input);
+  mocks.prepare.mockClear();
+  input.handlers.resolveReplyThreadAlias = () => ({ chatId: 'other-chat', sessionId: 'session' });
+  await handleHumanMessage(input);
+  expect(mocks.prepare).not.toHaveBeenCalled();
 });
 
 it('未开启严格门禁的机器人沿用原路由', async () => {
