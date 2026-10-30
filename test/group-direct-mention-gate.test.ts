@@ -4,6 +4,7 @@ import { beforeEach, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({ strict: true, prepare: vi.fn() }));
 vi.mock('../src/services/group-direct-mention-policy.js', () => ({
   requiresDirectGroupMention: () => mocks.strict,
+  allowsOwnerTopicWithoutMention: () => false,
 }));
 vi.mock('../src/im/lark/event-human-routing.js', () => ({ prepareHumanRouting: mocks.prepare }));
 vi.mock('../src/bot-registry.js', () => ({ getBot: () => ({ botOpenId: 'ou_bot' }) }));

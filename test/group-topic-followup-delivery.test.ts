@@ -3,7 +3,9 @@ import { beforeEach, expect, it, vi } from 'vitest';
 import type { IncomingMessageContext } from '../src/im/lark/event-message-context.js';
 
 const state = vi.hoisted(() => ({ allowed: true, shared: false, prepare: vi.fn() }));
-vi.mock('../src/services/group-direct-mention-policy.js', () => ({ requiresDirectGroupMention: () => true }));
+vi.mock('../src/services/group-direct-mention-policy.js', () => ({
+  requiresDirectGroupMention: () => true, allowsOwnerTopicWithoutMention: () => false,
+}));
 vi.mock('../src/services/chat-reply-mode-store.js', () => ({ resolveGroupMentionMode: () => 'always' }));
 vi.mock('../src/im/lark/event-human-routing.js', () => ({ prepareHumanRouting: state.prepare }));
 vi.mock('../src/im/lark/event-summary-command.js', () => ({ resolveSummaryCommandMatch: async () => null }));

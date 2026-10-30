@@ -1,6 +1,6 @@
 # 群消息仅直接 @ 响应
 
-`group-direct-mention-policy.json` 位于 Botmux 运行数据目录，按应用 ID 保存布尔开关。
+`group-direct-mention-policy.json` 位于 Botmux 运行数据目录，按应用 ID 保存开关及可选的群级例外，兼容旧布尔配置。
 启用后，群中会话外的消息必须在当前文本或富文本正文中直接 @ 本机器人，才进入后续权限和会话路由。
 群名片、合并转发、卡片、引用内部的 @、仅写机器人名字和 @所有人均不触发。
 
@@ -10,6 +10,12 @@
 此门禁优先于主人免 @、单人群免 @、自动开话题和 `ambient` 等策略；不改变私聊、
 群会话复用方式或机器人之间的消息路由。
 未设置的机器人沿用原行为。配置损坏时收紧为必须直接 @，写入拒绝覆盖损坏文件。
+
+可为指定话题群开启「主人免 @」：机器人已解析的 `allowedUsers` 主人可直接发送文本或富文本，
+包括新话题首条消息和未绑定话题，仍须通过原有访问权限。不会为普通成员或其它群自动开启。
+每次放行前直接查询飞书确认群类型为话题群，普通群或类型查询失败均不放行；
+明确 @ 其他成员、转发和卡片也不利用此例外启动任务。
+这项例外不依赖 `autoStartOnNewTopic` 或 `ambient`，也不会打开普通群顶层免 @。
 
 从已构建的 canonical checkout 设置指定机器人（替换示例应用 ID）：
 
@@ -24,4 +30,16 @@ console.log(requiresDirectGroupMention("cli_example"));
 设置使用文件锁和原子写入，保留其它机器人的配置，下一条消息立即生效，无需重启。
 设为 `false` 恢复原有策略。首次安装此能力仍需通过 `deploy:dev` 部署代码。
 
-回归：`corepack pnpm exec vitest run --project unit test/group-direct-mention-policy.test.ts test/group-direct-mention-gate.test.ts test/event-dispatcher.test.ts`
+为某个话题群开启主人免 @（只影响指定机器人和群，同时保持严格群门禁）：
+
+```sh
+node --input-type=module -e '
+import { setOwnerTopicNoMention, allowsOwnerTopicWithoutMention } from "./dist/services/group-direct-mention-policy.js";
+await setOwnerTopicNoMention("cli_example", "oc_example", true);
+console.log(allowsOwnerTopicWithoutMention("cli_example", "oc_example"));
+'
+```
+
+最后一个参数为 `false` 时仅移除该群的例外；配置中不保存用户身份和凭据。
+
+回归：`corepack pnpm exec vitest run --project unit test/group-direct-mention-policy.test.ts test/group-direct-mention-gate.test.ts test/group-owner-topic-entry.test.ts test/group-topic-followup-delivery.test.ts test/event-dispatcher.test.ts`

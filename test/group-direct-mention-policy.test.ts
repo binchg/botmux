@@ -8,7 +8,7 @@ const state = vi.hoisted(() => ({ dataDir: '' }));
 vi.mock('../src/config.js', () => ({ config: { session: state } }));
 vi.mock('../src/bot-registry.js', () => ({ getBot: () => ({ botOpenId: 'ou_bot' }) }));
 import { isBotDirectlyMentioned } from '../src/im/lark/event-mentions.js';
-import { requiresDirectGroupMention, setDirectGroupMention } from '../src/services/group-direct-mention-policy.js';
+import { allowsOwnerTopicWithoutMention, requiresDirectGroupMention, setDirectGroupMention, setOwnerTopicNoMention } from '../src/services/group-direct-mention-policy.js';
 
 const mention = { key: '@_user_1', id: { open_id: 'ou_bot' } };
 /** 构造正文和提及元数据，避免把引用内容误当作当前正文。 */
@@ -60,6 +60,23 @@ describe('当前消息直接 @', () => {
 });
 
 describe('按机器人设置与即时回读', () => {
+  it('主人例外按机器人与群隔离，开关更新保留例外及其它机器人的设置', async () => {
+    await setDirectGroupMention('other', true);
+    await setOwnerTopicNoMention('app', 'topic-chat', true);
+    expect(requiresDirectGroupMention('app')).toBe(true);
+    expect(allowsOwnerTopicWithoutMention('app', 'topic-chat')).toBe(true);
+    expect(allowsOwnerTopicWithoutMention('app', 'other-chat')).toBe(false);
+    expect(allowsOwnerTopicWithoutMention('other', 'topic-chat')).toBe(false);
+    await setDirectGroupMention('app', false);
+    expect(allowsOwnerTopicWithoutMention('app', 'topic-chat')).toBe(false);
+    await setDirectGroupMention('app', true);
+    expect(allowsOwnerTopicWithoutMention('app', 'topic-chat')).toBe(true);
+    await setOwnerTopicNoMention('app', 'topic-chat', false);
+    expect(allowsOwnerTopicWithoutMention('app', 'topic-chat')).toBe(false);
+    expect(requiresDirectGroupMention('app')).toBe(true);
+    expect(requiresDirectGroupMention('other')).toBe(true);
+  });
+
   it('未设置沿用旧行为，并发写入保留其它机器人，修改下一次读取生效', async () => {
     expect(requiresDirectGroupMention('app')).toBe(false);
     await Promise.all([setDirectGroupMention('app', true), setDirectGroupMention('other', false)]);
@@ -71,11 +88,15 @@ describe('按机器人设置与即时回读', () => {
     expect(requiresDirectGroupMention('app')).toBe(false);
   });
 
-  it.each(['{broken', '[]', '{"app":"false"}', 'null'])('损坏时收紧入口且拒绝覆盖 %s', async raw => {
+  it.each(['{broken', '[]', '{"app":"false"}', 'null',
+    '{"app":{"requireDirectMention":true,"ownerTopicNoMentionChats":[null]}}',
+  ])('损坏时收紧入口且拒绝覆盖 %s', async raw => {
     const path = join(state.dataDir, 'group-direct-mention-policy.json');
     writeFileSync(path, raw);
     expect(requiresDirectGroupMention('app')).toBe(true);
+    expect(allowsOwnerTopicWithoutMention('app', 'topic-chat')).toBe(false);
     await expect(setDirectGroupMention('app', false)).rejects.toThrow();
+    await expect(setOwnerTopicNoMention('app', 'topic-chat', true)).rejects.toThrow();
     expect(readFileSync(path, 'utf8')).toBe(raw);
   });
 });

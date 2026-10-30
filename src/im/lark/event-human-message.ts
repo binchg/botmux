@@ -7,6 +7,7 @@ import { resolveGroupMentionMode } from '../../services/chat-reply-mode-store.js
 import { isBotDirectlyMentioned, mentionsAnotherMember } from './event-mentions.js';
 import { requiresDirectGroupMention } from '../../services/group-direct-mention-policy.js';
 import { isExistingGroupConversation } from './group-conversation-followup.js';
+import { isOwnerTopicEntry } from './group-owner-topic-entry.js';
 import { getChatMode } from './client.js';
 import { checkGroupMessageAccess, maybeSendGrantRequestCard } from './event-access.js';
 import { logger } from '../../utils/logger.js';
@@ -24,14 +25,19 @@ export async function handleHumanMessage(context: IncomingMessageContext): Promi
   const strictGroupEntry = chatType === 'group' && requiresDirectGroupMention(larkAppId);
   const conversationFollowup = strictGroupEntry && isExistingGroupConversation(context)
     && !mentionsAnotherMember(larkAppId, message);
-  // 会话话题内可免 @ 续聊；群顶层、未绑定话题和引用气泡仍先经过直接 @ 门禁。
-  if (strictGroupEntry && !conversationFollowup && !isBotDirectlyMentioned(larkAppId, message)) {
+  const directlyMentioned = strictGroupEntry && isBotDirectlyMentioned(larkAppId, message);
+  const ownerTopicEntry = strictGroupEntry && !conversationFollowup && !directlyMentioned
+    && await isOwnerTopicEntry(context);
+  // 指定话题群的主人可免 @ 开工；普通群顶层仍不能绕过直接 @ 门禁。
+  if (strictGroupEntry && !conversationFollowup && !directlyMentioned && !ownerTopicEntry) {
     logger.debug(`Ignoring group message without direct mention: ${messageId}`);
     return;
   }
   const prepared = await prepareHumanRouting(context);
   if (!prepared) return;
   const { senderOpenId, isAllowed, routing, routingSource, replyRootId, explicitlyMentionedThisBot, autoTopicSeedScope, autoTopicSeedAnchor, ownerContinuation, continuationOwner, forceTopicApplied, ownsSession } = prepared;
+  // 后续路由若发现群已转回普通群，不得把刚取得的免 @ 资格用于群顶层会话。
+  if (ownerTopicEntry && routing.scope !== 'thread') return;
   const senderType = sender?.sender_type;
         const summaryCommandMatch = await resolveSummaryCommandMatch({
           larkAppId,
@@ -98,6 +104,7 @@ export async function handleHumanMessage(context: IncomingMessageContext): Promi
             && !!message.thread_id
             && await getChatMode(larkAppId, chatId) === 'topic';
           const relax = (conversationFollowup && isAllowed)
+            || (ownerTopicEntry && isAllowed)
             || (ownerTopLevel && continuationOwner && isAllowed)
             || (!!replyRootId && isAllowed)
             || (isAllowed && mentionMode === 'never')
