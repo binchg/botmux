@@ -3,6 +3,8 @@ import { SharedBotContext } from './services/shared-bot-context.js';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { readTraexAdaptivePolicy, TraexAdaptiveRouter, TraexQueueReader } from './services/traex-adaptive-model.js';
+import { TraexAdmission } from './services/traex-admission.js';
+import { fetchTraexCatalog } from './services/traex-model-catalog.js';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { Buffer } from 'node:buffer';
 import { config } from './config.js';
@@ -88,7 +90,7 @@ function parseArgs(argv: string[]): Args {
   const out: Args = {
     sessionId: '',
     codexBin: 'codex',
-    traexBin: 'traex',
+    traexBin: process.env.TRAEX_APP_SERVER_BIN || 'traex',
     cwd: process.cwd(),
   };
   for (let i = 0; i < argv.length; i++) {
@@ -311,12 +313,14 @@ function sharedContextPrefix(): string {
   try { return sharedContext?.snapshot() ?? ''; }
   catch (error) { writeLine(`[shared-context] unavailable: ${asError(error).message}`); return ''; }
 }
-const adaptivePolicy = readTraexAdaptivePolicy();
+const adaptivePolicy = readTraexAdaptivePolicy(process.env, true);
 const adaptiveRouter = adaptivePolicy ? new TraexAdaptiveRouter(adaptivePolicy, join(config.session.dataDir, 'traex-adaptive',
   createHash('sha256').update(args.botOpenId || args.botName || args.sessionId).digest('hex') + '.json')) : undefined;
-let adaptiveAvailable: string[] = [];
+const admission = adaptiveRouter ? new TraexAdmission(adaptiveRouter, () => fetchTraexCatalog(args.traexBin, args.cwd)) : undefined;
+let admissionAbort: AbortController | undefined;
 const savedExecutor = readSessionExecutor(config.session.dataDir, args.sessionId);
-let activeExecutor: 'codex-app' | 'traex' = savedExecutor?.executor ?? (adaptivePolicy ? 'traex' : 'codex-app');
+let activeExecutor: 'codex-app' | 'traex' = savedExecutor?.executor
+  ?? (process.env.TRAEX_APP_SERVER_DEFAULT === '1' || process.env.TRAEX_ADAPTIVE_MODELS ? 'traex' : 'codex-app');
 let activeHookTrust = readGlobalConfig().hookTrust ?? savedExecutor?.hookTrust ?? readSessionModel(config.session.dataDir, args.sessionId)?.hookTrust ?? 'review';
 let client = new AppServerClient(activeExecutor === 'traex' ? args.traexBin : args.codexBin, args.cwd);
 let threadId = savedExecutor?.threadId ?? args.threadId;
@@ -446,6 +450,11 @@ function handleUserMessage(content: string): void {
 
 /** 通过 app-server 真正中断当前 turn；线程本身保留，可继续发新指令。 */
 async function interruptActiveTurn(): Promise<void> {
+  if (admissionAbort && !activeTurn) {
+    admissionAbort.abort();
+    emitMarker('interrupt_ack', { acknowledged: true, at: Date.now() });
+    return;
+  }
   const turn = activeTurn;
   if (!threadId || !turn?.turnId) {
     writeLine('[codex-app] no active turn to interrupt');
@@ -645,12 +654,12 @@ async function loadDefaultThreadModel(): Promise<void> {
     const config = response?.config ?? {};
     defaultThreadModel = typeof config.model === 'string' && config.model.trim()
       ? config.model.trim()
-      : adaptivePolicy?.models[0];
+      : activeExecutor === 'traex' ? adaptivePolicy?.models[0] : undefined;
     defaultThreadModelProvider = typeof config.model_provider === 'string' && config.model_provider.trim()
       ? config.model_provider.trim()
       : undefined;
-    defaultThreadEffort = config.model_reasoning_effort ?? (adaptivePolicy ? 'xhigh' : undefined);
-    defaultServiceTier = config.service_tier ?? (adaptivePolicy ? 'default' : undefined);
+    defaultThreadEffort = activeExecutor === 'traex' && adaptivePolicy ? 'xhigh' : config.model_reasoning_effort;
+    defaultServiceTier = config.service_tier ?? (activeExecutor === 'traex' ? 'default' : undefined);
   } catch (err: any) {
     if (process.env.BOTMUX_CODEX_APP_DEBUG === '1') {
       writeLine(`[codex-app] default model config unavailable: ${err?.message ?? err}`);
@@ -787,10 +796,19 @@ async function runSingleTurn(content: string, autoContinue: boolean, attempted =
   const hookTrustIssue = await currentHookTrustIssue();
   if (hookTrustIssue) throw new Error(hookTrustIssue);
   const adaptive = activeExecutor === 'traex' ? adaptiveRouter : undefined;
-  const selectedModel = (adaptive ? forcedModel ?? adaptive.choose(adaptiveAvailable, attempted) : undefined) ?? requested?.model ?? defaultThreadModel;
+  let selectedModel = requested?.model ?? defaultThreadModel;
+  if (adaptive && admission) {
+    admissionAbort = new AbortController();
+    try {
+      selectedModel = await admission.select(attempted, admissionAbort.signal, message => {
+        writeLine(`[traex-adaptive] ${message}`);
+        emitMarker('progress', { content: message, startedAtMs: Date.now(), updatedAtMs: Date.now() });
+      }, requested?.effort ?? 'xhigh');
+    } finally { admissionAbort = undefined; }
+  }
   const tid = await ensureThread(selectedModel);
   persistExecutor();
-  const selection = { model: selectedModel, effort: requested?.effort ?? defaultThreadEffort,
+  const selection = { model: selectedModel, effort: requested?.effort ?? (adaptive ? 'xhigh' : defaultThreadEffort),
     serviceTier: requested?.serviceTier ?? defaultServiceTier };
   const modelReceipt = (phase: 'running' | 'completed' | 'failed', turnId?: string) => writeSessionModelRuntime(config.session.dataDir, {
     sessionId: args.sessionId, pid: process.pid, threadId: tid, phase, revision: requested?.revision,
@@ -806,7 +824,7 @@ async function runSingleTurn(content: string, autoContinue: boolean, attempted =
     try { queueReader = new TraexQueueReader(tid, client.pid); }
     catch (error) { writeLine(`[traex-adaptive] queue observation unavailable: ${asError(error).message}`); }
     const check = async () => {
-      if (!queueReader || activeTurn !== turn || !turn.turnId || turn.finished || turn.userInterrupted || turn.adaptiveChecking || turn.adaptiveNextModel || turn.toolItems?.size) return;
+      if (!queueReader || activeTurn !== turn || !turn.turnId || turn.finished || turn.userInterrupted || turn.criticalHookFailure || turn.adaptiveChecking || turn.adaptiveNextModel || turn.toolItems?.size) return;
       const activityAt = turn.adaptiveActivityAt ?? turn.startedAtMs;
       let evidence;
       try { evidence = queueReader.poll(activityAt); } catch { return; }
@@ -814,17 +832,15 @@ async function runSingleTurn(content: string, autoContinue: boolean, attempted =
       turn.adaptiveChecking = true;
       try {
         await adaptive.queued(selection.model!);
-        const next = adaptive.lower(selection.model!, adaptiveAvailable, attempted);
+        try { await admission!.refresh(); } catch { admission!.catalog = []; }
+        const next = admission!.choose(attempted, selection.effort);
         if (activeTurn !== turn || turn.finished || turn.userInterrupted || (turn.adaptiveActivityAt ?? turn.startedAtMs) > activityAt) return;
-        if (!next && turn.adaptiveFloorNotified) return;
-        if (!next) turn.adaptiveFloorNotified = true;
         const notice = next
-          ? `TraeX ${selection.model} 正在排队${evidence.position === undefined ? '' : `（第 ${evidence.position} 位）`}，降级到 ${next} 并沿原线程继续。`
-          : `TraeX ${selection.model} 正在排队，已到配置的最低档，保留当前请求等待。`;
+          ? `TraeX ${selection.model} 正在排队${evidence.position === undefined ? '' : `（第 ${evidence.position} 位）`}，切换到 ${next} 并沿原线程继续。`
+          : `TraeX ${selection.model} 正在排队，暂时没有空闲候选，退出排队后自动刷新重选。`;
         writeLine(`[traex-adaptive] ${notice}`);
         emitMarker('progress', { content: notice, turnId: turn.turnId, startedAtMs: turn.startedAtMs, updatedAtMs: Date.now() });
-        if (!next) return;
-        turn.adaptiveNextModel = next;
+        turn.adaptiveNextModel = next ?? 'reselect';
         try { await client.request('turn/interrupt', { threadId: tid, turnId: turn.turnId }); }
         catch (error) { turn.adaptiveNextModel = undefined; throw error; }
       } catch (error) { writeLine(`[traex-adaptive] ${asError(error).message}`); }
@@ -905,7 +921,7 @@ async function runTurn(content: string): Promise<void> {
     const outcome = await runSingleTurn(nextContent, autoContinueCount > 0 || !!forcedModel, attempted, forcedModel);
     if (outcome.adaptiveNextModel) {
       forcedModel = outcome.adaptiveNextModel;
-      nextContent = '上一轮因服务端排队已中断等待，模型已自动降级。请沿当前线程继续完成用户最新请求；保留所有追问、已完成操作和工具结果，不要重放已完成的操作。';
+      nextContent = '上一轮因服务端排队已中断等待，模型已自动重选。请沿当前线程继续完成用户最新请求；保留所有追问、已完成操作和工具结果，不要重放已完成的操作。';
       continue;
     }
     if (!outcome.rateLimitError) return;
@@ -959,7 +975,7 @@ async function drainQueue(): Promise<void> {
             threadId, phase: 'failed', revision: requested?.revision,
             selection: runtime?.selection ? { ...runtime.selection, executor: activeExecutor } : undefined });
         }
-        const message = `Codex App runner error: ${err?.message ?? err}`;
+        const message = err?.name === 'AbortError' ? 'TraeX 选模等待已取消。' : `Codex App runner error: ${err?.message ?? err}`;
         writeLine(message);
         emitMarker('final', {
           turnId: `codex-app-error-${Date.now()}`,
@@ -1017,19 +1033,9 @@ async function main(): Promise<void> {
   client.onNotification(handleNotification);
   await client.initialize();
   await loadDefaultThreadModel();
-  if (adaptivePolicy && activeExecutor === 'traex') {
-    let cursor: string | undefined;
-    const seen = new Set<string>();
-    do {
-      const result = await client.request('model/list', { limit: 100, cursor });
-      for (const model of result.data ?? []) adaptiveAvailable.push(model.configName ?? model.model ?? model.id);
-      cursor = result.nextCursor || undefined;
-      if (cursor && seen.has(cursor)) throw new Error('traex_model_catalog_cursor_loop');
-      if (cursor) seen.add(cursor);
-    } while (cursor);
-    adaptiveAvailable = adaptivePolicy.models.filter(x => adaptiveAvailable.includes(x));
-    if (!adaptiveAvailable.length) throw new Error('traex_adaptive_no_available_models');
-    defaultThreadModel = adaptiveRouter!.choose(adaptiveAvailable);
+  if (admission && activeExecutor === 'traex') {
+    try { await admission.refresh(); defaultThreadModel = admission.choose() ?? defaultThreadModel; }
+    catch { writeLine('[traex-adaptive] 模型目录暂不可用，将在收到请求后自动刷新。'); }
   }
   const hookTrustIssue = await currentHookTrustIssue();
   if (hookTrustIssue) writeLine(`[codex-app] ${hookTrustIssue}`);

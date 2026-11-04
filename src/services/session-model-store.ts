@@ -18,7 +18,7 @@ export interface SessionModelRequest extends ModelSelection {
 }
 export interface SessionModelRuntime {
   sessionId: string;
-  protocol: 1 | 2 | 3;
+  protocol: 1 | 2 | 3 | 4;
   pid: number;
   threadId?: string;
   phase: 'ready' | 'running' | 'completed' | 'failed';
@@ -52,17 +52,17 @@ export function writeSessionModel(dir: string, sessionId: string, selection: Mod
   return value;
 }
 export function writeSessionModelRuntime(dir: string, value: Omit<SessionModelRuntime, 'updatedAt' | 'protocol'>): void {
-  write(dir, value.sessionId, 'runtime', { ...value, protocol: 3, updatedAt: new Date().toISOString() });
+  write(dir, value.sessionId, 'runtime', { ...value, protocol: 4, updatedAt: new Date().toISOString() });
 }
 export function modelRuntimeAlive(runtime?: SessionModelRuntime): boolean {
-  if (!runtime || ![1, 2, 3].includes(runtime.protocol) || !Number.isInteger(runtime.pid) || runtime.pid < 1) return false;
+  if (!runtime || ![1, 2, 3, 4].includes(runtime.protocol) || !Number.isInteger(runtime.pid) || runtime.pid < 1) return false;
   try { process.kill(runtime.pid, 0); return true; } catch { return false; }
 }
 export function sessionModelStatus(dir: string, sessionId: string) {
   const desired = readSessionModel(dir, sessionId), runtime = readSessionModelRuntime(dir, sessionId);
   const alive = modelRuntimeAlive(runtime), accepted = alive && !!desired && runtime?.revision === desired.revision;
   return { desired: desired ?? null, runtime: runtime ?? null, runnerAlive: alive,
-    status: !desired ? 'default' : !alive || (!!desired.executor && (runtime?.protocol ?? 0) < 2) || (!!desired.hookTrust && (runtime?.protocol ?? 0) < 3) ? 'pending_runner_reload' : !accepted ? 'pending_next_turn'
+    status: !desired ? 'default' : !alive || (!!desired.executor && (runtime?.protocol ?? 0) < 2) || (desired.executor === 'traex' && (runtime?.protocol ?? 0) < 4) || (!!desired.hookTrust && (runtime?.protocol ?? 0) < 3) ? 'pending_runner_reload' : !accepted ? 'pending_next_turn'
       : runtime?.phase === 'completed' ? 'verified' : runtime?.phase === 'failed' ? 'failed' : 'accepted' };
 }
 

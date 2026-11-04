@@ -1,6 +1,8 @@
 import { mergeGlobalConfig } from '../global-config.js';
+import { runTraexRouteCommand } from './traex-route-command.js';
 export interface ModelCommandContext { sessionId: string; ipcPort: number }
 export const MODEL_COMMAND_HELP = `botmux model [status|list]
+botmux model route [--json]  # TraeX 负载快照及默认 xhigh 候选
 botmux model list [--executor codex-app|traex]
 botmux model set <model> [effort] [--executor codex-app|traex] [--speed default|priority] [--session-id <id>]
 botmux model executor <codex-app|traex> [--session-id <id>]
@@ -41,6 +43,7 @@ export function parseModelCommand(args: string[]): { action: string; executor?: 
 export async function runSessionModelCommand(args: string[], ctx?: ModelCommandContext, daemons: { ipcPort: number }[] = []): Promise<number> {
   if (args.some(x => ['help', '--help', '-h'].includes(x))) { console.log(MODEL_COMMAND_HELP); return 0; }
   try {
+    if (args[0] === 'route') return await runTraexRouteCommand(args.slice(1));
     const command = parseModelCommand(args);
     if (command.all) {
       const hookTrust = command.body!.hookTrust as 'always' | 'review';

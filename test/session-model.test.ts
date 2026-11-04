@@ -59,7 +59,8 @@ if(m.method==='turn/start'){const id='turn-'+(++n);fs.appendFileSync(process.env
 send({id:m.id,result});});
 `, { mode: 0o700 });
     const runner = spawn(process.execPath, ['--import', 'tsx', resolve('src/codex-app-runner.ts'), '--session-id', 'synthetic-session', '--codex-bin', executable, '--cwd', d], {
-      cwd: process.cwd(), env: { ...process.env, SESSION_DATA_DIR: d, MODEL_TEST_CALLS: calls }, stdio: ['pipe', 'pipe', 'pipe'],
+      cwd: process.cwd(), env: { ...process.env, SESSION_DATA_DIR: d, MODEL_TEST_CALLS: calls,
+        TRAEX_ADAPTIVE_MODELS: '', TRAEX_APP_SERVER_DEFAULT: '', BOT_SHARED_CONTEXT_GROUP: '' }, stdio: ['pipe', 'pipe', 'pipe'],
     });
     let errors = ''; runner.stdout.on('data', () => {}); runner.stderr.on('data', chunk => { errors += chunk.toString(); });
     const state = () => sessionModelStatus(d, 'synthetic-session');

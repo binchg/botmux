@@ -96,6 +96,7 @@ import { parseWorkerRequestUrl } from './utils/worker-http.js';
 import { TerminalAccess, terminalLocalRequest } from './services/terminal-access.js';
 import { sendTerminalLockPage, terminalAccessControls, privateTerminalHtml } from './utils/terminal-access-page.js';
 import { readSessionModel, readSessionModelRuntime, writeSessionModel } from './services/session-model-store.js';
+import { configureTraexAppLaunch } from './services/traex-app-launch.js';
 import { detectCliUsageLimit, usageLimitStateKey, type CliUsageLimitState } from './utils/cli-usage-limit.js';
 import { uploadImageBuffer } from './utils/lark-upload.js';
 import { redactChildEnv } from './utils/child-env.js';
@@ -4987,6 +4988,9 @@ function restartOwnedCli(reason: string, countAsFailure: boolean): void {
   awaitingFirstPrompt = true;
   setTimeout(() => {
     if (lastInitConfig) {
+      if (readSessionModel(config.session.dataDir, sessionId)?.executor === 'traex') {
+        configureTraexAppLaunch(lastInitConfig, config.session.dataDir, true);
+      }
       startScreenUpdates();
       startScreenAnalyzer();
       spawnCli({ ...lastInitConfig, resume: true, prompt: '' });
@@ -5843,6 +5847,7 @@ process.on('message', async (raw: unknown) => {
   switch (msg.type) {
     case 'init': {
       if (lastInitConfig) return;  // already initialized
+      configureTraexAppLaunch(msg, config.session.dataDir);
       lastInitConfig = msg;
       sessionId = msg.sessionId;
       if (msg.ownerOpenId) process.env.__OWNER_OPEN_ID = msg.ownerOpenId;

@@ -1,5 +1,4 @@
-/** Opt-in, per-bot TraeX routing. Only a provider queue event opens the circuit;
- * catalog load percentages, silence and slow reasoning are not queue evidence. */
+/** 负载用于请求前预选，实际排队事件用于熔断；不把静默或慢推理当成排队。 */
 import { createRequire } from 'node:module';
 import { mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -7,9 +6,13 @@ import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { withFileLock } from '../utils/file-lock.js';
 import { traeHome } from './traex-paths.js';
 
+export const TRAEX_MODEL_ORDER = ['gpt-6.1-sol', 'gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-terra',
+  'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.2'];
 export interface TraexAdaptivePolicy { models: string[]; cooldownMs: number }
-export function readTraexAdaptivePolicy(env = process.env): TraexAdaptivePolicy | undefined {
-  const models = [...new Set((env.TRAEX_ADAPTIVE_MODELS ?? '').split(',').map(x => x.trim()).filter(Boolean))];
+export function readTraexAdaptivePolicy(env = process.env, enabledByDefault = false): TraexAdaptivePolicy | undefined {
+  if (env.TRAEX_ADAPTIVE_ENABLED === '0') return undefined;
+  const configured = env.TRAEX_ADAPTIVE_MODELS ?? (enabledByDefault ? TRAEX_MODEL_ORDER.join(',') : '');
+  const models = [...new Set(configured.split(',').map(x => x.trim().toLowerCase()).filter(Boolean))];
   if (!models.length) return undefined;
   if (models.length > 8 || models.some(x => !/^[\w.-]+$/.test(x))) throw new Error('invalid_traex_adaptive_models');
   const cooldownMs = Number(env.TRAEX_ADAPTIVE_COOLDOWN_MS ?? 120000);
@@ -34,7 +37,7 @@ export class TraexAdaptiveRouter {
   choose(available: string[], attempted = new Set<string>(), now = Date.now()): string | undefined {
     const health = this.read();
     const eligible = this.policy.models.filter(x => available.includes(x) && !attempted.has(x));
-    return eligible.find(x => !(health.blockedUntil[x] > now)) ?? eligible.at(-1);
+    return eligible.find(x => !(health.blockedUntil[x] > now));
   }
   async queued(model: string, now = Date.now()): Promise<void> {
     mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
@@ -78,6 +81,7 @@ export class TraexQueueReader {
     let result: TraexQueueEvidence | undefined;
     for (const row of rows) {
       this.cursor = Number(row.id);
+      if (/\bqueue_end\b/.test(String(row.feedback_log_body))) { result = undefined; continue; }
       const evidence = parseTraexQueueEvidence(row);
       if (evidence && evidence.atMs >= afterMs) result = evidence;
     }

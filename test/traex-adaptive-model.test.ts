@@ -5,6 +5,8 @@ import { createRequire } from 'node:module';
 import { spawn } from 'node:child_process';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { readTraexAdaptivePolicy, TraexAdaptiveRouter, TraexQueueReader } from '../src/services/traex-adaptive-model.js';
+import { TraexAdmission } from '../src/services/traex-admission.js';
+import { eligibleTraexModels, parseTraexCatalog } from '../src/services/traex-model-catalog.js';
 import { sessionModelStatus } from '../src/services/session-model-store.js';
 
 const roots: string[] = [];
@@ -23,6 +25,34 @@ describe('TraeX admission routing', () => {
     expect(router.choose(p.models, new Set(), 2100)).toBe('top');
     expect(router.lower('low', p.models, new Set())).toBeUndefined();
     expect(router.choose(['low'], new Set(['low']))).toBeUndefined();
+    await router.queued('middle', 100); await router.queued('low', 100);
+    expect(router.choose(p.models, new Set(), 200)).toBeUndefined();
+  });
+
+  it('ranks only known sub-100 loads with the requested effort and no reported queue', () => {
+    const raw = (slug: string, load: unknown, queue: unknown = null) => ({ slug, visibility: 'list',
+      model_provider_id: 'trae', business_metadata: { load: { load_percent: load, queue_size: queue } },
+      supported_reasoning_levels: [{ effort: 'xhigh' }] });
+    const catalog = parseTraexCatalog({ models: [raw('top', 100), raw('middle', 99), raw('low', null),
+      raw('queued', 25, 3), raw('nan', '12'), raw('negative', -1), raw('zero', 0)] });
+    expect(eligibleTraexModels(catalog)).toEqual(['middle', 'zero']);
+    expect(eligibleTraexModels(catalog, 'ultra')).toEqual([]);
+    expect(readTraexAdaptivePolicy({}, true)?.models[0]).toBe('gpt-6.1-sol');
+    expect(readTraexAdaptivePolicy({ TRAEX_ADAPTIVE_ENABLED: '0' }, true)).toBeUndefined();
+  });
+
+  it('waits without inference, recovers the best model, and accepts cancellation', async () => {
+    const router = new TraexAdaptiveRouter({ models: ['top', 'low'], cooldownMs: 1000 }, join(temp(), 'health.json'));
+    let refreshed = 0;
+    const admission = new TraexAdmission(router, async () => [{ model: 'top', displayName: 'top',
+      loadPercent: ++refreshed < 3 ? 110 : 20, efforts: ['xhigh'] }], 10);
+    const notice = vi.fn();
+    expect(await admission.select(new Set(), new AbortController().signal, notice)).toBe('top');
+    expect(refreshed).toBe(3); expect(notice).toHaveBeenCalledTimes(1);
+    const aborted = new AbortController();
+    const unavailable = new TraexAdmission(router, async () => [], 10000);
+    const pending = unavailable.select(new Set(), aborted.signal, () => aborted.abort());
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
   });
 
   it('merges simultaneous queue reports from separate sessions', async () => {
@@ -55,11 +85,14 @@ describe('TraeX admission routing', () => {
 });
 
 describe('real runner adaptive protocol', () => {
-  it.each(['queue', 'cancel', 'completion-race', 'tools'])('handles %s without replaying work or losing follow-up', async (mode) => {
+  it.each(['queue', 'cancel', 'completion-race', 'tools', 'load', 'waiting'])('handles %s without replaying work or losing follow-up', async (mode) => {
     const dir = temp(), executable = join(dir, 'fake-traex.cjs'), calls = join(dir, 'calls.jsonl');
     mkdirSync(join(dir, 'cli'));
     writeFileSync(executable, `#!/usr/bin/env node
 const fs=require('node:fs'),readline=require('node:readline'),{DatabaseSync}=require('node:sqlite');
+if(process.argv[2]==='debug'){
+const busy=process.env.ADAPTIVE_TEST_MODE==='load'&&!fs.existsSync(process.env.MODEL_TEST_CALLS);
+process.stdout.write(JSON.stringify({models:['top','low'].map(slug=>({slug,visibility:'list',model_provider_id:'trae',supported_reasoning_levels:[{effort:'xhigh'}],business_metadata:{load:{load_percent:process.env.ADAPTIVE_TEST_MODE==='waiting'||busy&&slug==='top'?100:30}}}))}));process.exit(0);}
 const db=new DatabaseSync(process.env.TRAE_HOME+'/cli/logs_2.sqlite');
 db.exec('CREATE TABLE IF NOT EXISTS logs(id INTEGER PRIMARY KEY,ts INTEGER,ts_nanos INTEGER,thread_id TEXT,process_uuid TEXT,feedback_log_body TEXT)');
 const mode=process.env.ADAPTIVE_TEST_MODE; let n=0; const send=x=>process.stdout.write(JSON.stringify(x)+'\\n');
@@ -72,7 +105,7 @@ if(m.method==='turn/steer'){fs.appendFileSync(process.env.MODEL_TEST_CALLS,JSON.
 if(m.method==='turn/start'){
 const id='turn-'+(++n);fs.appendFileSync(process.env.MODEL_TEST_CALLS,JSON.stringify(m.params)+'\\n');send({id:m.id,result:{turn:{id}}});
 if(n===1 && mode==='tools'){send({method:'item/started',params:{threadId:'same-thread',item:{type:'commandExecution',id:'cmd-1',command:'fake tool'}}});setTimeout(()=>{send({method:'item/completed',params:{threadId:'same-thread',item:{type:'commandExecution',id:'cmd-1'}}});send({method:'turn/completed',params:{threadId:'same-thread',turn:{id,status:'completed'}}});},1300);}
-if(n===1)setTimeout(()=>{const now=Date.now();db.prepare('INSERT INTO logs(ts,ts_nanos,thread_id,process_uuid,feedback_log_body) VALUES(?,?,?,?,?)').run(Math.floor(now/1000),(now%1000)*1e6,'same-thread','pid:'+process.pid+':fake','Trae request_wait_in_queue Your queue position is 71');send({method:'hook/completed',params:{threadId:'same-thread',turnId:id,run:{}}});},600);
+if(n===1 && mode!=='load')setTimeout(()=>{const now=Date.now();db.prepare('INSERT INTO logs(ts,ts_nanos,thread_id,process_uuid,feedback_log_body) VALUES(?,?,?,?,?)').run(Math.floor(now/1000),(now%1000)*1e6,'same-thread','pid:'+process.pid+':fake','Trae request_wait_in_queue Your queue position is 71');send({method:'hook/completed',params:{threadId:'same-thread',turnId:id,run:{}}});},600);
 else setTimeout(()=>{send({method:'item/completed',params:{threadId:'same-thread',item:{type:'agentMessage',id:'answer-'+n,text:'complete',phase:'final_answer'}}});send({method:'turn/completed',params:{threadId:'same-thread',turn:{id,status:'completed'}}});},50);
 return;}
 if(m.method==='turn/interrupt'){send({id:m.id,result:{}});send({method:'turn/completed',params:{threadId:'same-thread',turn:{id:'turn-'+n,status:mode==='completion-race'?'completed':'interrupted'}}});return;}
@@ -81,12 +114,28 @@ send({id:m.id,result});});
     const runner = spawn(process.execPath, ['--import','tsx',resolve('src/codex-app-runner.ts'),'--session-id','adaptive-session','--traex-bin',executable,'--cwd',dir], {
       env: { ...process.env, SESSION_DATA_DIR: dir, TRAE_HOME: dir, TRAEX_ADAPTIVE_MODELS: 'top,low', TRAEX_ADAPTIVE_COOLDOWN_MS: '1000', MODEL_TEST_CALLS: calls, ADAPTIVE_TEST_MODE: mode }, stdio: ['pipe','pipe','pipe'],
     });
-    let errors = ''; runner.stderr.on('data', x => { errors += x; }); runner.stdout.on('data', () => {});
+    let errors = '', output = ''; runner.stderr.on('data', x => { errors += x; }); runner.stdout.on('data', x => { output += x; });
     const state = () => sessionModelStatus(dir, 'adaptive-session');
     const send = (content: string) => runner.stdin.write('::botmux-codex-app:' + Buffer.from(JSON.stringify({type:'message',content})).toString('base64') + '\n');
     try {
       await vi.waitFor(() => expect(state().runtime?.phase, errors).toBe('ready'), { timeout: 15000 });
       send('original task');
+      if (mode === 'waiting') {
+        await vi.waitFor(() => expect(output).toContain('暂停请求'));
+        runner.stdin.write('::botmux-codex-app:' + Buffer.from(JSON.stringify({type:'interrupt'})).toString('base64') + '\n');
+        await vi.waitFor(() => expect(state().runtime?.phase, errors).toBe('failed'));
+        expect(() => readFileSync(calls, 'utf8')).toThrow();
+        return;
+      }
+      if (mode === 'load') {
+        await vi.waitFor(() => expect(state().runtime?.phase, errors).toBe('completed'), { timeout: 5000 });
+        expect(state().runtime?.selection?.model).toBe('low');
+        send('next question');
+        await vi.waitFor(() => expect(state().runtime?.turnId).toBe('turn-2'));
+        await vi.waitFor(() => expect(state().runtime?.phase).toBe('completed'));
+        expect(state().runtime?.selection).toMatchObject({ model: 'top', effort: 'xhigh' });
+        return;
+      }
       await vi.waitFor(() => expect(state().runtime?.phase, errors).toBe('running'));
       if (mode === 'cancel') {
         runner.stdin.write('::botmux-codex-app:' + Buffer.from(JSON.stringify({type:'interrupt'})).toString('base64') + '\n');
