@@ -24,6 +24,7 @@ export interface SessionModelRuntime {
   phase: 'ready' | 'running' | 'completed' | 'failed';
   revision?: string;
   selection?: ModelSelection;
+  routing?: { executor: 'traex'; state?: 'selecting' | 'waiting' | 'requested' | 'queued'; effort: string; loadPercent?: number; position?: number };
   turnId?: string;
   updatedAt: string;
 }

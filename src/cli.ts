@@ -67,6 +67,7 @@ import { firstPositional } from './cli/arg-utils.js';
 import { dispatchPrimaryMessage, findStdinAliasAttachment, sendFileAttachments } from './cli/send-dispatch.js';
 import { runAgentTeamCommand } from './cli/agent-team-command.js';
 import { runSessionModelCommand } from './cli/session-model-command.js';
+import { readSessionModelDisplay, withSessionModelDisplay } from './services/session-model-display.js';
 import { buildPm2SpawnCommand } from './cli/pm2-command.js';
 import { callDashboard, type DashboardEndpoint, type DashboardResult } from './cli/dashboard-endpoint.js';
 import { loadDashboardSecret } from './dashboard/auth.js';
@@ -4529,6 +4530,7 @@ async function cmdSend(rest: string[]): Promise<void> {
   };
 
   const shouldRecordBridgeMarker = !sendTopLevel && !overrideChatId && !sendInto;
+  const replyModelDisplay = shouldRecordBridgeMarker ? readSessionModelDisplay(resolveDataDir(), sid) : null;
   const terminalRequestId = terminal ? randomBytes(12).toString('hex') : undefined;
 
   // Quote chain (普通群): the primary message replies to the turn's target so
@@ -4716,7 +4718,7 @@ async function cmdSend(rest: string[]): Promise<void> {
       // Inline `@Name` → `<at id=…>` at the exact spot it's written (CJK-name
       // aware, see applyInlineMentions); any --mention not inlined here is
       // rendered on the footer `发送给：` line below, not the body.
-      const { text: md, usedIds } = applyInlineMentions(text, mentions);
+      const { text: md, usedIds } = applyInlineMentions(withSessionModelDisplay(text, replyModelDisplay), mentions);
       // Non-inlined mentions are no longer dangled as a trailing @ block at the
       // body bottom — they're consolidated onto the footer `发送给：` line below
       // (human addressee first, then explicit targets). See orderedFooterRecipients.

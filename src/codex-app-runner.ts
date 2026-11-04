@@ -5,11 +5,12 @@ import { join } from 'node:path';
 import { readTraexAdaptivePolicy, TraexAdaptiveRouter, TraexQueueReader } from './services/traex-adaptive-model.js';
 import { TraexAdmission } from './services/traex-admission.js';
 import { fetchTraexCatalog } from './services/traex-model-catalog.js';
+import { readSessionModelDisplay, sessionModelDisplay, withSessionModelDisplay } from './services/session-model-display.js';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { Buffer } from 'node:buffer';
 import { config } from './config.js';
 import { invalidateGlobalConfigCache, readGlobalConfig } from './global-config.js';
-import { readSessionModel, readSessionModelRuntime, readSessionExecutor, writeSessionExecutor, writeSessionModelRuntime, type ModelSelection, type SessionModelRequest } from './services/session-model-store.js';
+import { readSessionModel, readSessionModelRuntime, readSessionExecutor, writeSessionExecutor, writeSessionModelRuntime, type ModelSelection, type SessionModelRequest, type SessionModelRuntime } from './services/session-model-store.js';
 import { executorHandoff } from './services/session-executor-handoff.js';
 import { normalizeCodexAppTimestampMs } from './services/codex-app-activity.js';
 import { codexAppHookFailure, codexAppHookTrustIssue } from './services/codex-app-hook-health.js';
@@ -62,6 +63,7 @@ interface ActiveTurn {
   /** Structured Team JSON is machine-only: collect it for the final marker,
    * but never mirror its streamed bytes into terminal/progress surfaces. */
   structuredOutput: boolean;
+  modelRuntime?: SessionModelRuntime;
   adaptiveNextModel?: string;
   adaptiveChecking?: boolean;
   adaptiveCheck?: () => void;
@@ -115,6 +117,12 @@ function b64Json(value: unknown): string {
 }
 
 function emitMarker(kind: string, payload: unknown): void {
+  if (activeExecutor === 'traex' && ['progress', 'final'].includes(kind) && !activeTurn?.structuredOutput) {
+    const message = payload as JsonObject;
+    if (typeof message.content === 'string') payload = { ...message,
+      content: withSessionModelDisplay(message.content, activeTurn?.modelRuntime
+        ? sessionModelDisplay(activeTurn.modelRuntime) : readSessionModelDisplay(config.session.dataDir, args.sessionId)) };
+  }
   process.stdout.write(`${OSC_PREFIX}${kind}:${b64Json(payload)}${OSC_END}`);
 }
 
@@ -415,6 +423,10 @@ function flushSteers(turn: ActiveTurn): void {
           at: Date.now(),
           turnId: turn.turnId ?? expectedTurnId,
         });
+        if (activeExecutor === 'traex' && !turn.structuredOutput) emitMarker('progress', {
+          content: '已接收追问，沿当前线程继续；如实际排队会自动重选模型。',
+          turnId: turn.turnId, startedAtMs: turn.startedAtMs, updatedAtMs: Date.now(), complete: true,
+        });
         writeLine();
       } catch (err: any) {
         writeLine(`[codex-app] steer failed, queued as next turn: ${err?.message ?? err}`);
@@ -524,6 +536,12 @@ function handleNotification(msg: JsonObject): void {
 
   if (msg.method.includes('/delta') || (['item/started', 'item/completed'].includes(msg.method) && params.item?.type !== 'userMessage')) {
     activeTurn.adaptiveActivityAt = Date.now();
+    const runtime = activeTurn.modelRuntime;
+    if (runtime?.selection?.executor === 'traex' && ['requested', 'queued'].includes(runtime.routing?.state ?? '')) {
+      activeTurn.modelRuntime = { ...runtime, phase: 'running',
+        routing: { ...runtime.routing!, state: undefined, position: undefined } };
+      writeSessionModelRuntime(config.session.dataDir, activeTurn.modelRuntime);
+    }
   }
   if (msg.method === 'item/started' && /commandExecution|fileChange|ToolCall/.test(params.item?.type ?? '')) {
     (activeTurn.toolItems ??= new Set()).add(String(params.item.id));
@@ -798,9 +816,15 @@ async function runSingleTurn(content: string, autoContinue: boolean, attempted =
   const adaptive = activeExecutor === 'traex' ? adaptiveRouter : undefined;
   let selectedModel = requested?.model ?? defaultThreadModel;
   if (adaptive && admission) {
+    const pendingReceipt = (state: 'selecting' | 'waiting') => writeSessionModelRuntime(config.session.dataDir, {
+      sessionId: args.sessionId, pid: process.pid, threadId, phase: 'ready', revision: requested?.revision,
+      routing: { executor: 'traex', state, effort: requested?.effort ?? 'xhigh' },
+    });
+    pendingReceipt('selecting');
     admissionAbort = new AbortController();
     try {
       selectedModel = await admission.select(attempted, admissionAbort.signal, message => {
+        pendingReceipt('waiting');
         writeLine(`[traex-adaptive] ${message}`);
         emitMarker('progress', { content: message, startedAtMs: Date.now(), updatedAtMs: Date.now() });
       }, requested?.effort ?? 'xhigh');
@@ -810,12 +834,23 @@ async function runSingleTurn(content: string, autoContinue: boolean, attempted =
   persistExecutor();
   const selection = { model: selectedModel, effort: requested?.effort ?? (adaptive ? 'xhigh' : defaultThreadEffort),
     serviceTier: requested?.serviceTier ?? defaultServiceTier };
-  const modelReceipt = (phase: 'running' | 'completed' | 'failed', turnId?: string) => writeSessionModelRuntime(config.session.dataDir, {
-    sessionId: args.sessionId, pid: process.pid, threadId: tid, phase, revision: requested?.revision,
-    selection: selection.model && selection.effort ? { ...selection, executor: activeExecutor, hookTrust: activeHookTrust } as ModelSelection : undefined, turnId,
-  });
+  const loadPercent = adaptive ? admission?.catalog.find(model => model.model === selectedModel)?.loadPercent : undefined;
+  const selectedRuntime: SessionModelRuntime = {
+    sessionId: args.sessionId, pid: process.pid, threadId: tid, phase: 'running', revision: requested?.revision,
+    protocol: 4, updatedAt: new Date().toISOString(),
+    selection: selection.model && selection.effort ? { ...selection, executor: activeExecutor, hookTrust: activeHookTrust } as ModelSelection : undefined,
+    ...(activeExecutor === 'traex' ? { routing: { executor: 'traex' as const, state: 'requested' as const,
+      effort: selection.effort ?? 'xhigh', loadPercent } } : {}),
+  };
+  const modelReceipt = (phase: 'running' | 'completed' | 'failed', turnId?: string,
+    state?: 'requested' | 'queued', position?: number) => {
+    turn.modelRuntime = { ...selectedRuntime, phase, turnId,
+      ...(selectedRuntime.routing ? { routing: { ...selectedRuntime.routing, state, position } } : {}) };
+    writeSessionModelRuntime(config.session.dataDir, turn.modelRuntime);
+  };
   const outputSchema = agentTeamOutputSchema(content);
   const turn = makeTurn(!!outputSchema);
+  turn.modelRuntime = selectedRuntime;
   activeTurn = turn;
   let queueReader: TraexQueueReader | undefined;
   let queueTimer: ReturnType<typeof setInterval> | undefined;
@@ -830,6 +865,7 @@ async function runSingleTurn(content: string, autoContinue: boolean, attempted =
       try { evidence = queueReader.poll(activityAt); } catch { return; }
       if (!evidence) return;
       turn.adaptiveChecking = true;
+      modelReceipt('running', turn.turnId, 'queued', evidence.position);
       try {
         await adaptive.queued(selection.model!);
         try { await admission!.refresh(); } catch { admission!.catalog = []; }
@@ -874,7 +910,15 @@ async function runSingleTurn(content: string, autoContinue: boolean, attempted =
     });
     turn.turnId = result.turn?.id ?? turn.turnId;
     pendingHandoff = ''; persistExecutor();
-    modelReceipt('running', turn.turnId);
+    modelReceipt('running', turn.turnId, turn.adaptiveActivityAt ? undefined : 'requested');
+    if (activeExecutor === 'traex' && !turn.structuredOutput) {
+      const notice = readSessionModelDisplay(config.session.dataDir, args.sessionId)?.label;
+      if (notice) {
+        writeLine(`[模型] ${notice}`);
+        emitMarker('progress', { content: '本轮已选定模型，开始回复；如实际入队会自动重选。',
+          turnId: turn.turnId, startedAtMs: turn.startedAtMs, updatedAtMs: Date.now(), complete: true });
+      }
+    }
     flushSteers(turn);
     await turn.done;
     await turn.steerChain;

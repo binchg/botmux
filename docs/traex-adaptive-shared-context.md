@@ -24,6 +24,12 @@
 
 `botmux model route --json` 查询目录、顺序和预选候选；`queueAdmissionVerified=false` 表示该只读查询未发出推理请求。`kmp-cli scan --rule traex-model-routing --json` 复用同一入口；指定会话用 `review` 查看运行回执，`sync --session-id <id> --apply` 启用 TraeX/xhigh 并在下一轮生效。
 
+## 回复与 Web 终端的实际模型展示
+
+TraeX 每轮在请求被接受后先显示 `模型：TraeX · GPT-6.1-Sol · xhigh`；后续进度和最终回复沿用该轮实际模型。忙时追加追问也显示当前模型，切换后显示新模型。标识只属于外发内容，不写入线程上下文；机器结果 JSON 保持原样。显式 `botmux send` 的同会话回复也读运行回执，而非期望默认值。
+
+Web 终端顶部在打开时读取运行回执，并每 2 秒刷新；重连及重新可见时也刷新。选模和等待期间显示“尚未选定模型”，实际排队显示排队状态；`选模负载`是请求前快照，不冒充实时负载或无排队保证。候选、请求已接受、运行中、已完成和停止状态分别展示。显示接口沿用终端鉴权，不返回线程正文、PID、路径或凭据。
+
 共享组中每个机器人的 `env` 设置相同 `BOT_SHARED_CONTEXT_GROUP` 和记忆路径，同时在
 `SESSION_DATA_DIR/shared-bot-context/<group>/members.json` 写入明确的 App ID 数组：
 

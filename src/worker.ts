@@ -97,6 +97,8 @@ import { TerminalAccess, terminalLocalRequest } from './services/terminal-access
 import { sendTerminalLockPage, terminalAccessControls, privateTerminalHtml } from './utils/terminal-access-page.js';
 import { readSessionModel, readSessionModelRuntime, writeSessionModel } from './services/session-model-store.js';
 import { configureTraexAppLaunch } from './services/traex-app-launch.js';
+import { readSessionModelDisplay } from './services/session-model-display.js';
+import { serveTerminalModelDisplay, terminalModelHeader, terminalModelStyle, terminalModelScript } from './utils/terminal-model-display.js';
 import { detectCliUsageLimit, usageLimitStateKey, type CliUsageLimitState } from './utils/cli-usage-limit.js';
 import { uploadImageBuffer } from './utils/lark-upload.js';
 import { redactChildEnv } from './utils/child-env.js';
@@ -5012,6 +5014,8 @@ function startWebServer(host: string, preferredPort?: number): Promise<number> {
         res.end('Bad Request');
         return;
       }
+      if (serveTerminalModelDisplay(req, res, url.pathname, !terminalAccess.enabled() || terminalAccess.authorize(req),
+        () => readSessionModelDisplay(config.session.dataDir, sessionId))) return;
       if (terminalAccess.enabled()) {
         if (await terminalAccess.handle(req, res, url.pathname, () => {
           const selection = readSessionModel(config.session.dataDir, sessionId)
@@ -5374,9 +5378,11 @@ body.touch #terminal .xterm-screen *{
   #search-controls input{flex:1;width:auto;min-width:0}
   #session-events{top:calc(120px + env(safe-area-inset-top,0px));max-height:24vh}
 }
+${terminalModelStyle}
 </style>
 </head>
 <body>
+${terminalModelHeader(readSessionModelDisplay(config.session.dataDir, sessionId))}
 <div id="terminal"></div>
 <div id="search-controls" aria-label="terminal search">
   <input id="term-search" type="search" placeholder="Search session" autocomplete="off">
@@ -5411,6 +5417,7 @@ ${loginUrl ? `<a id="login-banner" href="${loginUrl}" target="_top" rel="noopene
 <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-webgl@0/lib/addon-webgl.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-canvas@0/lib/addon-canvas.min.js"></script>
 <script>
+${terminalModelScript}
 var isTouch='ontouchstart'in window||navigator.maxTouchPoints>0;
 if(isTouch){document.body.classList.add('touch');}
 var hasToken=${hasWrite};
@@ -5711,7 +5718,7 @@ window.addEventListener('resize',onViewportResize);
   // restart). If we never re-send our real grid, the PTY stays 160 while this
   // xterm renders narrower, and Claude's height-relative redraws drift a row
   // (status-line update bleeds into the line below). Always re-assert size.
-  ws.onopen=function(){el.textContent='connected';el.className='ok';_lastC=_lastR=0;sendResize()};
+  ws.onopen=function(){el.textContent='connected';el.className='ok';_lastC=_lastR=0;sendResize();refreshModelDisplay()};
   ws.onmessage=function(e){
     var data=typeof e.data==='string'?e.data:new TextDecoder().decode(e.data);
     data=_consumeBotmuxUiOsc(data);
