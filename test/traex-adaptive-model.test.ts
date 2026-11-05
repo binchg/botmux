@@ -37,7 +37,9 @@ describe('TraeX admission routing', () => {
       raw('queued', 25, 3), raw('nan', '12'), raw('negative', -1), raw('zero', 0)] });
     expect(eligibleTraexModels(catalog)).toEqual(['middle', 'zero']);
     expect(eligibleTraexModels(catalog, 'ultra')).toEqual([]);
-    expect(readTraexAdaptivePolicy({}, true)?.models[0]).toBe('gpt-6.1-sol');
+    expect(readTraexAdaptivePolicy({}, true)?.models).toEqual(['gpt-6-astra', 'gpt-6.1-sol', 'gpt-6.1-terra',
+      'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-6-sol', 'gpt-5.6-luna', 'gpt-6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.2']);
+    expect(() => readTraexAdaptivePolicy({ TRAEX_ADAPTIVE_MODELS: Array.from({ length: 17 }, (_, i) => `model-${i}`).join(',') })).toThrow('invalid_traex_adaptive_models');
     expect(readTraexAdaptivePolicy({ TRAEX_ADAPTIVE_ENABLED: '0' }, true)).toBeUndefined();
   });
 
@@ -152,7 +154,7 @@ send({id:m.id,result});});
         expect(state().runtime?.selection).toMatchObject({ model: 'top', effort: 'xhigh' });
         await vi.waitFor(() => expect(markers('final')).toHaveLength(2));
         expect(markers('final').map(m => m.content)).toEqual([
-          expect.stringContaining('模型：TraeX · low · xhigh'), expect.stringContaining('模型：TraeX · top · xhigh'),
+          expect.stringContaining('> **TraeX · low · xhigh'), expect.stringContaining('> **TraeX · top · xhigh'),
         ]);
         expect(markers('progress').map(m => m.content)).toEqual([
           expect.stringContaining('TraeX · low · xhigh'), expect.stringContaining('TraeX · top · xhigh'),

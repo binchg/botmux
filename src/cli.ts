@@ -67,7 +67,8 @@ import { firstPositional } from './cli/arg-utils.js';
 import { dispatchPrimaryMessage, findStdinAliasAttachment, sendFileAttachments } from './cli/send-dispatch.js';
 import { runAgentTeamCommand } from './cli/agent-team-command.js';
 import { runSessionModelCommand } from './cli/session-model-command.js';
-import { readSessionModelDisplay, withSessionModelDisplay } from './services/session-model-display.js';
+import { readSessionModelDisplay } from './services/session-model-display.js';
+import { formatSessionModelReply } from './services/session-model-reply-budget.js';
 import { buildPm2SpawnCommand } from './cli/pm2-command.js';
 import { callDashboard, type DashboardEndpoint, type DashboardResult } from './cli/dashboard-endpoint.js';
 import { loadDashboardSecret } from './dashboard/auth.js';
@@ -4718,7 +4719,7 @@ async function cmdSend(rest: string[]): Promise<void> {
       // Inline `@Name` → `<at id=…>` at the exact spot it's written (CJK-name
       // aware, see applyInlineMentions); any --mention not inlined here is
       // rendered on the footer `发送给：` line below, not the body.
-      const { text: md, usedIds } = applyInlineMentions(withSessionModelDisplay(text, replyModelDisplay), mentions);
+      const { text: md, usedIds } = applyInlineMentions(formatSessionModelReply(resolveDataDir(), sid, text, terminal, replyModelDisplay), mentions);
       // Non-inlined mentions are no longer dangled as a trailing @ block at the
       // body bottom — they're consolidated onto the footer `发送给：` line below
       // (human addressee first, then explicit targets). See orderedFooterRecipients.
@@ -4738,7 +4739,7 @@ async function cmdSend(rest: string[]): Promise<void> {
       // default botmux, '' → suppressed, else custom). Same resolver/rule as
       // the daemon's card builders so both send paths render identically.
       const footerParts: string[] = [];
-      const brandSeg = brandFooterSegment(resolveBrandLabel(appId));
+      const brandSeg = brandFooterSegment(replyModelDisplay ? '' : resolveBrandLabel(appId));
       if (brandSeg) footerParts.push(brandSeg);
       // All real mentions land on one footer line: human addressee first, then
       // explicit @ targets (incl. handoff bots), then cc. Ids already inlined in

@@ -6,15 +6,16 @@ import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { withFileLock } from '../utils/file-lock.js';
 import { traeHome } from './traex-paths.js';
 
-export const TRAEX_MODEL_ORDER = ['gpt-6.1-sol', 'gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-terra',
-  'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.2'];
+// 用户参考榜单顺序；目录中尚不存在的型号只保留优先级，不能作为可用模型调用。
+export const TRAEX_MODEL_ORDER = ['gpt-6-astra', 'gpt-6.1-sol', 'gpt-6.1-terra', 'gpt-5.6-sol',
+  'gpt-5.6-terra', 'gpt-6-sol', 'gpt-5.6-luna', 'gpt-6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.2'];
 export interface TraexAdaptivePolicy { models: string[]; cooldownMs: number }
 export function readTraexAdaptivePolicy(env = process.env, enabledByDefault = false): TraexAdaptivePolicy | undefined {
   if (env.TRAEX_ADAPTIVE_ENABLED === '0') return undefined;
   const configured = env.TRAEX_ADAPTIVE_MODELS ?? (enabledByDefault ? TRAEX_MODEL_ORDER.join(',') : '');
   const models = [...new Set(configured.split(',').map(x => x.trim().toLowerCase()).filter(Boolean))];
   if (!models.length) return undefined;
-  if (models.length > 8 || models.some(x => !/^[\w.-]+$/.test(x))) throw new Error('invalid_traex_adaptive_models');
+  if (models.length > 16 || models.some(x => !/^[\w.-]+$/.test(x))) throw new Error('invalid_traex_adaptive_models');
   const cooldownMs = Number(env.TRAEX_ADAPTIVE_COOLDOWN_MS ?? 120000);
   if (!Number.isFinite(cooldownMs) || cooldownMs < 1000 || cooldownMs > 3600000) throw new Error('invalid_traex_adaptive_cooldown');
   return { models, cooldownMs };

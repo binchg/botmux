@@ -21,7 +21,8 @@ describe('actual TraeX model display', () => {
     const display = readSessionModelDisplay(dir, 'test');
     expect(display?.label).toContain('TraeX · GPT-6.1-Sol · xhigh');
     const text = withSessionModelDisplay('实际答复', display);
-    expect(text).toContain('模型：TraeX · GPT-6.1-Sol · xhigh');
+    expect(text).toContain('> **TraeX · GPT-6.1-Sol · xhigh**');
+    expect(text).not.toContain('模型：');
     expect(text).not.toContain('5.6');
     expect(withSessionModelDisplay(text, display)).toBe(text);
     expect(buildMarkdownCard(text)).toContain('GPT-6.1-Sol');
@@ -37,8 +38,19 @@ describe('actual TraeX model display', () => {
     }
     expect(sessionModelDisplay({ ...old, phase: 'ready' })?.label).toContain('候选，待请求');
     const queued = sessionModelDisplay({ ...old, routing: { executor: 'traex', state: 'queued', effort: 'xhigh', position: 7, loadPercent: 92 } });
-    expect(queued?.label).toContain('排队，重选中 · 第 7 位 · 选模负载 92%');
+    expect(queued?.label).toContain('排队，重选中 · 第 7 位 · 负载 92%');
     expect(queued?.label).not.toContain('不排队');
+  });
+
+  it('keeps healthy states concise without hiding queue, failure or selection', () => {
+    for (const phase of ['running', 'completed'] as const) {
+      const display = sessionModelDisplay({ ...runtime(), phase,
+        routing: { executor: 'traex', effort: 'xhigh', loadPercent: 86 } });
+      expect(display?.label).toBe('TraeX · GPT-6.1-Sol · xhigh · 负载 86%');
+    }
+    expect(sessionModelDisplay({ ...runtime(), routing: { executor: 'traex', effort: 'xhigh', state: 'requested', loadPercent: 86 } })?.label)
+      .toBe('TraeX · GPT-6.1-Sol · xhigh · 负载 86%');
+    expect(sessionModelDisplay({ ...runtime(), phase: 'failed' })?.label).toContain('已停止');
   });
 
   it('does not display desired-only, stopped-as-running, corrupt metadata or machine JSON', () => {

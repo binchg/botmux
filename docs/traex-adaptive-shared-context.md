@@ -5,14 +5,14 @@
 
 ```json
 {
-  "TRAEX_ADAPTIVE_MODELS": "gpt-6.1-sol,gpt-6-astra,gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna,gpt-5.5,gpt-5.4,gpt-5.2",
+  "TRAEX_ADAPTIVE_MODELS": "gpt-6-astra,gpt-6.1-sol,gpt-6.1-terra,gpt-5.6-sol,gpt-5.6-terra,gpt-6-sol,gpt-5.6-luna,gpt-6-luna,gpt-5.5,gpt-5.4,gpt-5.2",
   "TRAEX_ADAPTIVE_COOLDOWN_MS": "120000",
   "BOT_SHARED_CONTEXT_GROUP": "paired-bots",
   "BOT_SHARED_MEMORY_DIR": "/absolute/path/to/memories"
 }
 ```
 
-`TRAEX_ADAPTIVE_MODELS` 按模型偏好从高到低排列。TraeX app-server 会话默认使用上面的八档顺序和 `xhigh`；`TRAEX_ADAPTIVE_ENABLED=0` 关闭自动选择。Codex 执行器不受影响。显式推理等级仍优先。
+`TRAEX_ADAPTIVE_MODELS` 按模型偏好从高到低排列。TraeX app-server 会话默认使用上述图片参考顺序和 `xhigh`，旧型号保留为后备。列表最多16项；目录缺失的6.1-Terra、6-Sol、6-Luna只保留排名，不调用或替换成其它型号；`TRAEX_ADAPTIVE_ENABLED=0` 关闭自动选择。Codex 执行器不受影响。显式推理等级仍优先。
 
 启动及每次新轮次通过 `traex debug models --remote` 刷新目录。只选择负载已知且小于100%、未报告正队列长度、支持请求推理等级且未处于冷却期的模型。缺失负载不会按零处理。目录负载只用于预选，不能保证服务端准入。
 
@@ -26,9 +26,9 @@
 
 ## 回复与 Web 终端的实际模型展示
 
-TraeX 每轮在请求被接受后先显示 `模型：TraeX · GPT-6.1-Sol · xhigh`；后续进度和最终回复沿用该轮实际模型。忙时追加追问也显示当前模型，切换后显示新模型。标识只属于外发内容，不写入线程上下文；机器结果 JSON 保持原样。显式 `botmux send` 的同会话回复也读运行回执，而非期望默认值。
+TraeX 正常标签为 `TraeX · GPT-6.1-Sol · xhigh · 负载 86%`，不加“模型：”、运行中或 botmux 品牌页脚。每个新用户轮次和忙时追问仅前两条及最后一条回复显示；中间消息不显示。daemon 在内部/重复/终态抑制之后与显式 `botmux send` 共用加锁预算，自动重选和429继续不重置。显式最后一条用 `--terminal`，既显示模型也阻止后续自动兜底。标识沿用冻结的实际模型，不写入线程上下文；机器结果 JSON 保持原样。
 
-Web 终端顶部在打开时读取运行回执，并每 2 秒刷新；重连及重新可见时也刷新。选模和等待期间显示“尚未选定模型”，实际排队显示排队状态；`选模负载`是请求前快照，不冒充实时负载或无排队保证。候选、请求已接受、运行中、已完成和停止状态分别展示。显示接口沿用终端鉴权，不返回线程正文、PID、路径或凭据。
+Web 终端顶部在打开时读取运行回执，并每 2 秒刷新；重连及重新可见时也刷新。正常状态使用相同简洁标签；选模和等待仍显示“尚未选定模型”，实际排队、失败和停止状态不隐藏。`负载`仍是请求前快照，不冒充实时负载或无排队保证。显示接口沿用终端鉴权，不返回线程正文、PID、路径或凭据。
 
 共享组中每个机器人的 `env` 设置相同 `BOT_SHARED_CONTEXT_GROUP` 和记忆路径，同时在
 `SESSION_DATA_DIR/shared-bot-context/<group>/members.json` 写入明确的 App ID 数组：

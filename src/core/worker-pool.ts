@@ -28,6 +28,7 @@ import { botLocale, localeForBot, t as tr } from '../i18n/index.js';
 import { claudeJsonlPathForSession } from '../adapters/cli/claude-code.js';
 import { findUniqueClaudeSessionByCwd } from './session-discovery.js';
 import { buildMarkdownCard, buildContextualReplyCard, buildTitledMarkdownCard } from '../im/lark/md-card.js';
+import { formatSessionModelReply, isTraexModelReply } from '../services/session-model-reply-budget.js';
 import { CodexAppProgressForwarder, codexAppProgressCardTitle } from '../services/codex-app-progress.js';
 import { AgentTeamProgressGate } from '../services/agent-team-output-filter.js';
 import { replyToDocComment, chunkCommentText, unsubscribeDocFile } from '../im/lark/doc-comment.js';
@@ -2594,7 +2595,7 @@ function setupWorkerHandlers(ds: DaemonSession, worker: ChildProcess): void {
               title: codexAppProgressCardTitle(
                 ds.currentTurnTitle || ds.session.currentTurnTitle || ds.lastUserPrompt || ds.session.title,
               ),
-              md: prepared.content,
+              md: formatSessionModelReply(config.session.dataDir, ds.session.sessionId, prepared.content),
               brand: '',
               locale: localeForBot(ds.larkAppId),
               template: 'turquoise',
@@ -2893,6 +2894,8 @@ function deliverFinalOutput(
             logger.info(`[${t}] Rewrote ${sharedLinks.shared.length} local file link(s) into expiring capability URLs`);
           }
         }
+        const replyBrand = teamDelivery || isTraexModelReply(outwardContent) ? '' : resolveBrandLabel(ds.larkAppId);
+        outwardContent = formatSessionModelReply(config.session.dataDir, ds.session.sessionId, outwardContent, true);
         const recipientOpenId = daemonCardFooterRecipientOpenId(ds, effectiveCliId);
         const cardJson = teamDelivery?.cardJson ?? (msg.kind === 'local-turn' || msg.kind === 'local-turn-headless'
           ? buildContextualReplyCard({
@@ -2903,11 +2906,11 @@ function deliverFinalOutput(
               assistantText: outwardContent,
               assistantLabel: getCliDisplayName(effectiveCliId),
               recipientOpenId,
-              brand: resolveBrandLabel(ds.larkAppId),
+              brand: replyBrand,
               locale: localeForBot(ds.larkAppId),
               imageKeys,
             })
-          : buildMarkdownCard(outwardContent, recipientOpenId, resolveBrandLabel(ds.larkAppId), localeForBot(ds.larkAppId), imageKeys));
+          : buildMarkdownCard(outwardContent, recipientOpenId, replyBrand, localeForBot(ds.larkAppId), imageKeys));
         delivery = { cardJson, outwardContentLength: outwardContent.length };
       }
 

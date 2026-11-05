@@ -6,6 +6,7 @@ import { readTraexAdaptivePolicy, TraexAdaptiveRouter, TraexQueueReader } from '
 import { TraexAdmission } from './services/traex-admission.js';
 import { fetchTraexCatalog } from './services/traex-model-catalog.js';
 import { readSessionModelDisplay, sessionModelDisplay, withSessionModelDisplay } from './services/session-model-display.js';
+import { beginSessionModelReplyEpoch } from './services/session-model-reply-budget.js';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { Buffer } from 'node:buffer';
 import { config } from './config.js';
@@ -448,6 +449,7 @@ function handleUserMessage(content: string): void {
   }
   // 用户可能在 final_answer 已生成、turn/completed 尚未到达时继续追问。
   // 清除上一答案的终态闩锁，确保新阶段消息继续进入飞书进度卡，最终回包也采用新答案。
+  beginSessionModelReplyEpoch(config.session.dataDir, args.sessionId);
   activeTurn.adaptiveCheck?.();
   activeTurn.guidanceEpoch += 1;
   activeTurn.finalText = '';
@@ -956,6 +958,7 @@ async function runSingleTurn(content: string, autoContinue: boolean, attempted =
 }
 
 async function runTurn(content: string): Promise<void> {
+  beginSessionModelReplyEpoch(config.session.dataDir, args.sessionId);
   let nextContent = content;
   let autoContinueCount = 0;
   const attempted = new Set<string>();
