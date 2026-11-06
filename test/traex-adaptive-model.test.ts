@@ -4,9 +4,9 @@ import { join, resolve } from 'node:path';
 import { createRequire } from 'node:module';
 import { spawn } from 'node:child_process';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { readTraexAdaptivePolicy, TraexAdaptiveRouter, TraexQueueReader } from '../src/services/traex-adaptive-model.js';
+import { isTraexDailyQuotaExhausted, nextDailyQuotaResetMs, readTraexAdaptivePolicy, TraexAdaptiveRouter, TraexQueueReader } from '../src/services/traex-adaptive-model.js';
 import { TraexAdmission } from '../src/services/traex-admission.js';
-import { eligibleTraexModels, parseTraexCatalog } from '../src/services/traex-model-catalog.js';
+import { eligibleTraexModels, parseTraexCatalog, rankTraexCandidates } from '../src/services/traex-model-catalog.js';
 import { sessionModelStatus } from '../src/services/session-model-store.js';
 
 const roots: string[] = [];
@@ -29,25 +29,52 @@ describe('TraeX admission routing', () => {
     expect(router.choose(p.models, new Set(), 200)).toBeUndefined();
   });
 
-  it('ranks only known sub-100 loads with the requested effort and no reported queue', () => {
-    const raw = (slug: string, load: unknown, queue: unknown = null) => ({ slug, visibility: 'list',
-      model_provider_id: 'trae', business_metadata: { load: { load_percent: load, queue_size: queue } },
+  it('combines quota, capability and load instead of treating 100% load as a hard gate', () => {
+    const raw = (slug: string, load: unknown, queue: unknown = null, quota?: any) => ({ slug, visibility: 'list',
+      model_provider_id: 'trae', business_metadata: { load: { load_percent: load, queue_size: queue }, ...(quota ? { daily_quota: quota } : {}) },
       supported_reasoning_levels: [{ effort: 'xhigh' }] });
     const catalog = parseTraexCatalog({ models: [raw('top', 100), raw('middle', 99), raw('low', null),
       raw('queued', 25, 3), raw('nan', '12'), raw('negative', -1), raw('zero', 0)] });
-    expect(eligibleTraexModels(catalog)).toEqual(['middle', 'zero']);
+    expect(eligibleTraexModels(catalog)).toEqual(['top', 'middle', 'low', 'nan', 'negative', 'zero']);
     expect(eligibleTraexModels(catalog, 'ultra')).toEqual([]);
+
+    const quotaAware = parseTraexCatalog({ models: [
+      raw('gpt-6-astra', 362, null, { remaining_percent: 100 }),
+      raw('gpt-6.1-sol', 117, null, { exhausted: true }),
+      raw('gpt-5.6-sol', 103, null, { remaining_percent: 100 }),
+      raw('gpt-5.6-terra', 102), raw('gpt-5.5', 56),
+    ] });
+    // Sol is explicitly exhausted while busy; Astra has quota but is extremely
+    // overloaded; 5.6-Sol wins because its positive quota signal offsets a
+    // small overload without pretending that it cannot still queue.
+    expect(rankTraexCandidates(quotaAware, ['gpt-6-astra', 'gpt-6.1-sol', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.5'])
+      .map(candidate => candidate.model.model)).toEqual(['gpt-5.6-sol', 'gpt-5.5', 'gpt-5.6-terra', 'gpt-6-astra']);
     expect(readTraexAdaptivePolicy({}, true)?.models).toEqual(['gpt-6-astra', 'gpt-6.1-sol', 'gpt-6.1-terra',
       'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-6-sol', 'gpt-5.6-luna', 'gpt-6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.2']);
+    expect(readTraexAdaptivePolicy({}, true)?.quotaResetHour).toBe(6);
     expect(() => readTraexAdaptivePolicy({ TRAEX_ADAPTIVE_MODELS: Array.from({ length: 17 }, (_, i) => `model-${i}`).join(',') })).toThrow('invalid_traex_adaptive_models');
+    expect(() => readTraexAdaptivePolicy({ TRAEX_ADAPTIVE_MODELS: 'top', TRAEX_ADAPTIVE_QUOTA_RESET_HOUR: '24' })).toThrow('invalid_traex_adaptive_quota_reset_hour');
     expect(readTraexAdaptivePolicy({ TRAEX_ADAPTIVE_ENABLED: '0' }, true)).toBeUndefined();
+  });
+
+  it('keeps an explicitly exhausted model out until the next local quota reset', async () => {
+    const router = new TraexAdaptiveRouter({ models: ['top', 'low'], cooldownMs: 1000, quotaResetHour: 6 }, join(temp(), 'health.json'));
+    const beforeReset = new Date(2026, 10, 6, 5, 59, 0, 0).getTime();
+    const resetAt = nextDailyQuotaResetMs(beforeReset, 6);
+    expect(new Date(resetAt).getHours()).toBe(6);
+    await router.quotaExhausted('top', beforeReset);
+    expect(router.choose(['top', 'low'], new Set(), beforeReset + 1)).toBe('low');
+    expect(router.choose(['top', 'low'], new Set(), resetAt + 1)).toBe('top');
+    expect(isTraexDailyQuotaExhausted('Daily quota exhausted; lower priority when busy')).toBe(true);
+    expect(isTraexDailyQuotaExhausted('429 retry limit')).toBe(false);
   });
 
   it('waits without inference, recovers the best model, and accepts cancellation', async () => {
     const router = new TraexAdaptiveRouter({ models: ['top', 'low'], cooldownMs: 1000 }, join(temp(), 'health.json'));
     let refreshed = 0;
     const admission = new TraexAdmission(router, async () => [{ model: 'top', displayName: 'top',
-      loadPercent: ++refreshed < 3 ? 110 : 20, efforts: ['xhigh'] }], 10);
+      loadPercent: ++refreshed < 3 ? 110 : 20, queueSize: refreshed < 3 ? 1 : undefined,
+      quota: { state: 'unknown' }, efforts: ['xhigh'] }], 10);
     const notice = vi.fn();
     expect(await admission.select(new Set(), new AbortController().signal, notice)).toBe('top');
     expect(refreshed).toBe(3); expect(notice).toHaveBeenCalledTimes(1);
@@ -87,14 +114,15 @@ describe('TraeX admission routing', () => {
 });
 
 describe('real runner adaptive protocol', () => {
-  it.each(['queue', 'cancel', 'completion-race', 'tools', 'load', 'waiting', 'coalesced'])('handles %s without replaying work or losing follow-up', async (mode) => {
+  it.each(['queue', 'quota', 'cancel', 'completion-race', 'tools', 'load', 'waiting', 'coalesced'])('handles %s without replaying work or losing follow-up', async (mode) => {
     const dir = temp(), executable = join(dir, 'fake-traex.cjs'), calls = join(dir, 'calls.jsonl');
     mkdirSync(join(dir, 'cli'));
     writeFileSync(executable, `#!/usr/bin/env node
 const fs=require('node:fs'),readline=require('node:readline'),{DatabaseSync}=require('node:sqlite');
 if(process.argv[2]==='debug'){
 const busy=process.env.ADAPTIVE_TEST_MODE==='load'&&!fs.existsSync(process.env.MODEL_TEST_CALLS);
-process.stdout.write(JSON.stringify({models:['top','low'].map(slug=>({slug,visibility:'list',model_provider_id:'trae',supported_reasoning_levels:[{effort:'xhigh'}],business_metadata:{load:{load_percent:process.env.ADAPTIVE_TEST_MODE==='waiting'||busy&&slug==='top'?100:30}}}))}));process.exit(0);}
+const quota=process.env.ADAPTIVE_TEST_MODE==='quota'&&fs.existsSync(process.env.MODEL_TEST_CALLS)?{daily_quota:{exhausted:true}}:{};
+process.stdout.write(JSON.stringify({models:['top','low'].map(slug=>({slug,visibility:'list',model_provider_id:'trae',supported_reasoning_levels:[{effort:'xhigh'}],business_metadata:{load:{load_percent:process.env.ADAPTIVE_TEST_MODE==='waiting'||busy&&slug==='top'?100:30,queue_size:process.env.ADAPTIVE_TEST_MODE==='waiting'?1:null},...(slug==='top'?quota:{})}}))}));process.exit(0);}
 const db=new DatabaseSync(process.env.TRAE_HOME+'/cli/logs_2.sqlite');
 db.exec('CREATE TABLE IF NOT EXISTS logs(id INTEGER PRIMARY KEY,ts INTEGER,ts_nanos INTEGER,thread_id TEXT,process_uuid TEXT,feedback_log_body TEXT)');
 const mode=process.env.ADAPTIVE_TEST_MODE; let n=0; const send=x=>process.stdout.write(JSON.stringify(x)+'\\n');
@@ -109,8 +137,9 @@ const id='turn-'+(++n);fs.appendFileSync(process.env.MODEL_TEST_CALLS,JSON.strin
 if(mode==='coalesced')process.stdout.write([{id:m.id,result:{turn:{id}}},{method:'item/completed',params:{threadId:'same-thread',item:{type:'agentMessage',id:'early-'+n,text:'first commentary',phase:'commentary'}}}].map(x=>JSON.stringify(x)).join('\\n')+'\\n');
 else send({id:m.id,result:{turn:{id}}});
 if(n===1 && mode==='tools'){send({method:'item/started',params:{threadId:'same-thread',item:{type:'commandExecution',id:'cmd-1',command:'fake tool'}}});setTimeout(()=>{send({method:'item/completed',params:{threadId:'same-thread',item:{type:'commandExecution',id:'cmd-1'}}});send({method:'turn/completed',params:{threadId:'same-thread',turn:{id,status:'completed'}}});},1300);}
-if(n===1 && !['load','coalesced'].includes(mode))setTimeout(()=>{const now=Date.now();db.prepare('INSERT INTO logs(ts,ts_nanos,thread_id,process_uuid,feedback_log_body) VALUES(?,?,?,?,?)').run(Math.floor(now/1000),(now%1000)*1e6,'same-thread','pid:'+process.pid+':fake','Trae request_wait_in_queue Your queue position is 71');send({method:'hook/completed',params:{threadId:'same-thread',turnId:id,run:{}}});},600);
-else setTimeout(()=>{send({method:'item/completed',params:{threadId:'same-thread',item:{type:'agentMessage',id:'answer-'+n,text:'complete',phase:'final_answer'}}});send({method:'turn/completed',params:{threadId:'same-thread',turn:{id,status:'completed'}}});},50);
+if(n===1 && mode==='quota'){setTimeout(()=>send({method:'turn/completed',params:{threadId:'same-thread',turn:{id,status:'failed',error:{message:'Daily quota exhausted; lower priority when busy'}}}}),50);}
+if(n===1 && !['load','coalesced','quota'].includes(mode))setTimeout(()=>{const now=Date.now();db.prepare('INSERT INTO logs(ts,ts_nanos,thread_id,process_uuid,feedback_log_body) VALUES(?,?,?,?,?)').run(Math.floor(now/1000),(now%1000)*1e6,'same-thread','pid:'+process.pid+':fake','Trae request_wait_in_queue Your queue position is 71');send({method:'hook/completed',params:{threadId:'same-thread',turnId:id,run:{}}});},600);
+else if(!(n===1&&mode==='quota'))setTimeout(()=>{send({method:'item/completed',params:{threadId:'same-thread',item:{type:'agentMessage',id:'answer-'+n,text:'complete',phase:'final_answer'}}});send({method:'turn/completed',params:{threadId:'same-thread',turn:{id,status:'completed'}}});},50);
 return;}
 if(m.method==='turn/interrupt'){send({id:m.id,result:{}});send({method:'turn/completed',params:{threadId:'same-thread',turn:{id:'turn-'+n,status:mode==='completion-race'?'completed':'interrupted'}}});return;}
 send({id:m.id,result});});
@@ -143,6 +172,14 @@ send({id:m.id,result});});
         expect(markers('progress')[0].content).toContain('TraeX · top · xhigh');
         expect(markers('progress')[0].content).not.toContain('尚未选定模型');
         expect(markers('final')[0].content).toContain('TraeX · top · xhigh');
+        return;
+      }
+      if (mode === 'quota') {
+        await vi.waitFor(() => expect(state().runtime?.selection?.model, errors).toBe('low'), { timeout: 5000 });
+        await vi.waitFor(() => expect(state().runtime?.phase).toBe('completed'));
+        const rows = readFileSync(calls, 'utf8').trim().split('\n').map(x => JSON.parse(x));
+        expect(rows.filter(x => x.model).map(x => x.model)).toEqual(['top', 'low']);
+        expect(markers('progress').some(m => m.content.includes('当日额度已耗尽'))).toBe(true);
         return;
       }
       if (mode === 'load') {

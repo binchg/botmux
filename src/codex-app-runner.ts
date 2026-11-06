@@ -2,7 +2,7 @@
 import { SharedBotContext } from './services/shared-bot-context.js';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
-import { readTraexAdaptivePolicy, TraexAdaptiveRouter, TraexQueueReader } from './services/traex-adaptive-model.js';
+import { isTraexDailyQuotaExhausted, readTraexAdaptivePolicy, TraexAdaptiveRouter, TraexQueueReader } from './services/traex-adaptive-model.js';
 import { TraexAdmission } from './services/traex-admission.js';
 import { fetchTraexCatalog } from './services/traex-model-catalog.js';
 import { readSessionModelDisplay, sessionModelDisplay, withSessionModelDisplay } from './services/session-model-display.js';
@@ -61,6 +61,7 @@ interface ActiveTurn {
   criticalHookFailure?: string;
   turnFailed?: boolean;
   rateLimitError?: string;
+  quotaExhaustedError?: string;
   /** Structured Team JSON is machine-only: collect it for the final marker,
    * but never mirror its streamed bytes into terminal/progress surfaces. */
   structuredOutput: boolean;
@@ -644,6 +645,8 @@ function handleNotification(msg: JsonObject): void {
     activeTurn.turnFailed = !!errorMessage || turn?.status === 'failed' || turn?.status === 'interrupted';
     if (activeTurn.criticalHookFailure) {
       activeTurn.finalText = activeTurn.criticalHookFailure;
+    } else if (activeExecutor === 'traex' && isTraexDailyQuotaExhausted(errorMessage)) {
+      activeTurn.quotaExhaustedError = errorMessage;
     } else if (isCodexAppRetryLimit429(errorMessage)) {
       activeTurn.rateLimitError = errorMessage;
     } else if (errorMessage && !activeTurn.finalText) {
@@ -926,7 +929,19 @@ async function runSingleTurn(content: string, autoContinue: boolean, attempted =
     await turn.steerChain;
     queuePendingSteersAsNextTurns(turn);
 
-    modelReceipt(turn.turnFailed || turn.rateLimitError || turn.criticalHookFailure ? 'failed' : 'completed', turn.turnId);
+    if (turn.quotaExhaustedError && adaptive && selection.model && !turn.userInterrupted && !turn.criticalHookFailure) {
+      await adaptive.quotaExhausted(selection.model);
+      try { await admission!.refresh(); } catch { admission!.catalog = []; }
+      const next = admission!.choose(attempted, selection.effort);
+      const notice = next
+        ? `TraeX ${selection.model} 的当日额度已耗尽，切换到 ${next} 并沿原线程继续。`
+        : `TraeX ${selection.model} 的当日额度已耗尽，暂时没有可准入候选，自动刷新后重选。`;
+      writeLine(`[traex-adaptive] ${notice}`);
+      emitMarker('progress', { content: notice, turnId: turn.turnId, startedAtMs: turn.startedAtMs, updatedAtMs: Date.now() });
+      turn.adaptiveNextModel = next ?? 'reselect';
+    }
+
+    modelReceipt(turn.turnFailed || turn.rateLimitError || turn.quotaExhaustedError || turn.criticalHookFailure ? 'failed' : 'completed', turn.turnId);
 
     const finalText = (turn.finalText || turn.allAgentText).trim();
     const completedAtMs = Date.now();
@@ -968,7 +983,7 @@ async function runTurn(content: string): Promise<void> {
     const outcome = await runSingleTurn(nextContent, autoContinueCount > 0 || !!forcedModel, attempted, forcedModel);
     if (outcome.adaptiveNextModel) {
       forcedModel = outcome.adaptiveNextModel;
-      nextContent = '上一轮因服务端排队已中断等待，模型已自动重选。请沿当前线程继续完成用户最新请求；保留所有追问、已完成操作和工具结果，不要重放已完成的操作。';
+      nextContent = '上一轮因服务端排队或额度准入限制已中断，模型已自动重选。请沿当前线程继续完成用户最新请求；保留所有追问、已完成操作和工具结果，不要重放已完成的操作。';
       continue;
     }
     if (!outcome.rateLimitError) return;

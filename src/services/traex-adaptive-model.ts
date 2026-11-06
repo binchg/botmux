@@ -9,7 +9,7 @@ import { traeHome } from './traex-paths.js';
 // 用户参考榜单顺序；目录中尚不存在的型号只保留优先级，不能作为可用模型调用。
 export const TRAEX_MODEL_ORDER = ['gpt-6-astra', 'gpt-6.1-sol', 'gpt-6.1-terra', 'gpt-5.6-sol',
   'gpt-5.6-terra', 'gpt-6-sol', 'gpt-5.6-luna', 'gpt-6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.2'];
-export interface TraexAdaptivePolicy { models: string[]; cooldownMs: number }
+export interface TraexAdaptivePolicy { models: string[]; cooldownMs: number; quotaResetHour?: number }
 export function readTraexAdaptivePolicy(env = process.env, enabledByDefault = false): TraexAdaptivePolicy | undefined {
   if (env.TRAEX_ADAPTIVE_ENABLED === '0') return undefined;
   const configured = env.TRAEX_ADAPTIVE_MODELS ?? (enabledByDefault ? TRAEX_MODEL_ORDER.join(',') : '');
@@ -18,33 +18,58 @@ export function readTraexAdaptivePolicy(env = process.env, enabledByDefault = fa
   if (models.length > 16 || models.some(x => !/^[\w.-]+$/.test(x))) throw new Error('invalid_traex_adaptive_models');
   const cooldownMs = Number(env.TRAEX_ADAPTIVE_COOLDOWN_MS ?? 120000);
   if (!Number.isFinite(cooldownMs) || cooldownMs < 1000 || cooldownMs > 3600000) throw new Error('invalid_traex_adaptive_cooldown');
-  return { models, cooldownMs };
+  const quotaResetHour = Number(env.TRAEX_ADAPTIVE_QUOTA_RESET_HOUR ?? 6);
+  if (!Number.isInteger(quotaResetHour) || quotaResetHour < 0 || quotaResetHour > 23) throw new Error('invalid_traex_adaptive_quota_reset_hour');
+  return { models, cooldownMs, quotaResetHour };
 }
 
-interface Health { blockedUntil: Record<string, number> }
+interface Health { blockedUntil: Record<string, number>; quotaBlockedUntil: Record<string, number> }
+export function nextDailyQuotaResetMs(now: number, hour = 6): number {
+  const reset = new Date(now);
+  reset.setHours(hour, 0, 0, 0);
+  if (reset.getTime() <= now) reset.setDate(reset.getDate() + 1);
+  return reset.getTime();
+}
+
+/** Only explicit quota-exhaustion wording takes this path. Generic 429 errors
+ * retain their existing retry policy because they do not prove daily exhaustion. */
+export function isTraexDailyQuotaExhausted(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return /daily\s+quota\s+(?:is\s+)?exhausted|(?:daily\s+)?quota\s+(?:has\s+)?been\s+exhausted|quota[_ -]?exhausted/u.test(normalized);
+}
 export class TraexAdaptiveRouter {
   constructor(readonly policy: TraexAdaptivePolicy, private readonly path: string) {}
   private read(): Health {
     try {
       const state = JSON.parse(readFileSync(this.path, 'utf8'));
-      return { blockedUntil: state.blockedUntil ?? {} };
+      return { blockedUntil: state.blockedUntil ?? {}, quotaBlockedUntil: state.quotaBlockedUntil ?? {} };
     } catch (e: any) {
       if (e.code !== 'ENOENT') throw e;
-      return { blockedUntil: {} };
+      return { blockedUntil: {}, quotaBlockedUntil: {} };
     }
   }
   /** The first request after cooldown is the admission probe. Never interrupt
    * healthy generation just to try a more expensive model. */
   choose(available: string[], attempted = new Set<string>(), now = Date.now()): string | undefined {
     const health = this.read();
-    const eligible = this.policy.models.filter(x => available.includes(x) && !attempted.has(x));
-    return eligible.find(x => !(health.blockedUntil[x] > now));
+    const configured = new Set(this.policy.models);
+    const eligible = available.filter(x => configured.has(x) && !attempted.has(x));
+    return eligible.find(x => !(health.blockedUntil[x] > now) && !(health.quotaBlockedUntil[x] > now));
   }
   async queued(model: string, now = Date.now()): Promise<void> {
     mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
     await withFileLock(this.path, async () => {
       const state = this.read();
       state.blockedUntil[model] = Math.max(state.blockedUntil[model] ?? 0, now + this.policy.cooldownMs);
+      atomicWriteFileSync(this.path, JSON.stringify(state), { mode: 0o600 });
+    });
+  }
+  async quotaExhausted(model: string, now = Date.now()): Promise<void> {
+    mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
+    await withFileLock(this.path, async () => {
+      const state = this.read();
+      state.quotaBlockedUntil[model] = Math.max(state.quotaBlockedUntil[model] ?? 0,
+        nextDailyQuotaResetMs(now, this.policy.quotaResetHour));
       atomicWriteFileSync(this.path, JSON.stringify(state), { mode: 0o600 });
     });
   }
