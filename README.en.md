@@ -293,6 +293,23 @@ Seamlessly connect Botmux to CLI processes already running in tmux — monitor a
 - **One-click takeover** — Click the "Takeover" button on the streaming card to rebuild the session with `--resume` and convert to a standard Botmux session
 - **Safe disconnect** — Click "Disconnect" to detach Botmux without affecting the original CLI
 
+### Self-service session working directory
+
+An AI can change its own session directory through the supported CLI, without asking the user to send `/cd` or changing bot defaults:
+
+```bash
+botmux cwd status
+botmux cwd set /absolute/path/to/repo
+botmux cwd cancel
+botmux cwd status --session-id <id>
+```
+
+The directory must already exist and be accessible; no directory is created and no Git branch is changed. A live worker is never stopped by `set`: the request is persisted and applied to the next input after the runner reports idle, preserving the Lark thread and CLI history. Busy follow-ups keep using the current worker. Daemon restart and terminal reattachment restore the old runner without assuming a missing worker means the persistent CLI is idle.
+
+JSON distinguishes `actualWorkingDir`, configured `workingDir`, and `pendingWorkingDir`. `pending_next_turn` is acceptance, not runtime proof; a vanished target becomes `blocked` instead of silently falling back to the old directory or HOME. Changes are session-scoped within the target bot. Adopted external processes and sandbox sessions are not supported.
+
+Local programs can use `GET/POST /api/sessions/:sessionId/working-dir`, posting `{ "workingDir": "/path" }` or `{ "cancel": true }` through the existing loopback daemon IPC trust boundary.
+
 ### Scheduled Tasks
 
 Three schedule types (once / interval / cron) with Chinese/English natural

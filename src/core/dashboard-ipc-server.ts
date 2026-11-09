@@ -17,6 +17,8 @@ import * as cardPrefsStore from '../services/card-prefs-store.js';
 import * as observedBotsStore from '../services/observed-bots-store.js';
 import { getDeploymentIdentity } from '../services/deployment-identity.js';
 import { registerSessionModelApi } from './session-model-api.js';
+import { registerSessionWorkingDirApi } from './session-working-dir-api.js';
+import { sendSessionInput } from './session-working-dir-runtime.js';
 import { issueTerminalEntry } from '../services/terminal-access.js';
 import { getTerminalProxyPort } from './terminal-url.js';
 import { getBotUnionId } from '../services/bot-union-ids-store.js';
@@ -238,7 +240,7 @@ export function setBotName(name: string): void { setRowsBotName(name); }
 // The daemon's own larkAppId, primed at startup. Required for the groups
 // endpoints below which proxy calls into groups-store on this bot's behalf.
 let cachedLarkAppId = '';
-export function setLarkAppId(id: string): void { cachedLarkAppId = id; registerSessionModelApi(id); }
+export function setLarkAppId(id: string): void { cachedLarkAppId = id; registerSessionModelApi(id); registerSessionWorkingDirApi(id); }
 
 ipcRoute('GET', '/api/sessions', (_req, res) => {
   // Active first (live state), closed appended (historical)
@@ -672,7 +674,7 @@ ipcRoute('POST', '/api/agent-teams/:teamId/workers/:workerId/message', async (re
     }
 
     const capacity = getAgentTeamCapacity(config.session.dataDir, actor.team.teamId);
-    const alreadyLive = !!ds.worker && !ds.worker.killed;
+    const alreadyLive = (!!ds.worker && !ds.worker.killed) || !!ds.workingDirSwitchInFlight;
     if (!alreadyLive && capacity.available <= 0) {
       return jsonRes(res, 409, { ok: false, error: 'leader_worker_capacity_exhausted', capacity, revision: appended.revision, attempt: appended.attempt });
     }
@@ -693,7 +695,7 @@ ipcRoute('POST', '/api/agent-teams/:teamId/workers/:workerId/message', async (re
     });
     try {
       rememberLastCliInput(ds, guidance, wrapped);
-      if (alreadyLive) ds.worker!.send({ type: 'message', content: wrapped });
+      if (alreadyLive) await sendSessionInput(ds, { type: 'message', content: wrapped });
       else forkWorker(ds, wrapped, ds.hasHistory);
       const activeWorker = ds.worker && !ds.worker.killed;
       if (!activeWorker) throw new Error('worker_refork_not_started');

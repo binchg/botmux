@@ -15,6 +15,7 @@ import * as sessionStore from '../../services/session-store.js';
 import { sendEphemeralCard } from './client.js';
 import { resumeSession, persistStreamCardState } from '../../core/session-manager.js';
 import { buildTerminalUrl } from '../../core/terminal-url.js';
+import { sendSessionInput } from '../../core/session-working-dir-runtime.js';
 
 /** 语音、重启、关闭、恢复和重试操作；未命中时交给下一处理器。 */
 export async function handleLifecycleAction(context: SessionCardContext): Promise<any> {
@@ -36,7 +37,7 @@ export async function handleLifecycleAction(context: SessionCardContext): Promis
       voicedCardIds.add(dedupeKey);
       if (voicedCardIds.size > 5000) { voicedCardIds.clear(); voicedCardIds.add(dedupeKey); }
       if (ds.worker && !ds.worker.killed) {
-        ds.worker.send({ type: 'message', content: voiceSummaryInstruction(locDs) } as DaemonToWorker);
+        await sendSessionInput(ds, { type: 'message', content: voiceSummaryInstruction(locDs) });
       } else {
         forkWorker(ds, voiceSummaryInstruction(locDs), ds.hasHistory);
       }
@@ -194,7 +195,7 @@ export async function handleLifecycleAction(context: SessionCardContext): Promis
       }
 
       if (ds.worker && !ds.worker.killed) {
-        ds.worker.send({ type: 'message', content: cliInput } as DaemonToWorker);
+        await sendSessionInput(ds, { type: 'message', content: cliInput });
       } else {
         forkWorker(ds, cliInput, ds.hasHistory);
       }

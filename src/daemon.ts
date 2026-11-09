@@ -68,6 +68,7 @@ import {
   resetCodexAppProgressForwarder,
   beginCodexAppProgressTurn,
 } from './core/worker-pool.js';
+import { sendSessionInput } from './core/session-working-dir-runtime.js';
 import {
   ipcRoute,
   jsonRes,
@@ -1547,7 +1548,7 @@ async function deliverPendingAgentTeamReports(): Promise<number> {
       whiteboardId: leader.session.whiteboardId,
     });
     rememberLastCliInput(leader, prompt, wrapped);
-    leader.worker.send({ type: 'message', content: wrapped });
+    await sendSessionInput(leader, { type: 'message', content: wrapped });
     delivered += 1;
     logger.info(`[agent-team] report ${consumed.report.reportId.slice(0, 16)} injected into leader ${consumed.team.leaderSessionId.slice(0, 8)}`);
   }
@@ -1620,7 +1621,7 @@ async function deliverPendingAgentTeamMilestones(): Promise<number> {
       whiteboardId: leader.session.whiteboardId,
     });
     rememberLastCliInput(leader, prompt, wrapped);
-    leader.worker.send({ type: 'message', content: wrapped });
+    await sendSessionInput(leader, { type: 'message', content: wrapped });
     delivered += 1;
     logger.info(`[agent-team] milestone ${consumed.milestone.milestoneId.slice(0, 20)} injected into leader ${consumed.team.leaderSessionId.slice(0, 8)}`);
   }
@@ -3492,8 +3493,8 @@ async function handleThreadReply(data: any, ctx: RoutingContext): Promise<void> 
     return;
   }
 
-  // Send message to worker via IPC
-  if (ds.worker && !ds.worker.killed) {
+  // 切换期间 worker 暂为空，新输入仍走同一串行队列，不能抢先进入冷启动分支。
+  if ((ds.worker && !ds.worker.killed) || ds.workingDirSwitchInFlight) {
     const dsBotCfgForMsg = getBot(ds.larkAppId).config;
     // Adopt mode: the adopted CLI is the user's external process and was
     // never injected with botmux's skill / system prompt. Sending it the
@@ -3526,7 +3527,7 @@ async function handleThreadReply(data: any, ctx: RoutingContext): Promise<void> 
     beginNewTurn(ds, parsed.content);
     rememberLastCliInput(ds, promptContent, msgContent);
     await noteTurnReceived(ds, parsed.messageId, parsed.content, await getThreadSender(), parsed.messageId);
-    ds.worker.send({ type: 'message', content: msgContent, turnId: parsed.messageId } as DaemonToWorker);
+    await sendSessionInput(ds, { type: 'message', content: msgContent, turnId: parsed.messageId });
   } else {
     // Worker not running — re-fork with resume. This is a NEW turn, so drop
     // any restored streaming-card reference; worker_ready will POST a fresh
@@ -3636,7 +3637,7 @@ async function handleDocComment(ctx: DocCommentContext): Promise<void> {
   const dsBotCfg = getBot(ds.larkAppId).config;
   const selfBot = getBot(ds.larkAppId);
 
-  if (ds.worker && !ds.worker.killed) {
+  if ((ds.worker && !ds.worker.killed) || ds.workingDirSwitchInFlight) {
     const isBridge = !!ds.adoptedFrom;
     if (!isBridge) ensureSessionWhiteboard(ds);
     const msgContent = isBridge
@@ -3657,7 +3658,7 @@ async function handleDocComment(ctx: DocCommentContext): Promise<void> {
     rememberLastCliInput(ds, promptContent, msgContent);
     sessionStore.updateSession(ds.session); // 先落盘，botmux send 子进程才读得到落点
     await noteTurnReceived(ds, commentId, text, sender, turnId);
-    ds.worker.send({ type: 'message', content: msgContent, turnId } as DaemonToWorker);
+    await sendSessionInput(ds, { type: 'message', content: msgContent, turnId });
     logger.info(`[${tag(ds)}] doc-comment turn injected (turn ${turnId.slice(0, 8)})`);
   } else {
     // Worker 挂起 / 已退出 —— resume 重 fork（与 handleThreadReply 同路）。

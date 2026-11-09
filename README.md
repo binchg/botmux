@@ -299,6 +299,23 @@ botmux start
 
 > start 前再校验一次凭证；权限未配齐不会阻塞 daemon，只 WARN。如果之后需要确认事件订阅，飞书后台会要求 daemon 已在跑才能识别长连接。
 
+### 会话内自助切换工作目录
+
+AI 可以在当前会话中直接调用正式 CLI，无需用户再发 `/cd`，也不必修改全局默认目录：
+
+```bash
+botmux cwd status
+botmux cwd set /absolute/path/to/repo
+botmux cwd cancel                         # 撤销尚未生效的请求
+botmux cwd status --session-id <id>        # 显式指定目标会话
+```
+
+`set` 校验目录存在且可访问，不创建目录、不切换 Git 分支。当前 worker 正在回复时只持久登记请求；运行器确认空闲后的下一次输入才切换，并保留飞书话题和底层 CLI 历史。忙碌追问仍交给原运行器；daemon 重启或终端重连只恢复原运行器，不把缺少 worker 误当成后台空闲。
+
+JSON 中 `actualWorkingDir` 是实际运行目录，`workingDir` 是已配置目录，`pendingWorkingDir` 是待生效目录；不能把 `pending_next_turn` 当作已经切换。路径失效返回 `blocked`，不静默回退旧目录或 HOME。仅修改指定机器人内的目标会话；外部 adopt 及 sandbox 会话不允许自助切换。
+
+本机程序接口为 `GET/POST /api/sessions/:sessionId/working-dir`；POST 设置 `{ "workingDir": "/path" }`，撤销 `{ "cancel": true }`，使用现有 daemon 的 loopback IPC 信任边界。
+
 ### 4. 建群开聊
 
 1. 飞书中创建一个**话题群**

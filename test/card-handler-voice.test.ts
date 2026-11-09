@@ -21,7 +21,8 @@ function fakeSession(workerSend: ReturnType<typeof vi.fn>, killed = false): any 
     rootMessageId: 'om_root',
     scope: 'thread',
     hasHistory: true,
-    worker: { send: workerSend, killed },
+    worker: { send: workerSend, killed, exitCode: null, signalCode: null },
+    workerPort: 12345,
     session: { sessionId: 'sess1', cliId: 'claude-code' },
   };
 }

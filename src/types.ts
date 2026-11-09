@@ -49,6 +49,10 @@ export interface Session {
   closedAt?: string;
   pid?: number;
   workingDir?: string;
+  /** 自助切换的持久请求；旧运行器完成前不修改实际目录。 */
+  pendingWorkingDir?: string;
+  /** 下次启动前目标失效时保留错误，不静默回退旧目录。 */
+  pendingWorkingDirError?: string;
   webPort?: number;
   larkAppId?: string;
   ownerOpenId?: string;       // topic creator's open_id — for @mention in replies

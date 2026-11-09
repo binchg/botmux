@@ -67,6 +67,7 @@ import { firstPositional } from './cli/arg-utils.js';
 import { dispatchPrimaryMessage, findStdinAliasAttachment, sendFileAttachments } from './cli/send-dispatch.js';
 import { runAgentTeamCommand } from './cli/agent-team-command.js';
 import { runSessionModelCommand } from './cli/session-model-command.js';
+import { runSessionWorkingDirCommand } from './cli/session-working-dir-command.js';
 import { readSessionModelDisplay } from './services/session-model-display.js';
 import { formatSessionModelReply } from './services/session-model-reply-budget.js';
 import { buildPm2SpawnCommand } from './cli/pm2-command.js';
@@ -3309,6 +3310,7 @@ botmux v${getVersion()} — IM ↔ AI 编程 CLI 桥接
   delete stopped   清理所有进程已退出的僵尸会话
   resume <id>      恢复一个已关闭的会话（支持 ID 前缀匹配）— 会话标记回 active，
                    下条消息会以 --resume 重新拉起 CLI 进程
+  cwd [status|set <path>|cancel]  当前会话工作目录，下一次安全输入生效，详见 botmux cwd --help
   model status|list|set|executor|effort|speed  当前会话执行器、模型、推理与速度，详见 botmux model --help
   secure-term [id] 启用本机会话密码门禁，打印 10 分钟一次性链接；首次由本人设密
   term-link [id]   获取活跃会话的「可操作终端」（带写 token）。不回显链接，改由
@@ -6381,6 +6383,14 @@ switch (command) {
         : undefined,
     );
     process.exitCode = code;
+    break;
+  }
+  case 'cwd': {
+    const args = process.argv.slice(3);
+    const sessionId = argValue(args, '--session-id') ?? findAncestorSessionId() ?? undefined;
+    const session = sessionId ? loadSessions().get(sessionId) : undefined;
+    const daemon = session?.larkAppId ? findDaemon(session.larkAppId) : null;
+    process.exitCode = await runSessionWorkingDirCommand(args, sessionId && daemon ? { sessionId, ipcPort: daemon.ipcPort } : undefined);
     break;
   }
   case 'model': {

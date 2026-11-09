@@ -17,6 +17,7 @@ import { config } from '../config.js';
 import { readGlobalConfig } from '../global-config.js';
 import * as sessionStore from '../services/session-store.js';
 import { persistStreamCardState, rememberLastCliInput } from './session-manager.js';
+import { sendSessionInput } from './session-working-dir-runtime.js';
 import { fallbackTurnId, resolveSessionReplyTarget } from './reply-target.js';
 import { updateMessage, deleteMessage, sendEphemeralCard, sendUserMessage, addReaction, removeReaction, uploadImage, MessageWithdrawnError } from '../im/lark/client.js';
 import { buildStreamingCard, buildPrivateSnapshotCard, buildSessionCard, buildTuiPromptCard, buildTuiPromptResolvedCard, buildRelayedFrozenCard, getCliDisplayName } from '../im/lark/card-builder.js';
@@ -1613,7 +1614,16 @@ function resolvesToHome(p: string): boolean {
   catch { return p === homedir(); }
 }
 
-export function forkWorker(ds: DaemonSession, prompt: string, resumeOrTurnId: boolean | string = false): void {
+export function forkWorker(ds: DaemonSession, prompt: string, resumeOrTurnId: boolean | string = false, explicitTurnId?: string): void {
+  // 失败的目录请求必须先修正/取消；带新输入的冷分支不能静默回退旧目录。
+  if (prompt && ds.session.pendingWorkingDirError) throw new Error(ds.session.pendingWorkingDirError);
+  // 切换等待旧 worker 退出时，所有冷分支输入也必须进入同一串行队列。
+  if (ds.workingDirSwitchInFlight) {
+    if (prompt) void sendSessionInput(ds, { type: 'message', content: prompt,
+      turnId: explicitTurnId ?? (typeof resumeOrTurnId === 'string' ? resumeOrTurnId : undefined),
+    }).catch(error => logger.warn(`[${tag(ds)}] 目录切换期间投递失败: ${error}`));
+    return;
+  }
   const cb = requireCallbacks();
   const bot = getBot(ds.larkAppId);
   const botCfg = bot.config;
@@ -1630,7 +1640,7 @@ export function forkWorker(ds: DaemonSession, prompt: string, resumeOrTurnId: bo
   const t = tag(ds);
 
   let resume = false;
-  let initTurnId: string | undefined;
+  let initTurnId: string | undefined = explicitTurnId;
   if (typeof resumeOrTurnId === 'string') {
     initTurnId = resumeOrTurnId;
   } else {
@@ -1640,6 +1650,7 @@ export function forkWorker(ds: DaemonSession, prompt: string, resumeOrTurnId: bo
   // A fork() whose cwd no longer exists emits an unhandled 'error' (spawn
   // ENOENT) that crashes the WHOLE daemon (→ pm2 crash-loop). Fall back to
   // home so a stale session workingDir can never take the daemon down.
+  // 恢复/终端重连可能连接仍在推理的后台 CLI，不在此处自动应用目录请求。
   const rawCwd = cb.getSessionWorkingDir(ds);
   const cwd = rawCwd && existsSync(rawCwd) ? rawCwd : homedir();
   if (cwd !== rawCwd) logger.warn(`[${t}] workingDir "${rawCwd}" does not exist — falling back to ${cwd}`);
@@ -1880,6 +1891,8 @@ export function forkWorker(ds: DaemonSession, prompt: string, resumeOrTurnId: bo
   setupWorkerHandlers(ds, worker);
 
   ds.worker = worker;
+  // 新启动或重连必须等待新运行器的状态采样，不能复用旧的 idle 判定。
+  ds.lastScreenStatus = prompt ? 'working' : 'starting';
   ds.spawnedAt = Date.now();
   ds.cliVersion = currentCliVersion;
   sessionStore.updateSessionPid(ds.session.sessionId, worker.pid ?? null);

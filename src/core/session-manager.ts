@@ -6,6 +6,7 @@
 import { existsSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { expandHome } from './working-dir.js';
+import { sendSessionInput } from './session-working-dir-runtime.js';
 import { config } from '../config.js';
 import * as sessionStore from '../services/session-store.js';
 import * as messageQueue from '../services/message-queue.js';
@@ -1433,7 +1434,7 @@ export async function executeScheduledTask(
 
   // Inject into a live session if one already exists at this anchor.
   const existing = activeSessions.get(sessionKey(anchor, larkAppId));
-  if (isContinuation && existing?.worker && !existing.worker.killed) {
+  if (isContinuation && existing && ((existing.worker && !existing.worker.killed) || existing.workingDirSwitchInFlight)) {
     markSessionActivity(existing);
     try {
       ensureSessionWhiteboard(existing);
@@ -1447,10 +1448,12 @@ export async function executeScheduledTask(
         whiteboardId: existing.session.whiteboardId,
       });
       rememberLastCliInput(existing, task.prompt, content);
-      existing.worker.send({ type: 'message', content });
+      await sendSessionInput(existing, { type: 'message', content });
       logger.info(`[scheduler] Task "${task.name}" injected into live session ${existing.session.sessionId}`);
       return;
     } catch (err: any) {
+      // 显式目录请求失败时不能另起旧目录会话掩盖错误，必须保留原会话等待修正。
+      if (existing.session.pendingWorkingDir) throw err;
       logger.warn(`[scheduler] Failed to inject into live session (${err.message}); spawning fresh worker`);
     }
   }

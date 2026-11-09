@@ -27,6 +27,7 @@ import { killWorker, forkWorker, forkAdoptWorker, getCurrentCliVersion, postFres
 import { expandHome, getSessionWorkingDir, getProjectScanDir, getProjectScanDirs, rememberLastCliInput } from './session-manager.js';
 import { discoverSlashCommandsForAdapter, listMcpServerNames, supportsFilesystemCommandDiscovery } from './command-discovery.js';
 import { validateWorkingDir } from './working-dir.js';
+import { clearPendingSessionWorkingDir } from './session-working-dir.js';
 import { discoverAdoptableSessions, validateAdoptTarget, adoptTargetKey, adoptTargetLabel, type AdoptableSession } from './session-discovery.js';
 import { discoverAdoptableZellijSessions, validateZellijAdoptTarget, type ZellijAdoptableSession } from './zellij-adopt-discovery.js';
 import { listCodexAppThreads, type CodexAppThreadSummary } from '../services/codex-app-threads.js';
@@ -1260,6 +1261,7 @@ export async function handleCommand(
         killWorker(ds);
         ds.workingDir = targetPath;
         ds.session.workingDir = targetPath;
+        clearPendingSessionWorkingDir(ds.session);
         sessionStore.updateSession(ds.session);
         if (validation.created) {
           await sessionReply(rootId, t('cmd.cd.created_switched', { path: resolvedPath }, loc));
@@ -1371,6 +1373,7 @@ export async function handleCommand(
             // First spawn: pin the new cwd onto the CURRENT session, then fork.
             ds!.workingDir = selectedPath;
             ds!.session.workingDir = selectedPath;
+            clearPendingSessionWorkingDir(ds!.session);
             sessionStore.updateSession(ds!.session);
             await forkPendingCli(t('cmd.repo.selected_in_pending', { name: displayName }, loc));
           } else {
@@ -1407,6 +1410,7 @@ export async function handleCommand(
             ds!.lastCliInput = undefined;
             ds!.workingDir = selectedPath;
             ds!.session.workingDir = selectedPath;
+            clearPendingSessionWorkingDir(ds!.session);
             ds!.session.larkAppId = ds!.larkAppId;
             sessionStore.updateSession(ds!.session);
             ds!.hasHistory = false;
@@ -2848,6 +2852,7 @@ export async function startCodexAppThreadSession(
   ds.lastScreenStatus = undefined;
 
   ds.session.workingDir = thread.cwd;
+  clearPendingSessionWorkingDir(ds.session);
   ds.session.title = `Codex App: ${title}`;
   ds.session.cliId = 'codex-app';
   ds.session.cliSessionId = thread.threadId;
@@ -2882,6 +2887,7 @@ export async function startAdoptSession(
 
   ds.workingDir = target.cwd;
   ds.session.workingDir = target.cwd;
+  clearPendingSessionWorkingDir(ds.session);
   ds.session.title = `Adopt: ${project}`;
   ds.adoptedFrom = {
     source: zellij ? 'zellij' : target.source,
@@ -2959,6 +2965,7 @@ export async function startResumeImportSession(
 
   ds.workingDir = target.cwd;
   ds.session.workingDir = target.cwd;
+  clearPendingSessionWorkingDir(ds.session);
   ds.session.cliSessionId = target.cliSessionId;
   ds.session.title = target.title || `Import: ${project}`;
   // Resume sandbox decision is left to forkWorker (resume=true → not sandboxed,

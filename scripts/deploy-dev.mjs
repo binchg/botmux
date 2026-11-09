@@ -103,6 +103,9 @@ function main() {
     'test/codex-app-thread-title.test.ts', 'test/cli-adapters.test.ts',
     'test/agent-team-store.test.ts', 'test/agent-team-capacity-reconcile.test.ts', 'test/agent-team-human-output.test.ts',
     'test/agent-team-command.test.ts', 'test/build-atomic.test.ts',
+    'test/session-working-dir-command.test.ts', 'test/session-working-dir.test.ts',
+    'test/session-working-dir-api.test.ts', 'test/session-working-dir-runtime.test.ts',
+    'test/session-working-dir-ingress.test.ts',
     'test/group-direct-mention-gate.test.ts', 'test/group-topic-followup-delivery.test.ts',
     'test/group-direct-mention-policy.test.ts', 'test/group-owner-topic-entry.test.ts']);
   run('corepack', ['pnpm', 'build']);

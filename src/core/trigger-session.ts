@@ -10,6 +10,7 @@ import { validateWorkingDir } from './working-dir.js';
 import { buildFollowUpContent, buildNewTopicPrompt, ensureSessionWhiteboard, getAvailableBots, rememberLastCliInput } from './session-manager.js';
 import { markSessionActivity } from './session-activity.js';
 import { forkWorker, getCurrentCliVersion } from './worker-pool.js';
+import { sendSessionInput } from './session-working-dir-runtime.js';
 import * as messageQueue from '../services/message-queue.js';
 import type { DaemonSession } from './types.js';
 import { sessionKey } from './types.js';
@@ -100,7 +101,7 @@ function waitForSessionFinalOutput(
   triggerId: string,
   timeoutMs: number,
   buildCompletedResponse: (text: string) => TriggerResponse,
-  dispatchTurn: () => void,
+  dispatchTurn: () => void | Promise<void>,
 ): Promise<TriggerResponse> {
   ds.pendingWaitPromises ??= new Map();
   return new Promise<TriggerResponse>((resolve) => {
@@ -120,7 +121,12 @@ function waitForSessionFinalOutput(
         resolve({ ok: false, triggerId, errorCode: 'trigger_failed', error: err.message });
       },
     });
-    dispatchTurn();
+    // 异步目录切换失败时立即结束等待，不能直到 HTTP 超时才暴露投递失败。
+    try {
+      Promise.resolve(dispatchTurn()).catch(error => ds.pendingWaitPromises?.get(triggerId)?.reject?.(error));
+    } catch (error) {
+      ds.pendingWaitPromises?.get(triggerId)?.reject?.(error as Error);
+    }
   });
 }
 
@@ -217,7 +223,7 @@ export async function triggerSessionTurn(
     };
   }
 
-  if (ds?.worker && !ds.worker.killed) {
+  if (ds && ((ds.worker && !ds.worker.killed) || ds.workingDirSwitchInFlight)) {
     ensureSessionWhiteboard(ds);
     const content = buildFollowUpContent(prompt, ds.session.sessionId, {
       isAdoptMode: false,
@@ -243,13 +249,13 @@ export async function triggerSessionTurn(
           output: { content: text },
           message: 'delivered to existing session and completed',
         }),
-        () => ds!.worker!.send({ type: 'message', content, turnId: triggerId }),
+        () => sendSessionInput(ds!, { type: 'message', content, turnId: triggerId }),
       );
     }
 
     if (req.options?.asyncReturnSessionId) {
       beginAsyncTrigger(ds, triggerId);
-      ds.worker.send({ type: 'message', content, turnId: triggerId });
+      await sendSessionInput(ds, { type: 'message', content, turnId: triggerId });
       return buildAsyncQueuedResponse(
         triggerId,
         ds.session.sessionId,
@@ -258,7 +264,7 @@ export async function triggerSessionTurn(
       );
     }
 
-    ds.worker.send({ type: 'message', content });
+    await sendSessionInput(ds, { type: 'message', content });
     return {
       ok: true,
       triggerId,

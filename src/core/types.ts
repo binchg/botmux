@@ -55,6 +55,8 @@ export interface DaemonSession {
   lastMessageAt: number;
   hasHistory: boolean;   // true after CLI has run at least once for this session
   workingDir?: string;
+  /** 正在等待旧 worker 退出，防止切换期间覆盖或撤销目录请求。 */
+  workingDirSwitchInFlight?: boolean;
   initConfig?: Extract<DaemonToWorker, { type: 'init' }>;   // stored for restart
   pendingRepo?: boolean;         // waiting for repo selection before spawning CLI
   repoCardMessageId?: string;    // message_id of the repo selection card — for withdrawal
