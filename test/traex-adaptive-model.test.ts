@@ -29,26 +29,24 @@ describe('TraeX admission routing', () => {
     expect(router.choose(p.models, new Set(), 200)).toBeUndefined();
   });
 
-  it('combines quota, capability and load instead of treating 100% load as a hard gate', () => {
+  it('只选择已知低于 100% 且无排队或额度耗尽的候选', () => {
     const raw = (slug: string, load: unknown, queue: unknown = null, quota?: any) => ({ slug, visibility: 'list',
       model_provider_id: 'trae', business_metadata: { load: { load_percent: load, queue_size: queue }, ...(quota ? { daily_quota: quota } : {}) },
       supported_reasoning_levels: [{ effort: 'xhigh' }] });
     const catalog = parseTraexCatalog({ models: [raw('top', 100), raw('middle', 99), raw('low', null),
       raw('queued', 25, 3), raw('nan', '12'), raw('negative', -1), raw('zero', 0)] });
-    expect(eligibleTraexModels(catalog)).toEqual(['top', 'middle', 'low', 'nan', 'negative', 'zero']);
+    expect(eligibleTraexModels(catalog)).toEqual(['middle', 'zero']);
     expect(eligibleTraexModels(catalog, 'ultra')).toEqual([]);
 
     const quotaAware = parseTraexCatalog({ models: [
       raw('gpt-6-astra', 362, null, { remaining_percent: 100 }),
       raw('gpt-6.1-sol', 117, null, { exhausted: true }),
       raw('gpt-5.6-sol', 103, null, { remaining_percent: 100 }),
-      raw('gpt-5.6-terra', 102), raw('gpt-5.5', 56),
+      raw('gpt-5.6-terra', 102), raw('gpt-5.5', 56), raw('gpt-5.4', 10, null, { exhausted: true }),
     ] });
-    // Sol is explicitly exhausted while busy; Astra has quota but is extremely
-    // overloaded; 5.6-Sol wins because its positive quota signal offsets a
-    // small overload without pretending that it cannot still queue.
-    expect(rankTraexCandidates(quotaAware, ['gpt-6-astra', 'gpt-6.1-sol', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.5'])
-      .map(candidate => candidate.model.model)).toEqual(['gpt-5.6-sol', 'gpt-5.5', 'gpt-5.6-terra', 'gpt-6-astra']);
+    // 更强模型的能力或剩余额度不能抵消已满负载；低负载但额度耗尽也不能准入。
+    expect(rankTraexCandidates(quotaAware, ['gpt-6-astra', 'gpt-6.1-sol', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.5', 'gpt-5.4'])
+      .map(candidate => candidate.model.model)).toEqual(['gpt-5.5']);
     expect(readTraexAdaptivePolicy({}, true)?.models).toEqual(['gpt-6-astra', 'gpt-6.1-sol', 'gpt-6.1-terra',
       'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-6-sol', 'gpt-5.6-luna', 'gpt-6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.2']);
     expect(readTraexAdaptivePolicy({}, true)?.quotaResetHour).toBe(6);
