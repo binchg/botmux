@@ -77,6 +77,7 @@ export function handleAppNotification(msg: JsonObject, context: NotificationCont
     (activeTurn.toolItems ??= new Set()).add(String(params.item.id));
   }
   if (msg.method === 'item/completed') activeTurn.toolItems?.delete(String(params.item?.id));
+  if (msg.method === 'item/completed') activeTurn.modelSwitchCheck?.();
 
   if (msg.method === 'hook/started' || msg.method === 'hook/completed') {
     activeTurn.adaptiveCheck?.();

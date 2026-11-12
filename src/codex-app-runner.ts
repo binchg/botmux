@@ -6,6 +6,9 @@ import { handleAppServerRequest, handleAppNotification } from './services/app-ru
 import { runSingleTurn, type SingleTurnContext } from './services/app-runner-turn.js';
 import { runTurn as continueTurn } from './services/app-runner-continuation.js';
 import { AppRunnerInput } from './services/app-runner-input.js';
+import { SessionModelInput } from './services/session-model-input.js';
+import { SessionModelTurnSwitch } from './services/session-model-turn-switch.js';
+import { listCodexAppModels } from './services/codex-app-threads.js';
 import { SharedBotContext } from './services/shared-bot-context.js';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
@@ -72,6 +75,8 @@ let defaultServiceTier: string | undefined;
 let activeTurn: ActiveTurn | null = null;
 const queue: string[] = [];
 let processing = false;
+let currentRequestContent = '';
+let requestReconfigured = false;
 
 /** 每条完整 assistant 消息只投递一次，避免流式分句刷屏和最终答案提前泄露。 */
 function emitCompletedAssistantMessage(turn: ActiveTurn, itemId: string, content: string): void {
@@ -149,7 +154,7 @@ function flushSteers(turn: ActiveTurn): void {
 }
 
 function handleUserMessage(content: string): void {
-  if (!activeTurn) {
+  if (!activeTurn || activeTurn.modelSwitchPending) {
     enqueueNextTurn(content);
     return;
   }
@@ -170,6 +175,8 @@ function handleUserMessage(content: string): void {
 
 /** 通过 app-server 真正中断当前 turn；线程本身保留，可继续发新指令。 */
 async function interruptActiveTurn(): Promise<void> {
+  modelInput.cancel();
+  modelSwitch.cancel();
   requestAbort?.abort();
   if (requestAbort && !activeTurn) {
     admissionAbort?.abort();
@@ -377,6 +384,9 @@ async function drainQueue(): Promise<void> {
   try {
     while (queue.length > 0) {
       const next = queue.shift()!;
+      modelSwitch.started(next);
+      currentRequestContent = next;
+      requestReconfigured = false;
       requestAbort = new AbortController();
       try {
         await runWithTraexFallback({ dataDir: config.session.dataDir, sessionId: args.sessionId,
@@ -384,6 +394,7 @@ async function drainQueue(): Promise<void> {
           signal: requestAbort.signal,
           notice: content => emitMarker('progress', { content, startedAtMs: Date.now(), updatedAtMs: Date.now() }) });
       } catch (err: any) {
+        if (requestReconfigured) continue;
         const requested = readSessionModel(config.session.dataDir, args.sessionId);
         const runtime = readSessionModelRuntime(config.session.dataDir, args.sessionId);
         if (runtime?.phase !== 'failed' || runtime.revision !== requested?.revision) {
@@ -399,13 +410,25 @@ async function drainQueue(): Promise<void> {
           startedAtMs: Date.now(),
           completedAtMs: Date.now(),
         });
-      } finally { requestAbort = undefined; }
+      } finally { requestAbort = undefined; requestReconfigured = false; }
       prompt();
     }
   } finally {
     processing = false;
   }
 }
+
+const modelNotice = (content: string, failed = false) => emitMarker(failed ? 'final' : 'progress', {
+  content, startedAtMs: Date.now(), updatedAtMs: Date.now(), completedAtMs: failed ? Date.now() : undefined });
+const modelSwitch = new SessionModelTurnSwitch({ active: () => activeTurn, processing: () => processing,
+  currentContent: () => currentRequestContent, reconfiguring: value => { requestReconfigured = value; },
+  abortAdmission: () => { requestAbort?.abort(); admissionAbort?.abort(); }, enqueue: enqueueNextTurn,
+  removeQueued: content => { const index = queue.indexOf(content); if (index >= 0) queue.splice(index, 1); },
+  interrupt: turn => client.request('turn/interrupt', { threadId, turnId: turn.turnId }), notice: modelNotice });
+const modelInput = new SessionModelInput({ dataDir: config.session.dataDir, sessionId: args.sessionId,
+  defaults: () => ({ executor: activeExecutor, model: defaultThreadModel ?? '', effort: defaultThreadEffort ?? 'xhigh', serviceTier: defaultServiceTier }),
+  models: executor => listCodexAppModels({ codexBin: executor === 'traex' ? args.traexBin : args.codexBin, cwd: args.cwd }),
+  deliver: (content, changed) => changed ? modelSwitch.schedule(content) : handleUserMessage(content), notice: modelNotice });
 
 async function main(): Promise<void> {
   client.onRequest(handleServerRequest);
@@ -432,7 +455,7 @@ async function main(): Promise<void> {
   }
   if (process.stdin.isTTY) process.stdin.setRawMode(true);
   process.stdin.resume();
-  const input = new AppRunnerInput(handleUserMessage, interruptActiveTurn);
+  const input = new AppRunnerInput(content => modelInput.receive(content), interruptActiveTurn);
   process.stdin.on('data', data => input.handleInput(data));
   prompt();
 }

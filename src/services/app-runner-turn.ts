@@ -40,6 +40,7 @@ export async function runSingleTurn(context: SingleTurnContext, content: string,
     emitMarker, sharedContextPrefix, flushSteers, queuePendingSteersAsNextTurns } = context;
   // 当前轮冻结期望配置；切换只发生在两个 turn 之间。
   const requested = readSessionModel(config.session.dataDir, args.sessionId);
+  const applyingSelection = !!requested && readSessionModelRuntime(config.session.dataDir, args.sessionId)?.revision !== requested.revision;
   try { await ensureExecutor(requested); } catch (error) {
     writeSessionModelRuntime(config.session.dataDir, { sessionId: args.sessionId, pid: process.pid,
       threadId: context.threadId, phase: 'failed', revision: requested?.revision,
@@ -50,7 +51,8 @@ export async function runSingleTurn(context: SingleTurnContext, content: string,
   const hookTrustIssue = await currentHookTrustIssue();
   if (hookTrustIssue) throw new Error(hookTrustIssue);
   const { client, activeExecutor, activeHookTrust, defaultThreadModel, defaultThreadEffort, defaultServiceTier } = context;
-  const adaptive = activeExecutor === 'traex' ? adaptiveRouter : undefined;
+  const traex = activeExecutor === 'traex' ? adaptiveRouter : undefined;
+  const adaptive = requested?.routingMode === 'fixed' ? undefined : traex;
   let selectedModel = requested?.model ?? defaultThreadModel;
   if (adaptive && admission) {
     const pendingReceipt = (state: 'selecting' | 'waiting') => writeSessionModelRuntime(config.session.dataDir, {
@@ -76,7 +78,8 @@ export async function runSingleTurn(context: SingleTurnContext, content: string,
   const selectedRuntime: SessionModelRuntime = {
     sessionId: args.sessionId, pid: process.pid, threadId: tid, phase: 'running', revision: requested?.revision,
     protocol: 4, updatedAt: new Date().toISOString(),
-    selection: selection.model && selection.effort ? { ...selection, executor: activeExecutor, hookTrust: activeHookTrust } as ModelSelection : undefined,
+    selection: selection.model && selection.effort ? { ...selection, executor: activeExecutor, hookTrust: activeHookTrust,
+      ...(requested?.routingMode ? { routingMode: requested.routingMode } : {}) } as ModelSelection : undefined,
     ...(activeExecutor === 'traex' ? { routing: { executor: 'traex' as const, state: 'requested' as const,
       effort: selection.effort ?? 'xhigh', loadPercent } } : {}),
   };
@@ -92,18 +95,26 @@ export async function runSingleTurn(context: SingleTurnContext, content: string,
   context.activeTurn = turn;
   let queueReader: TraexQueueReader | undefined;
   let queueTimer: ReturnType<typeof setInterval> | undefined;
-  if (adaptive && selection.model && client.pid) {
+  if (traex && selection.model && client.pid) {
+    let fixedQueueNotified = false;
     attempted.add(selection.model);
     try { queueReader = new TraexQueueReader(tid, client.pid); }
     catch (error) { writeLine(`[traex-adaptive] queue observation unavailable: ${asError(error).message}`); }
     const check = async () => {
-      if (!queueReader || context.activeTurn !== turn || !turn.turnId || turn.finished || turn.userInterrupted || turn.criticalHookFailure || turn.adaptiveChecking || turn.adaptiveNextModel || turn.toolItems?.size) return;
+      if (!queueReader || context.activeTurn !== turn || !turn.turnId || turn.finished || turn.userInterrupted || turn.criticalHookFailure || turn.modelSwitchPending || turn.adaptiveChecking || turn.adaptiveNextModel || turn.toolItems?.size) return;
       const activityAt = turn.adaptiveActivityAt ?? turn.startedAtMs;
       let evidence;
       try { evidence = queueReader.poll(activityAt); } catch { return; }
       if (!evidence) return;
       turn.adaptiveChecking = true;
       modelReceipt('running', turn.turnId, 'queued', evidence.position);
+      if (!adaptive) {
+        if (!fixedQueueNotified) emitMarker('progress', { content: `指定的 ${selection.model} 已应用，但服务端仍在排队。发送“恢复自动选模”可允许自动降级。`,
+          turnId: turn.turnId, startedAtMs: turn.startedAtMs, updatedAtMs: Date.now() });
+        fixedQueueNotified = true;
+        turn.adaptiveChecking = false;
+        return;
+      }
       try {
         await adaptive.queued(selection.model!);
         try { await admission!.refresh(); } catch { admission!.catalog = []; }
@@ -148,13 +159,18 @@ export async function runSingleTurn(context: SingleTurnContext, content: string,
       ...(outputSchema ? { outputSchema } : {}),
     });
     turn.turnId = result.turn?.id ?? turn.turnId;
+    turn.modelSwitchCheck?.();
     context.pendingHandoff = ''; persistExecutor();
     modelReceipt('running', turn.turnId, turn.adaptiveActivityAt ? undefined : 'requested');
+    if (applyingSelection) emitMarker('progress', {
+      content: `本轮请求已应用：${activeExecutor === 'traex' ? 'TraeX' : 'Codex'} · ${selection.model} · ${selection.effort} · ${selection.serviceTier === 'priority' ? 'fast' : '标准速度（非 fast）'}。`,
+      turnId: turn.turnId, startedAtMs: turn.startedAtMs, updatedAtMs: Date.now(), complete: true });
     if (activeExecutor === 'traex' && !turn.structuredOutput) {
       const notice = readSessionModelDisplay(config.session.dataDir, args.sessionId)?.label;
       if (notice) {
         writeLine(`[模型] ${notice}`);
-        emitMarker('progress', { content: '已选定模型并发送请求，等待上游准入；如实际入队会自动重选。',
+        emitMarker('progress', { content: adaptive ? '已选定模型并发送请求，等待上游准入；如实际入队会自动重选。'
+          : '已按指定模型发送请求，等待上游准入；本会话保持指定模型。',
           turnId: turn.turnId, startedAtMs: turn.startedAtMs, updatedAtMs: Date.now(), complete: true });
       }
     }
@@ -163,7 +179,7 @@ export async function runSingleTurn(context: SingleTurnContext, content: string,
     await turn.steerChain;
     queuePendingSteersAsNextTurns(turn);
 
-    if (turn.quotaExhaustedError && adaptive && selection.model && !turn.userInterrupted && !turn.criticalHookFailure) {
+    if (turn.quotaExhaustedError && adaptive && selection.model && !turn.userInterrupted && !turn.criticalHookFailure && !turn.modelSwitchPending) {
       await adaptive.quotaExhausted(selection.model);
       try { await admission!.refresh(); } catch { admission!.catalog = []; }
       const next = admission!.choose(attempted, selection.effort);
@@ -179,7 +195,7 @@ export async function runSingleTurn(context: SingleTurnContext, content: string,
 
     const finalText = (turn.finalText || turn.allAgentText).trim();
     const completedAtMs = Date.now();
-    if (!turn.rateLimitError && !turn.adaptiveNextModel && finalText) {
+    if (!turn.rateLimitError && !turn.adaptiveNextModel && !turn.modelSwitchPending && finalText) {
       emitMarker('final', {
         turnId: turn.turnId ?? `codex-app-${completedAtMs}`,
         content: finalText,
@@ -191,8 +207,8 @@ export async function runSingleTurn(context: SingleTurnContext, content: string,
     return {
       turnId: turn.turnId,
       startedAtMs: turn.startedAtMs,
-      rateLimitError: turn.rateLimitError,
-      adaptiveNextModel: turn.userInterrupted ? undefined : turn.adaptiveNextModel,
+      rateLimitError: turn.modelSwitchPending ? undefined : turn.rateLimitError,
+      adaptiveNextModel: turn.userInterrupted || turn.modelSwitchPending ? undefined : turn.adaptiveNextModel,
     };
   } catch (error) {
     modelReceipt('failed', turn.turnId);

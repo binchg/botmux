@@ -50,6 +50,10 @@ export interface ActiveTurn {
   finished?: boolean;
   adaptiveFloorNotified?: boolean;
   toolItems?: Set<string>;
+  modelSwitchPending?: boolean;
+  modelSwitchInFlight?: boolean;
+  modelSwitchRequested?: boolean;
+  modelSwitchCheck?: () => void;
 }
 
 export interface TurnOutcome {

@@ -4,7 +4,7 @@ export interface ModelCommandContext { sessionId: string; ipcPort: number }
 export const MODEL_COMMAND_HELP = `botmux model [status|list]
 botmux model route [--json]  # TraeX 负载快照及默认 xhigh 候选
 botmux model list [--executor codex-app|traex]
-botmux model set <model> [effort] [--executor codex-app|traex] [--speed default|priority] [--session-id <id>]
+botmux model set <model> [effort] [--executor codex-app|traex] [--speed default|priority] [--routing fixed|adaptive] [--session-id <id>]
 botmux model executor <codex-app|traex> [--session-id <id>]
 botmux model effort <effort> [--session-id <id>]
 botmux model speed <default|priority> [--session-id <id>]
@@ -25,19 +25,21 @@ export function parseModelCommand(args: string[]): { action: string; executor?: 
   const positional: string[] = [];
   let serviceTier: string | undefined;
   let executor: string | undefined;
+  let routingMode: string | undefined;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    if (['--session-id', '--service-tier', '--speed', '--executor'].includes(arg)) {
+    if (['--session-id', '--service-tier', '--speed', '--executor', '--routing'].includes(arg)) {
       const value = args[++i]; if (!value || value.startsWith('--')) throw new Error('option_value_required');
       if (arg === '--service-tier' || arg === '--speed') serviceTier = value;
       if (arg === '--executor') executor = value;
+      if (arg === '--routing') routingMode = value;
     } else if (arg.startsWith('-')) throw new Error('unknown_option');
     else positional.push(arg);
   }
   const action = positional[0] ?? 'status';
-  if (['status', 'list'].includes(action) && positional.length <= 1 && !serviceTier && (!executor || action === 'list')) return { action, ...(executor ? { executor } : {}) };
-  if (action === 'set' && positional.length >= 2 && positional.length <= 3) return { action, body: { model: positional[1], ...(positional[2] ? { effort: positional[2] } : {}), ...(serviceTier ? { serviceTier } : {}), ...(executor ? { executor } : {}) } };
-  if (['effort','executor','speed','hooks'].includes(action) && positional.length === 2 && !serviceTier && !executor) return { action: 'set', body: { [action === 'speed' ? 'serviceTier' : action === 'hooks' ? 'hookTrust' : action]: positional[1] } };
+  if (['status', 'list'].includes(action) && positional.length <= 1 && !serviceTier && !routingMode && (!executor || action === 'list')) return { action, ...(executor ? { executor } : {}) };
+  if (action === 'set' && positional.length >= 2 && positional.length <= 3) return { action, body: { model: positional[1], ...(positional[2] ? { effort: positional[2] } : {}), ...(serviceTier ? { serviceTier } : {}), ...(executor ? { executor } : {}), ...(routingMode ? { routingMode } : {}) } };
+  if (['effort','executor','speed','hooks'].includes(action) && positional.length === 2 && !serviceTier && !executor && !routingMode) return { action: 'set', body: { [action === 'speed' ? 'serviceTier' : action === 'hooks' ? 'hookTrust' : action]: positional[1] } };
   throw new Error('invalid_model_command');
 }
 export async function runSessionModelCommand(args: string[], ctx?: ModelCommandContext, daemons: { ipcPort: number }[] = []): Promise<number> {
