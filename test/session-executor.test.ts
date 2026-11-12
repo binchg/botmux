@@ -52,7 +52,7 @@ if(m.method==='thread/read')result={thread:{turns:[{items:[{type:'userMessage',c
 if(m.method==='turn/start'){const id='turn-'+(++n);send({id:m.id,result:{turn:{id}}});setTimeout(()=>{send({method:'item/completed',params:{threadId:name+'-thread',item:{type:'agentMessage',id:'answer-'+n,text:'synthetic complete',phase:'final_answer'}}});send({method:'turn/completed',params:{threadId:name+'-thread',turn:{id,status:'completed'}}});},150);return;}
 send({id:m.id,result});});
 `, { mode:0o700 });
-  const start = () => spawn(process.execPath, ['--import','tsx',resolve('src/codex-app-runner.ts'),'--session-id','switch-test','--codex-bin',join(d,'codex'),'--traex-bin',join(d,'traex'),'--cwd',d], { cwd:process.cwd(),env:{...process.env,HOME:d,SESSION_DATA_DIR:d,EXECUTOR_TEST_CALLS:calls},stdio:['pipe','pipe','pipe'] });
+  const start = () => spawn(process.execPath, ['--import','tsx',resolve('src/codex-app-runner.ts'),'--session-id','switch-test','--codex-bin',join(d,'codex'),'--traex-bin',join(d,'traex'),'--cwd',d], { cwd:process.cwd(),env:{...process.env,HOME:d,SESSION_DATA_DIR:d,EXECUTOR_TEST_CALLS:calls,TRAEX_ADAPTIVE_ENABLED:'0'},stdio:['pipe','pipe','pipe'] });
   let runner = start(); let errors = '';
   const attach = () => { runner.stdout.on('data',()=>{});runner.stderr.on('data',x=>{errors+=x;}); };
   attach(); const state = () => sessionModelStatus(d,'switch-test');

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { TraexAdmission } from '../src/services/traex-admission.js';
-import { TraexAdaptiveRouter } from '../src/services/traex-adaptive-model.js';
+import { parseTraexQueueEvidence, TraexAdaptiveRouter } from '../src/services/traex-adaptive-model.js';
 import type { TraexCatalogModel } from '../src/services/traex-model-catalog.js';
 
 const roots: string[] = [];
@@ -21,15 +21,33 @@ function model(name: string, loadPercent = 30): TraexCatalogModel {
 afterEach(() => { roots.splice(0).forEach(root => rmSync(root, { recursive: true, force: true })); });
 
 describe('TraeX 自动降级边界', () => {
+  it('仅真实排队的明确标记说明额度低优先级，不把缺失信息当成额度耗尽', () => {
+    const row = { id: 1, ts: 1, feedback_log_body: 'request_wait_in_queue {"position":774,"model_quota_low_priority":true}' };
+    expect(parseTraexQueueEvidence(row)).toMatchObject({ position: 774, quotaLowPriority: true });
+    expect(parseTraexQueueEvidence({ ...row, feedback_log_body: row.feedback_log_body.replace('true', 'false') })?.quotaLowPriority).toBeUndefined();
+    expect(parseTraexQueueEvidence({ ...row, feedback_log_body: 'model_quota_low_priority:true' })).toBeUndefined();
+  });
   it('刷新和共享冷却到期都不重新尝试本请求已排队的模型', async () => {
     const routing = router();
     await routing.queued('top', 1);
     const attempted = new Set(['top']);
     let refreshes = 0;
-    const admission = new TraexAdmission(routing, async () => [model('top'), model('low', ++refreshes < 2 ? 100 : 30)], 5);
+    const choose = vi.spyOn(routing, 'choose');
+    choose.mockReturnValueOnce(undefined);
+    const admission = new TraexAdmission(routing, async () => { refreshes++; return [model('top'), model('low')]; }, 5);
     expect(await admission.select(attempted, new AbortController().signal, () => {})).toBe('low');
     expect([...attempted]).toEqual(['top']);
     expect(refreshes).toBe(2);
+  });
+
+  it('可准入候选均已排队时，不为空闲未知或超载高档型号额外等待两分钟', async () => {
+    const missing = { ...model('unknown'), loadPercent: undefined };
+    const fetch = vi.fn(async () => [model('busy', 119), missing, model('top'), model('low')]);
+    const notice = vi.fn();
+    await expect(new TraexAdmission(router(['busy', 'unknown', 'top', 'low']), fetch)
+      .select(new Set(['top', 'low']), new AbortController().signal, notice)).rejects.toMatchObject({ reason: 'exhausted' });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(notice).not.toHaveBeenCalled();
   });
 
   it('目录候选都已尝试时立即结束，不再等待冷却后重新发请求', async () => {

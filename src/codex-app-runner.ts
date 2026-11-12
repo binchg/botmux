@@ -1,122 +1,31 @@
 #!/usr/bin/env node
+import type { Args, ActiveTurn, JsonObject } from './services/app-runner-types.js';
+import { AppServerClient } from './services/app-runner-client.js';
+import { asError, parseArgs, b64Json, writeLine, displayUserContent, prompt, appDeveloperInstructions, userTextInput } from './services/app-runner-protocol.js';
+import { handleAppServerRequest, handleAppNotification } from './services/app-runner-events.js';
+import { runSingleTurn, type SingleTurnContext } from './services/app-runner-turn.js';
+import { runTurn as continueTurn } from './services/app-runner-continuation.js';
+import { AppRunnerInput } from './services/app-runner-input.js';
 import { SharedBotContext } from './services/shared-bot-context.js';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
-import { isTraexDailyQuotaExhausted, readTraexAdaptivePolicy, TraexAdaptiveRouter, TraexQueueReader } from './services/traex-adaptive-model.js';
+import { readTraexAdaptivePolicy, TraexAdaptiveRouter } from './services/traex-adaptive-model.js';
 import { TraexAdmission } from './services/traex-admission.js';
+import { runWithTraexFallback } from './services/traex-executor-fallback.js';
 import { fetchTraexCatalog } from './services/traex-model-catalog.js';
 import { readSessionModelDisplay, sessionModelDisplay, withSessionModelDisplay } from './services/session-model-display.js';
 import { beginSessionModelReplyEpoch } from './services/session-model-reply-budget.js';
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { Buffer } from 'node:buffer';
 import { config } from './config.js';
 import { invalidateGlobalConfigCache, readGlobalConfig } from './global-config.js';
-import { readSessionModel, readSessionModelRuntime, readSessionExecutor, writeSessionExecutor, writeSessionModelRuntime, type ModelSelection, type SessionModelRequest, type SessionModelRuntime } from './services/session-model-store.js';
+import { readSessionModel, readSessionModelRuntime, readSessionExecutor, writeSessionExecutor, writeSessionModelRuntime, type SessionModelRequest } from './services/session-model-store.js';
 import { executorHandoff } from './services/session-executor-handoff.js';
-import { normalizeCodexAppTimestampMs } from './services/codex-app-activity.js';
-import { codexAppHookFailure, codexAppHookTrustIssue } from './services/codex-app-hook-health.js';
-import { agentTeamOutputSchema } from './services/agent-team-result-schema.js';
+import { codexAppHookTrustIssue } from './services/codex-app-hook-health.js';
 import { isAgentTeamMachineOutput } from './services/agent-team-output-filter.js';
-import {
-  CODEX_APP_RATE_LIMIT_MAX_CONTINUES,
-  codexAppAutoContinueDelayMs,
-  codexAppAutoContinuePrompt,
-  isCodexAppRetryLimit429,
-} from './services/codex-app-auto-continue.js';
 
-type JsonObject = Record<string, any>;
-
-interface Args {
-  sessionId: string;
-  codexBin: string;
-  traexBin: string;
-  cwd: string;
-  threadId?: string;
-  title?: string;
-  botName?: string;
-  botOpenId?: string;
-  locale?: string;
-}
-
-interface PendingRequest {
-  resolve: (value: any) => void;
-  reject: (error: Error) => void;
-  method: string;
-}
-
-interface ActiveTurn {
-  turnId?: string;
-  startedAtMs: number;
-  finalText: string;
-  finalItemId?: string;
-  allAgentText: string;
-  itemText: Map<string, string>;
-  itemEpoch: Map<string, number>;
-  emittedProgressItemIds: Set<string>;
-  guidanceEpoch: number;
-  pendingSteers: string[];
-  steerChain: Promise<void>;
-  done: Promise<void>;
-  resolveDone: () => void;
-  criticalHookFailure?: string;
-  turnFailed?: boolean;
-  rateLimitError?: string;
-  quotaExhaustedError?: string;
-  /** Structured Team JSON is machine-only: collect it for the final marker,
-   * but never mirror its streamed bytes into terminal/progress surfaces. */
-  structuredOutput: boolean;
-  modelRuntime?: SessionModelRuntime;
-  adaptiveNextModel?: string;
-  adaptiveChecking?: boolean;
-  adaptiveCheck?: () => void;
-  adaptiveActivityAt?: number;
-  userInterrupted?: boolean;
-  finished?: boolean;
-  adaptiveFloorNotified?: boolean;
-  toolItems?: Set<string>;
-}
-
-interface TurnOutcome {
-  adaptiveNextModel?: string;
-  turnId?: string;
-  startedAtMs: number;
-  rateLimitError?: string;
-}
 
 const OSC_PREFIX = '\x1b]777;botmux:';
 const OSC_END = '\x07';
-
-function asError(value: unknown): Error {
-  return value instanceof Error ? value : new Error(String(value));
-}
-
-function parseArgs(argv: string[]): Args {
-  const out: Args = {
-    sessionId: '',
-    codexBin: 'codex',
-    traexBin: process.env.TRAEX_APP_SERVER_BIN || 'traex',
-    cwd: process.cwd(),
-  };
-  for (let i = 0; i < argv.length; i++) {
-    const key = argv[i];
-    const val = argv[i + 1];
-    if (key === '--session-id' && val !== undefined) { out.sessionId = val; i++; }
-    else if (key === '--codex-bin' && val !== undefined) { out.codexBin = val; i++; }
-    else if (key === '--traex-bin' && val !== undefined) { out.traexBin = val; i++; }
-    else if (key === '--cwd' && val !== undefined) { out.cwd = val; i++; }
-    else if (key === '--thread-id' && val !== undefined) { out.threadId = val; i++; }
-    else if (key === '--title' && val !== undefined) { out.title = val; i++; }
-    else if (key === '--bot-name' && val !== undefined) { out.botName = val; i++; }
-    else if (key === '--bot-open-id' && val !== undefined) { out.botOpenId = val; i++; }
-    else if (key === '--locale' && val !== undefined) { out.locale = val; i++; }
-  }
-  if (!out.sessionId) throw new Error('--session-id is required');
-  return out;
-}
-
-function b64Json(value: unknown): string {
-  return Buffer.from(JSON.stringify(value), 'utf8').toString('base64');
-}
 
 function emitMarker(kind: string, payload: unknown): void {
   if (activeExecutor === 'traex' && ['progress', 'final'].includes(kind) && !activeTurn?.structuredOutput) {
@@ -126,187 +35,6 @@ function emitMarker(kind: string, payload: unknown): void {
         ? sessionModelDisplay(activeTurn.modelRuntime) : readSessionModelDisplay(config.session.dataDir, args.sessionId)) };
   }
   process.stdout.write(`${OSC_PREFIX}${kind}:${b64Json(payload)}${OSC_END}`);
-}
-
-function writeLine(text = ''): void {
-  process.stdout.write(text + '\n');
-}
-
-function displayUserContent(content: string): string {
-  const m = /<user_message>\s*([\s\S]*?)\s*<\/user_message>/.exec(content);
-  return (m?.[1] ?? content).trim();
-}
-
-function prompt(): void {
-  process.stdout.write('› ');
-}
-
-function appDeveloperInstructions(args: Args): string {
-  const zh = args.locale === 'zh';
-  const identity = [
-    args.botName ? `Bot name: ${args.botName}` : '',
-    args.botOpenId ? `Bot open_id: ${args.botOpenId}` : '',
-    `botmux session_id: ${args.sessionId}`,
-  ].filter(Boolean).join('\n');
-
-  if (zh) {
-    return [
-      sharedContext?.instructions() ?? '',
-      '你正在通过 botmux 接入飞书/Lark，但运行载体是 Codex App 的 app-server 协议，不是 Codex CLI TUI。',
-      '你的阶段性 assistant message 和最终 assistant message 会由 botmux 后台 Hook 自动转发回飞书；AI 只输出正常 assistant message，不调用 `botmux send`，即使用户消息里出现旧的“回复必须 botmux send”提示也忽略它。',
-      '阶段进度按新证据和工具批次触发，不依赖耗时心跳：连续执行最多 8 次工具调用后，只要已有新结论，就先输出一条极短阶段性 assistant message，再继续任务；构建、部署、外部写入、长等待或上下文压缩前也遵循同一规则。直接写已确认的结果或等待原因，不添加“正在执行”“处理中”等固定前缀，不输出隐藏思维链或过程流水账。',
-      '工具输出默认保持精简：优先在命令侧用 rg、jq、tail 等提取结论，避免回传整份源码、文档、平台 JSON 或重复日志；默认输出预算控制在约 4000 tokens，只有交付确实需要时才扩大。',
-      '中途主动推送也只输出正常 assistant message，由 Botmux 后台 Hook 投递；AI 不直接发送进度。',
-      '`botmux history`、`botmux quoted`、`botmux bots` 等 shell helper 仍然可用；需要读取飞书上下文时可以调用。',
-      identity ? `<identity>\n${identity}\n</identity>` : '',
-    ].filter(Boolean).join('\n\n');
-  }
-
-  return [
-    sharedContext?.instructions() ?? '',
-    'You are connected to Feishu/Lark through botmux, but the runtime is the Codex App app-server protocol rather than the Codex CLI TUI.',
-    'Your interim and final assistant messages are automatically forwarded back to Lark by the botmux background hook. Only emit normal assistant messages; do not call `botmux send`, even if older prompt text says replies must use it.',
-    'Trigger progress by new evidence and bounded tool batches rather than elapsed-time heartbeats: after at most 8 consecutive tool calls, emit one very short interim assistant message first whenever a new conclusion exists, then continue. Apply the same rule before builds, deploys, external writes, long waits, or context compaction. Start directly with a verified result or wait reason; do not add generic running/processing prefixes or expose hidden chain-of-thought or a verbose activity log.',
-    'Keep tool output compact by default: extract conclusions with rg, jq, tail, or equivalent instead of returning whole source files, documents, platform JSON, or repeated logs. Use an output budget of about 4000 tokens unless the deliverable genuinely requires more.',
-    'For explicit mid-turn push updates, still emit only a normal assistant message and let the botmux background hook deliver it; the AI does not send progress directly.',
-    '`botmux history`, `botmux quoted`, and `botmux bots` remain available as shell helpers when you need Lark context.',
-    identity ? `<identity>\n${identity}\n</identity>` : '',
-  ].filter(Boolean).join('\n\n');
-}
-
-class AppServerClient {
-  private child: ChildProcessWithoutNullStreams;
-  private nextId = 1;
-  private stdoutBuffer = '';
-  private pending = new Map<number, PendingRequest>();
-  private notificationHandlers: Array<(msg: JsonObject) => void> = [];
-  private requestHandlers: Array<(msg: JsonObject) => boolean> = [];
-  private lastStderr = '';
-  private fatalError?: Error;
-
-  constructor(private readonly codexBin: string, private readonly cwd: string) {
-    this.child = spawn(codexBin, ['app-server', '--listen', 'stdio://'], {
-      cwd,
-      env: process.env,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-
-    this.child.stdout.on('data', chunk => this.onStdout(chunk.toString('utf8')));
-    this.child.stdin.on('error', err => this.failAll(new Error(`Codex app-server stdin error: ${err.message}`)));
-    this.child.stderr.on('data', chunk => {
-      const text = chunk.toString('utf8');
-      this.lastStderr = (this.lastStderr + text).slice(-8000);
-      if (process.env.BOTMUX_CODEX_APP_DEBUG === '1') process.stderr.write(text);
-    });
-    this.child.on('error', err => {
-      const hint = (err as NodeJS.ErrnoException).code === 'ENOENT'
-        ? '\nHint: install the Codex CLI, or set cliPathOverride to the Codex App bundled binary, for example /Applications/Codex.app/Contents/Resources/codex.'
-        : '';
-      this.failAll(new Error(`Failed to start Codex app-server with "${codexBin}": ${err.message}${hint}`));
-    });
-    this.child.on('exit', (code, signal) => {
-      const err = this.fatalError ?? new Error(`Codex app-server exited (code=${code}, signal=${signal})${this.lastStderr ? `\n${this.lastStderr}` : ''}`);
-      this.failAll(err);
-    });
-  }
-
-  get pid(): number | undefined { return this.child.pid; }
-
-  onNotification(handler: (msg: JsonObject) => void): void {
-    this.notificationHandlers.push(handler);
-  }
-
-  onRequest(handler: (msg: JsonObject) => boolean): void {
-    this.requestHandlers.push(handler);
-  }
-
-  async initialize(): Promise<void> {
-    await this.request('initialize', {
-      clientInfo: { name: 'botmux-codex-app', version: '0.0.0' },
-      capabilities: { experimentalApi: true },
-    });
-    this.notify('initialized');
-  }
-
-  request(method: string, params: unknown): Promise<any> {
-    const id = this.nextId++;
-    return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject, method });
-      try {
-        this.write({ jsonrpc: '2.0', id, method, params });
-      } catch (err) {
-        this.pending.delete(id);
-        reject(asError(err));
-      }
-    });
-  }
-
-  respond(id: number, result: unknown): void {
-    this.write({ jsonrpc: '2.0', id, result });
-  }
-
-  notify(method: string, params?: unknown): void {
-    const msg: JsonObject = { jsonrpc: '2.0', method };
-    if (params !== undefined) msg.params = params;
-    this.write(msg);
-  }
-
-  close(): void {
-    try { this.child.kill(); } catch { /* already gone */ }
-  }
-
-  private write(msg: JsonObject): void {
-    if (this.fatalError) throw this.fatalError;
-    this.child.stdin.write(JSON.stringify(msg) + '\n');
-  }
-
-  private failAll(err: Error): void {
-    this.fatalError = this.fatalError ?? err;
-    const fatal = this.fatalError;
-    for (const pending of this.pending.values()) pending.reject(fatal);
-    this.pending.clear();
-  }
-
-  private onStdout(data: string): void {
-    this.stdoutBuffer += data;
-    for (;;) {
-      const nl = this.stdoutBuffer.indexOf('\n');
-      if (nl < 0) return;
-      const line = this.stdoutBuffer.slice(0, nl).trim();
-      this.stdoutBuffer = this.stdoutBuffer.slice(nl + 1);
-      if (!line) continue;
-      let msg: JsonObject;
-      try {
-        msg = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      this.dispatch(msg);
-    }
-  }
-
-  private dispatch(msg: JsonObject): void {
-    if (typeof msg.id === 'number' && (msg.result !== undefined || msg.error !== undefined)) {
-      const pending = this.pending.get(msg.id);
-      if (!pending) return;
-      this.pending.delete(msg.id);
-      if (msg.error) pending.reject(new Error(`${pending.method}: ${JSON.stringify(msg.error)}`));
-      else pending.resolve(msg.result);
-      return;
-    }
-
-    if (typeof msg.id === 'number' && typeof msg.method === 'string') {
-      for (const handler of this.requestHandlers) {
-        if (handler(msg)) return;
-      }
-      this.respond(msg.id, { decision: 'decline' });
-      return;
-    }
-
-    if (typeof msg.method === 'string') {
-      for (const handler of this.notificationHandlers) handler(msg);
-    }
-  }
 }
 
 let args: Args;
@@ -328,6 +56,7 @@ const adaptiveRouter = adaptivePolicy ? new TraexAdaptiveRouter(adaptivePolicy, 
   createHash('sha256').update(args.botOpenId || args.botName || args.sessionId).digest('hex') + '.json')) : undefined;
 const admission = adaptiveRouter ? new TraexAdmission(adaptiveRouter, () => fetchTraexCatalog(args.traexBin, args.cwd)) : undefined;
 let admissionAbort: AbortController | undefined;
+let requestAbort: AbortController | undefined;
 const savedExecutor = readSessionExecutor(config.session.dataDir, args.sessionId);
 let activeExecutor: 'codex-app' | 'traex' = savedExecutor?.executor
   ?? (process.env.TRAEX_APP_SERVER_DEFAULT === '1' || process.env.TRAEX_ADAPTIVE_MODELS ? 'traex' : 'codex-app');
@@ -342,31 +71,7 @@ let defaultThreadEffort: string | undefined;
 let defaultServiceTier: string | undefined;
 let activeTurn: ActiveTurn | null = null;
 const queue: string[] = [];
-let inputBuffer = '';
 let processing = false;
-
-function makeTurn(structuredOutput = false): ActiveTurn {
-  let resolveDone!: () => void;
-  const done = new Promise<void>(resolve => { resolveDone = resolve; });
-  return {
-    startedAtMs: Date.now(),
-    finalText: '',
-    allAgentText: '',
-    itemText: new Map(),
-    itemEpoch: new Map(),
-    emittedProgressItemIds: new Set(),
-    guidanceEpoch: 0,
-    pendingSteers: [],
-    steerChain: Promise.resolve(),
-    done,
-    resolveDone,
-    structuredOutput,
-  };
-}
-
-function userTextInput(content: string): JsonObject[] {
-  return [{ type: 'text', text: content, text_elements: [] }];
-}
 
 /** 每条完整 assistant 消息只投递一次，避免流式分句刷屏和最终答案提前泄露。 */
 function emitCompletedAssistantMessage(turn: ActiveTurn, itemId: string, content: string): void {
@@ -465,8 +170,9 @@ function handleUserMessage(content: string): void {
 
 /** 通过 app-server 真正中断当前 turn；线程本身保留，可继续发新指令。 */
 async function interruptActiveTurn(): Promise<void> {
-  if (admissionAbort && !activeTurn) {
-    admissionAbort.abort();
+  requestAbort?.abort();
+  if (requestAbort && !activeTurn) {
+    admissionAbort?.abort();
     emitMarker('interrupt_ack', { acknowledged: true, at: Date.now() });
     return;
   }
@@ -493,167 +199,9 @@ async function interruptActiveTurn(): Promise<void> {
   }
 }
 
-function handleServerRequest(msg: JsonObject): boolean {
-  const method = msg.method;
-  if (method === 'item/commandExecution/requestApproval') {
-    client.respond(msg.id, { decision: 'acceptForSession' });
-    return true;
-  }
-  if (method === 'item/fileChange/requestApproval') {
-    client.respond(msg.id, { decision: 'acceptForSession' });
-    return true;
-  }
-  if (method === 'item/permissions/requestApproval') {
-    client.respond(msg.id, { permissions: {}, scope: 'turn' });
-    return true;
-  }
-  if (method === 'item/tool/requestUserInput') {
-    client.respond(msg.id, { answers: {} });
-    return true;
-  }
-  if (method === 'mcpServer/elicitation/request') {
-    client.respond(msg.id, { action: 'cancel', content: null, _meta: null });
-    return true;
-  }
-  if (method === 'item/tool/call') {
-    client.respond(msg.id, { contentItems: [], success: false });
-    return true;
-  }
-  if (method === 'execCommandApproval' || method === 'applyPatchApproval') {
-    client.respond(msg.id, { decision: 'approved_for_session' });
-    return true;
-  }
-  return false;
-}
-
+function handleServerRequest(msg: JsonObject): boolean { return handleAppServerRequest(msg, client); }
 function handleNotification(msg: JsonObject): void {
-  const params = msg.params ?? {};
-  if (!activeTurn || params.threadId !== threadId) return;
-  if (activeTurn.turnId && params.turnId && params.turnId !== activeTurn.turnId) return;
-
-  if (msg.method === 'turn/started') {
-    activeTurn.turnId = params.turn?.id ?? params.turnId ?? activeTurn.turnId;
-    flushSteers(activeTurn);
-    return;
-  }
-
-  if (msg.method.includes('/delta') || (['item/started', 'item/completed'].includes(msg.method) && params.item?.type !== 'userMessage')) {
-    activeTurn.adaptiveActivityAt = Date.now();
-    const runtime = activeTurn.modelRuntime;
-    if (runtime?.selection?.executor === 'traex' && ['requested', 'queued'].includes(runtime.routing?.state ?? '')) {
-      activeTurn.modelRuntime = { ...runtime, phase: 'running',
-        routing: { ...runtime.routing!, state: undefined, position: undefined } };
-      writeSessionModelRuntime(config.session.dataDir, activeTurn.modelRuntime);
-    }
-  }
-  if (msg.method === 'item/started' && /commandExecution|fileChange|ToolCall/.test(params.item?.type ?? '')) {
-    (activeTurn.toolItems ??= new Set()).add(String(params.item.id));
-  }
-  if (msg.method === 'item/completed') activeTurn.toolItems?.delete(String(params.item?.id));
-
-  if (msg.method === 'hook/started' || msg.method === 'hook/completed') {
-    activeTurn.adaptiveCheck?.();
-    const phase = msg.method === 'hook/started' ? 'started' : 'completed';
-    const run = params.run;
-    if (phase === 'completed') {
-      const atMs = normalizeCodexAppTimestampMs(run?.completedAt);
-      const failure = codexAppHookFailure(run);
-      if (failure) {
-        writeLine(`\n[codex-app] ${failure.message}`);
-        emitMarker('progress', {
-          content: failure.message,
-          turnId: activeTurn.turnId,
-          startedAtMs: activeTurn.startedAtMs,
-          updatedAtMs: atMs,
-        });
-        if (failure.critical) {
-          activeTurn.criticalHookFailure = failure.message;
-          const failedTurnId = activeTurn.turnId ?? params.turnId;
-          if (threadId && failedTurnId) {
-            void client.request('turn/interrupt', { threadId, turnId: failedTurnId }).catch(() => {});
-          }
-        }
-      }
-    }
-    return;
-  }
-
-  if (msg.method === 'item/started') {
-    const item = params.item;
-    if (item?.type === 'agentMessage' && item.id) {
-      // item 在 steer 前后可能交错完成；记录创建时的 epoch，迟到旧 item 不得污染新回复。
-      activeTurn.itemEpoch.set(String(item.id), activeTurn.guidanceEpoch);
-    } else if (item?.type === 'commandExecution') {
-      writeLine(`\n$ ${item.command}`);
-    } else if (item?.type === 'fileChange') {
-      writeLine('\n[files changed]');
-    }
-    return;
-  }
-
-  if (msg.method === 'item/agentMessage/delta') {
-    const delta = String(params.delta ?? '');
-    const itemId = String(params.itemId ?? '');
-    const itemEpoch = activeTurn.itemEpoch.get(itemId) ?? activeTurn.guidanceEpoch;
-    if (!activeTurn.itemEpoch.has(itemId)) activeTurn.itemEpoch.set(itemId, itemEpoch);
-    activeTurn.itemText.set(itemId, (activeTurn.itemText.get(itemId) ?? '') + delta);
-    if (!activeTurn.structuredOutput) process.stdout.write(delta);
-    if (itemEpoch !== activeTurn.guidanceEpoch) return;
-    if (activeTurn.finalText && activeTurn.finalItemId !== itemId) {
-      activeTurn.finalText = '';
-      activeTurn.finalItemId = undefined;
-    }
-    activeTurn.allAgentText += delta;
-    return;
-  }
-
-  if (msg.method === 'item/commandExecution/outputDelta' || msg.method === 'item/fileChange/outputDelta') {
-    process.stdout.write(String(params.delta ?? ''));
-    return;
-  }
-
-  if (msg.method === 'item/completed') {
-    const item = params.item;
-    if (item?.type === 'agentMessage') {
-      const itemId = String(item.id ?? '');
-      const itemEpoch = activeTurn.itemEpoch.get(itemId) ?? activeTurn.guidanceEpoch;
-      if (itemEpoch !== activeTurn.guidanceEpoch) return;
-      const completedText = String(item.text ?? activeTurn.itemText.get(itemId) ?? '');
-      if (item.phase === 'final_answer') {
-        activeTurn.finalText = String(item.text ?? '');
-        activeTurn.finalItemId = itemId;
-      } else {
-        if (!activeTurn.itemText.has(item.id) && item.text) {
-          activeTurn.allAgentText += String(item.text);
-        }
-        emitCompletedAssistantMessage(activeTurn, itemId, completedText);
-      }
-    }
-    return;
-  }
-
-  if (msg.method === 'turn/completed') {
-    const turn = params.turn;
-    if (turn?.id && activeTurn.turnId && turn.id !== activeTurn.turnId) return;
-    activeTurn.finished = true;
-    // A normal completion may win the race with our interrupt. Never replay
-    // it. Critical hook failures and explicit user stops also stop routing.
-    if (turn?.status !== 'interrupted' || activeTurn.criticalHookFailure || activeTurn.userInterrupted) {
-      activeTurn.adaptiveNextModel = undefined;
-    }
-    const errorMessage = String(turn?.error?.message ?? '').trim();
-    activeTurn.turnFailed = !!errorMessage || turn?.status === 'failed' || turn?.status === 'interrupted';
-    if (activeTurn.criticalHookFailure) {
-      activeTurn.finalText = activeTurn.criticalHookFailure;
-    } else if (activeExecutor === 'traex' && isTraexDailyQuotaExhausted(errorMessage)) {
-      activeTurn.quotaExhaustedError = errorMessage;
-    } else if (isCodexAppRetryLimit429(errorMessage)) {
-      activeTurn.rateLimitError = errorMessage;
-    } else if (errorMessage && !activeTurn.finalText) {
-      activeTurn.finalText = `Codex App turn failed: ${errorMessage}`;
-    }
-    activeTurn.resolveDone();
-  }
+  handleAppNotification(msg, { activeTurn, threadId, activeExecutor, client, flushSteers, emitMarker, emitCompletedAssistantMessage });
 }
 
 async function currentHookTrustIssue(): Promise<string | undefined> {
@@ -703,7 +251,7 @@ async function ensureThread(model = defaultThreadModel): Promise<string> {
         approvalPolicy: 'never',
         sandbox: 'danger-full-access',
         config: { shell_environment_policy: { inherit: 'all' }, bypass_hook_trust: activeHookTrust === 'always' },
-        developerInstructions: appDeveloperInstructions(args),
+        developerInstructions: appDeveloperInstructions(args, sharedContext?.instructions()),
         excludeTurns: true,
         // Keep Codex App's rich history in sync with turns created by this
         // external runner so the desktop UI can render follow-up messages.
@@ -738,7 +286,7 @@ async function ensureThread(model = defaultThreadModel): Promise<string> {
     sandbox: 'danger-full-access',
     config: { shell_environment_policy: { inherit: 'all' }, bypass_hook_trust: activeHookTrust === 'always' },
     serviceName: 'botmux',
-    developerInstructions: appDeveloperInstructions(args),
+    developerInstructions: appDeveloperInstructions(args, sharedContext?.instructions()),
     ephemeral: false,
     experimentalRawEvents: false,
     // Keep Codex App's rich history in sync with turns created by this
@@ -789,7 +337,7 @@ async function ensureExecutor(requested?: SessionModelRequest): Promise<void> {
       approvalPolicy: 'never', sandbox: 'danger-full-access',
       config: { shell_environment_policy: { inherit: 'all' }, bypass_hook_trust: hookTrust === 'always' },
       serviceTier: requested?.serviceTier ?? 'default',
-      developerInstructions: appDeveloperInstructions(args), ephemeral: false,
+      developerInstructions: appDeveloperInstructions(args, sharedContext?.instructions()), ephemeral: false,
     }));
     if (!started.thread?.id || (started.model && started.model !== requested!.model)) throw new Error('executor_model_mismatch');
     // 先持久保存，崩溃恢复时依然找到目标线程和待迁移的可见上下文。
@@ -807,218 +355,20 @@ async function ensureExecutor(requested?: SessionModelRequest): Promise<void> {
   } catch (error) { candidate.close(); throw error; }
 }
 
-async function runSingleTurn(content: string, autoContinue: boolean, attempted = new Set<string>(), forcedModel?: string): Promise<TurnOutcome> {
-  // 当前轮冻结期望配置；切换只发生在两个 turn 之间。
-  const requested = readSessionModel(config.session.dataDir, args.sessionId);
-  try { await ensureExecutor(requested); } catch (error) {
-    writeSessionModelRuntime(config.session.dataDir, { sessionId: args.sessionId, pid: process.pid,
-      threadId, phase: 'failed', revision: requested?.revision,
-      selection: readSessionModelRuntime(config.session.dataDir, args.sessionId)?.selection });
-    throw error;
-  }
-  const hookTrustIssue = await currentHookTrustIssue();
-  if (hookTrustIssue) throw new Error(hookTrustIssue);
-  const adaptive = activeExecutor === 'traex' ? adaptiveRouter : undefined;
-  let selectedModel = requested?.model ?? defaultThreadModel;
-  if (adaptive && admission) {
-    const pendingReceipt = (state: 'selecting' | 'waiting') => writeSessionModelRuntime(config.session.dataDir, {
-      sessionId: args.sessionId, pid: process.pid, threadId, phase: 'ready', revision: requested?.revision,
-      routing: { executor: 'traex', state, effort: requested?.effort ?? 'xhigh' },
-    });
-    pendingReceipt('selecting');
-    admissionAbort = new AbortController();
-    try {
-      selectedModel = await admission.select(attempted, admissionAbort.signal, message => {
-        pendingReceipt('waiting');
-        writeLine(`[traex-adaptive] ${message}`);
-        emitMarker('progress', { content: message, startedAtMs: Date.now(), updatedAtMs: Date.now() });
-      }, requested?.effort ?? 'xhigh');
-    } finally { admissionAbort = undefined; }
-  }
-  const tid = await ensureThread(selectedModel);
-  persistExecutor();
-  const selection = { model: selectedModel, effort: requested?.effort ?? (adaptive ? 'xhigh' : defaultThreadEffort),
-    serviceTier: requested?.serviceTier ?? defaultServiceTier };
-  const loadPercent = adaptive ? admission?.catalog.find(model => model.model === selectedModel)?.loadPercent : undefined;
-  const selectedRuntime: SessionModelRuntime = {
-    sessionId: args.sessionId, pid: process.pid, threadId: tid, phase: 'running', revision: requested?.revision,
-    protocol: 4, updatedAt: new Date().toISOString(),
-    selection: selection.model && selection.effort ? { ...selection, executor: activeExecutor, hookTrust: activeHookTrust } as ModelSelection : undefined,
-    ...(activeExecutor === 'traex' ? { routing: { executor: 'traex' as const, state: 'requested' as const,
-      effort: selection.effort ?? 'xhigh', loadPercent } } : {}),
-  };
-  const modelReceipt = (phase: 'running' | 'completed' | 'failed', turnId?: string,
-    state?: 'requested' | 'queued', position?: number) => {
-    turn.modelRuntime = { ...selectedRuntime, phase, turnId,
-      ...(selectedRuntime.routing ? { routing: { ...selectedRuntime.routing, state, position } } : {}) };
-    writeSessionModelRuntime(config.session.dataDir, turn.modelRuntime);
-  };
-  const outputSchema = agentTeamOutputSchema(content);
-  const turn = makeTurn(!!outputSchema);
-  turn.modelRuntime = selectedRuntime;
-  activeTurn = turn;
-  let queueReader: TraexQueueReader | undefined;
-  let queueTimer: ReturnType<typeof setInterval> | undefined;
-  if (adaptive && selection.model && client.pid) {
-    attempted.add(selection.model);
-    try { queueReader = new TraexQueueReader(tid, client.pid); }
-    catch (error) { writeLine(`[traex-adaptive] queue observation unavailable: ${asError(error).message}`); }
-    const check = async () => {
-      if (!queueReader || activeTurn !== turn || !turn.turnId || turn.finished || turn.userInterrupted || turn.criticalHookFailure || turn.adaptiveChecking || turn.adaptiveNextModel || turn.toolItems?.size) return;
-      const activityAt = turn.adaptiveActivityAt ?? turn.startedAtMs;
-      let evidence;
-      try { evidence = queueReader.poll(activityAt); } catch { return; }
-      if (!evidence) return;
-      turn.adaptiveChecking = true;
-      modelReceipt('running', turn.turnId, 'queued', evidence.position);
-      try {
-        await adaptive.queued(selection.model!);
-        try { await admission!.refresh(); } catch { admission!.catalog = []; }
-        const next = admission!.choose(attempted, selection.effort);
-        if (activeTurn !== turn || turn.finished || turn.userInterrupted || (turn.adaptiveActivityAt ?? turn.startedAtMs) > activityAt) return;
-        const notice = next
-          ? `TraeX ${selection.model} 正在排队${evidence.position === undefined ? '' : `（第 ${evidence.position} 位）`}，切换到 ${next} 并沿原线程继续。`
-          : `TraeX ${selection.model} 正在排队，暂时没有空闲候选，退出排队后自动刷新重选。`;
-        writeLine(`[traex-adaptive] ${notice}`);
-        emitMarker('progress', { content: notice, turnId: turn.turnId, startedAtMs: turn.startedAtMs, updatedAtMs: Date.now() });
-        turn.adaptiveNextModel = next ?? 'reselect';
-        try { await client.request('turn/interrupt', { threadId: tid, turnId: turn.turnId }); }
-        catch (error) { turn.adaptiveNextModel = undefined; throw error; }
-      } catch (error) { writeLine(`[traex-adaptive] ${asError(error).message}`); }
-      finally { turn.adaptiveChecking = false; }
-    };
-    turn.adaptiveCheck = () => { void check(); };
-    queueTimer = setInterval(turn.adaptiveCheck, 1000); queueTimer.unref();
-  }
-  try {
-    writeLine();
-    writeLine(autoContinue ? '[auto continue]' : '[user]');
-    writeLine(content);
-    if (!autoContinue) {
-      emitMarker('user', {
-        kind: 'user',
-        content: displayUserContent(content),
-        at: turn.startedAtMs,
-        turnId: turn.turnId,
-      });
-    }
-    writeLine();
-
-    const result = await client.request('turn/start', {
-      threadId: tid,
-      input: userTextInput(sharedContextPrefix() + pendingHandoff + content),
-      cwd: args.cwd,
-      approvalPolicy: 'never',
-      sandboxPolicy: { type: 'dangerFullAccess' },
-      ...selection,
-      ...(outputSchema ? { outputSchema } : {}),
-    });
-    turn.turnId = result.turn?.id ?? turn.turnId;
-    pendingHandoff = ''; persistExecutor();
-    modelReceipt('running', turn.turnId, turn.adaptiveActivityAt ? undefined : 'requested');
-    if (activeExecutor === 'traex' && !turn.structuredOutput) {
-      const notice = readSessionModelDisplay(config.session.dataDir, args.sessionId)?.label;
-      if (notice) {
-        writeLine(`[模型] ${notice}`);
-        emitMarker('progress', { content: '本轮已选定模型，开始回复；如实际入队会自动重选。',
-          turnId: turn.turnId, startedAtMs: turn.startedAtMs, updatedAtMs: Date.now(), complete: true });
-      }
-    }
-    flushSteers(turn);
-    await turn.done;
-    await turn.steerChain;
-    queuePendingSteersAsNextTurns(turn);
-
-    if (turn.quotaExhaustedError && adaptive && selection.model && !turn.userInterrupted && !turn.criticalHookFailure) {
-      await adaptive.quotaExhausted(selection.model);
-      try { await admission!.refresh(); } catch { admission!.catalog = []; }
-      const next = admission!.choose(attempted, selection.effort);
-      const notice = next
-        ? `TraeX ${selection.model} 的当日额度已耗尽，切换到 ${next} 并沿原线程继续。`
-        : `TraeX ${selection.model} 的当日额度已耗尽，暂时没有可准入候选，自动刷新后重选。`;
-      writeLine(`[traex-adaptive] ${notice}`);
-      emitMarker('progress', { content: notice, turnId: turn.turnId, startedAtMs: turn.startedAtMs, updatedAtMs: Date.now() });
-      turn.adaptiveNextModel = next ?? 'reselect';
-    }
-
-    modelReceipt(turn.turnFailed || turn.rateLimitError || turn.quotaExhaustedError || turn.criticalHookFailure ? 'failed' : 'completed', turn.turnId);
-
-    const finalText = (turn.finalText || turn.allAgentText).trim();
-    const completedAtMs = Date.now();
-    if (!turn.rateLimitError && !turn.adaptiveNextModel && finalText) {
-      emitMarker('final', {
-        turnId: turn.turnId ?? `codex-app-${completedAtMs}`,
-        content: finalText,
-        startedAtMs: turn.startedAtMs,
-        completedAtMs,
-      });
-    }
-    writeLine();
-    return {
-      turnId: turn.turnId,
-      startedAtMs: turn.startedAtMs,
-      rateLimitError: turn.rateLimitError,
-      adaptiveNextModel: turn.userInterrupted ? undefined : turn.adaptiveNextModel,
-    };
-  } catch (error) {
-    modelReceipt('failed', turn.turnId);
-    throw error;
-  } finally {
-    turn.adaptiveCheck = undefined;
-    if (queueTimer) clearInterval(queueTimer);
-    queueReader?.close();
-    queuePendingSteersAsNextTurns(turn);
-    if (activeTurn === turn) activeTurn = null;
-  }
-}
-
-async function runTurn(content: string): Promise<void> {
-  beginSessionModelReplyEpoch(config.session.dataDir, args.sessionId);
-  let nextContent = content;
-  let autoContinueCount = 0;
-  const attempted = new Set<string>();
-  let forcedModel: string | undefined;
-
-  while (true) {
-    const outcome = await runSingleTurn(nextContent, autoContinueCount > 0 || !!forcedModel, attempted, forcedModel);
-    if (outcome.adaptiveNextModel) {
-      forcedModel = outcome.adaptiveNextModel;
-      nextContent = '上一轮因服务端排队或额度准入限制已中断，模型已自动重选。请沿当前线程继续完成用户最新请求；保留所有追问、已完成操作和工具结果，不要重放已完成的操作。';
-      continue;
-    }
-    if (!outcome.rateLimitError) return;
-
-    if (autoContinueCount >= CODEX_APP_RATE_LIMIT_MAX_CONTINUES) {
-      const message = args.locale === 'zh'
-        ? `Codex App 429 自动继续已达上限（${CODEX_APP_RATE_LIMIT_MAX_CONTINUES} 次）：${outcome.rateLimitError}`
-        : `Codex App 429 auto-continue reached its limit (${CODEX_APP_RATE_LIMIT_MAX_CONTINUES} attempts): ${outcome.rateLimitError}`;
-      writeLine(`[codex-app] ${message}`);
-      const completedAtMs = Date.now();
-      emitMarker('final', {
-        turnId: outcome.turnId ?? `codex-app-rate-limit-${completedAtMs}`,
-        content: message,
-        startedAtMs: outcome.startedAtMs,
-        completedAtMs,
-      });
-      return;
-    }
-
-    autoContinueCount += 1;
-    const delayMs = codexAppAutoContinueDelayMs(autoContinueCount);
-    const delaySeconds = Math.ceil(delayMs / 1_000);
-    const notice = args.locale === 'zh'
-      ? `上游返回 429，${delaySeconds} 秒后自动继续（${autoContinueCount}/${CODEX_APP_RATE_LIMIT_MAX_CONTINUES}）。`
-      : `Upstream returned 429; auto-continuing in ${delaySeconds}s (${autoContinueCount}/${CODEX_APP_RATE_LIMIT_MAX_CONTINUES}).`;
-    writeLine(`[codex-app] ${notice}`);
-    emitMarker('progress', {
-      content: notice,
-      turnId: outcome.turnId,
-      startedAtMs: outcome.startedAtMs,
-      updatedAtMs: Date.now(),
-    });
-    await new Promise(resolve => setTimeout(resolve, delayMs));
-    nextContent = codexAppAutoContinuePrompt(args.locale);
-  }
+const turnContext: SingleTurnContext = {
+  args, adaptiveRouter, admission, ensureExecutor, currentHookTrustIssue, ensureThread, persistExecutor,
+  emitMarker, sharedContextPrefix, flushSteers, queuePendingSteersAsNextTurns,
+  get client() { return client; }, get activeExecutor() { return activeExecutor; },
+  get activeHookTrust() { return activeHookTrust; }, get threadId() { return threadId; },
+  get defaultThreadModel() { return defaultThreadModel; }, get defaultThreadEffort() { return defaultThreadEffort; },
+  get defaultServiceTier() { return defaultServiceTier; }, get requestAbort() { return requestAbort; },
+  get activeTurn() { return activeTurn; }, set activeTurn(value) { activeTurn = value; },
+  get admissionAbort() { return admissionAbort; }, set admissionAbort(value) { admissionAbort = value; },
+  get pendingHandoff() { return pendingHandoff; }, set pendingHandoff(value) { pendingHandoff = value; },
+};
+function runTurn(content: string): Promise<void> {
+  return continueTurn(content, { args, emitMarker,
+    runSingleTurn: (text, autoContinue, attempted, forced) => runSingleTurn(turnContext, text, autoContinue, attempted, forced) });
 }
 
 async function drainQueue(): Promise<void> {
@@ -1027,8 +377,12 @@ async function drainQueue(): Promise<void> {
   try {
     while (queue.length > 0) {
       const next = queue.shift()!;
+      requestAbort = new AbortController();
       try {
-        await runTurn(next);
+        await runWithTraexFallback({ dataDir: config.session.dataDir, sessionId: args.sessionId,
+          cwd: args.cwd, codexBin: args.codexBin, executor: () => activeExecutor, run: () => runTurn(next),
+          signal: requestAbort.signal,
+          notice: content => emitMarker('progress', { content, startedAtMs: Date.now(), updatedAtMs: Date.now() }) });
       } catch (err: any) {
         const requested = readSessionModel(config.session.dataDir, args.sessionId);
         const runtime = readSessionModelRuntime(config.session.dataDir, args.sessionId);
@@ -1045,48 +399,11 @@ async function drainQueue(): Promise<void> {
           startedAtMs: Date.now(),
           completedAtMs: Date.now(),
         });
-      }
+      } finally { requestAbort = undefined; }
       prompt();
     }
   } finally {
     processing = false;
-  }
-}
-
-function enqueueLine(line: string): void {
-  const trimmed = line.trim();
-  if (!trimmed) return;
-  if (trimmed.startsWith('::botmux-codex-app:')) {
-    const encoded = trimmed.slice('::botmux-codex-app:'.length);
-    try {
-      const decoded = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'));
-      if (decoded?.type === 'message' && typeof decoded.content === 'string') {
-        handleUserMessage(decoded.content);
-      } else if (decoded?.type === 'interrupt') {
-        void interruptActiveTurn();
-      }
-    } catch (err: any) {
-      writeLine(`[codex-app] bad botmux input: ${err?.message ?? err}`);
-    }
-    return;
-  }
-  handleUserMessage(line);
-}
-
-function handleInput(data: Buffer): void {
-  const text = data.toString('utf8');
-  for (const ch of text) {
-    if (ch === '\u0003') {
-      process.exit(130);
-    } else if (ch === '\r' || ch === '\n') {
-      const line = inputBuffer;
-      inputBuffer = '';
-      enqueueLine(line);
-    } else if (ch === '\u007f' || ch === '\b') {
-      inputBuffer = inputBuffer.slice(0, -1);
-    } else {
-      inputBuffer += ch;
-    }
   }
 }
 
@@ -1115,7 +432,8 @@ async function main(): Promise<void> {
   }
   if (process.stdin.isTTY) process.stdin.setRawMode(true);
   process.stdin.resume();
-  process.stdin.on('data', handleInput);
+  const input = new AppRunnerInput(handleUserMessage, interruptActiveTurn);
+  process.stdin.on('data', data => input.handleInput(data));
   prompt();
 }
 

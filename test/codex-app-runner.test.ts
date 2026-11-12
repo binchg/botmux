@@ -3,7 +3,9 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 describe('codex-app runner steering', () => {
-  const source = readFileSync(join(process.cwd(), 'src/codex-app-runner.ts'), 'utf8');
+  const source = ['src/codex-app-runner.ts', ...['types', 'client', 'protocol', 'events', 'turn', 'continuation', 'input']
+    .map(name => `src/services/app-runner-${name}.ts`)]
+    .map(path => readFileSync(join(process.cwd(), path), 'utf8')).join('\n');
 
   it('uses app-server turn/steer for busy follow-up guidance', () => {
     expect(source).toContain("client.request('turn/steer'");
@@ -100,7 +102,7 @@ describe('codex-app runner steering', () => {
 
   it('accepts the structured same-bot team interrupt control line', () => {
     expect(source).toContain("decoded?.type === 'interrupt'");
-    expect(source).toContain('void interruptActiveTurn()');
+    expect(source).toContain('void this.interruptActiveTurn()');
     expect(source).toContain("client.request('turn/interrupt', { threadId, turnId: turn.turnId })");
     expect(source).toContain("emitMarker('interrupt_ack', { acknowledged: true");
   });

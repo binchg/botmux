@@ -80,14 +80,16 @@ export class TraexAdaptiveRouter {
   }
 }
 
-export interface TraexQueueEvidence { id: number; atMs: number; position?: number }
+export interface TraexQueueEvidence { id: number; atMs: number; position?: number; quotaLowPriority?: boolean }
 export function parseTraexQueueEvidence(row: any): TraexQueueEvidence | undefined {
   const body = String(row.feedback_log_body ?? '');
   if (!/\brequest_wait_in_queue\b|\bYour queue position is\b/.test(body)) return undefined;
   const match = /(?:queue position is|(?:queue_position|"position")["\s:=]+)\s*(\d+)/i.exec(body);
   const position = match ? Number(match[1]) : undefined;
   if (position === 0) return undefined;
-  return { id: Number(row.id), atMs: Number(row.ts) * 1000 + Number(row.ts_nanos ?? 0) / 1e6, position };
+  const quotaLowPriority = /\bmodel_quota_low_priority["\\\s:=]+true\b/i.test(body);
+  return { id: Number(row.id), atMs: Number(row.ts) * 1000 + Number(row.ts_nanos ?? 0) / 1e6, position,
+    ...(quotaLowPriority ? { quotaLowPriority: true } : {}) };
 }
 
 /** 每轮仅观测启动器及其真实 app-server；其它线程、进程和旧轮次不能触发降级。 */

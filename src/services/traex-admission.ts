@@ -1,5 +1,5 @@
 import { setTimeout as delay } from 'node:timers/promises';
-import { fetchTraexCatalog, rankTraexCandidates, type TraexCatalogModel } from './traex-model-catalog.js';
+import { fetchTraexCatalog, isTraexCatalogCandidate, rankTraexCandidates, type TraexCatalogModel } from './traex-model-catalog.js';
 import { TraexAdaptiveRouter } from './traex-adaptive-model.js';
 
 /** 达到准入边界时结束当前自动重试，交由用户决定下一次请求。 */
@@ -40,8 +40,9 @@ export class TraexAdmission {
         const model = this.choose(attempted, effort);
         if (model) return model;
         const candidates = this.catalog.filter(model => this.router.policy.models.includes(model.model)
-          && model.efforts.includes(effort));
-        if (candidates.length && candidates.every(model => attempted.has(model.model))) {
+          && isTraexCatalogCandidate(model, effort));
+        // 已证实排队后，只看仍可准入且尚未尝试的候选；繁忙高档模型不能拖延退出。
+        if (attempted.size > 0 && candidates.every(model => attempted.has(model.model))) {
           throw new TraexAdmissionStopped('exhausted');
         }
       } catch (error) {
