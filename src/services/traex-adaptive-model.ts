@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { withFileLock } from '../utils/file-lock.js';
 import { traeHome } from './traex-paths.js';
+import { traexAppServerPids } from './traex-process-scope.js';
 
 // 用户参考榜单顺序；目录中尚不存在的型号只保留优先级，不能作为可用模型调用。
 export const TRAEX_MODEL_ORDER = ['gpt-6-astra', 'gpt-6.1-sol', 'gpt-6.1-terra', 'gpt-5.6-sol',
@@ -83,14 +84,13 @@ export interface TraexQueueEvidence { id: number; atMs: number; position?: numbe
 export function parseTraexQueueEvidence(row: any): TraexQueueEvidence | undefined {
   const body = String(row.feedback_log_body ?? '');
   if (!/\brequest_wait_in_queue\b|\bYour queue position is\b/.test(body)) return undefined;
-  const match = /(?:queue position is|queue_position["\s:=]+)\s*(\d+)/i.exec(body);
+  const match = /(?:queue position is|(?:queue_position|"position")["\s:=]+)\s*(\d+)/i.exec(body);
   const position = match ? Number(match[1]) : undefined;
   if (position === 0) return undefined;
   return { id: Number(row.id), atMs: Number(row.ts) * 1000 + Number(row.ts_nanos ?? 0) / 1e6, position };
 }
 
-/** One read-only SQLite cursor per real app-server process / turn. A global
- * queue row, another thread, or a prior turn must never trigger a switch. */
+/** 每轮仅观测启动器及其真实 app-server；其它线程、进程和旧轮次不能触发降级。 */
 export class TraexQueueReader {
   private db: any;
   private cursor = 0;
@@ -101,17 +101,20 @@ export class TraexQueueReader {
     this.cursor = Number(this.db.prepare('SELECT COALESCE(MAX(id), 0) AS id FROM logs').get().id);
   }
   poll(afterMs: number): TraexQueueEvidence | undefined {
-    const rows = this.db.prepare('SELECT id, ts, ts_nanos, feedback_log_body FROM logs WHERE id > ? '
-      + 'AND (thread_id = ? OR thread_id IS NULL) AND process_uuid LIKE ? ORDER BY id LIMIT 256')
-      .all(this.cursor, this.threadId, `pid:${this.pid}:%`);
-    let result: TraexQueueEvidence | undefined;
-    for (const row of rows) {
-      this.cursor = Number(row.id);
-      if (/\bqueue_end\b/.test(String(row.feedback_log_body))) { result = undefined; continue; }
-      const evidence = parseTraexQueueEvidence(row);
-      if (evidence && evidence.atMs >= afterMs) result = evidence;
-    }
-    return result;
+    const pids = traexAppServerPids(this.pid);
+    const nextCursor = Number(this.db.prepare('SELECT COALESCE(MAX(id), 0) AS id FROM logs').get().id);
+    // 直接读取最新队列状态，避免工具执行期间积压的旧排队事件覆盖后来的 queue_end。
+    const row = this.db.prepare('SELECT id, ts, ts_nanos, feedback_log_body FROM logs WHERE id > ? '
+      + 'AND id <= ? AND (thread_id = ? OR thread_id IS NULL) AND (' + pids.map(() => 'process_uuid LIKE ?').join(' OR ') + ') '
+      + "AND (feedback_log_body LIKE '%request_wait_in_queue%' OR feedback_log_body LIKE '%Your queue position is%' "
+      + "OR feedback_log_body LIKE '%queue_end%') ORDER BY id DESC LIMIT 1")
+      .get(this.cursor, nextCursor, this.threadId, ...pids.map(pid => `pid:${pid}:%`));
+    // 无排队事件也推进快照游标，避免空闲会话反复扫描历史日志。
+    this.cursor = nextCursor;
+    if (!row) return undefined;
+    if (/\bqueue_end\b/.test(String(row.feedback_log_body))) return undefined;
+    const evidence = parseTraexQueueEvidence(row);
+    return evidence && evidence.atMs >= afterMs ? evidence : undefined;
   }
   close(): void { this.db?.close(); this.db = undefined; }
 }

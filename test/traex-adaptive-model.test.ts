@@ -114,7 +114,7 @@ describe('TraeX admission routing', () => {
 });
 
 describe('real runner adaptive protocol', () => {
-  it.each(['queue', 'quota', 'cancel', 'completion-race', 'tools', 'load', 'waiting', 'coalesced'])('handles %s without replaying work or losing follow-up', async (mode) => {
+  it.each(['queue', 'wrapped', 'quota', 'cancel', 'completion-race', 'tools', 'load', 'waiting', 'coalesced'])('handles %s without replaying work or losing follow-up', async (mode) => {
     const dir = temp(), executable = join(dir, 'fake-traex.cjs'), calls = join(dir, 'calls.jsonl');
     mkdirSync(join(dir, 'cli'));
     writeFileSync(executable, `#!/usr/bin/env node
@@ -138,13 +138,21 @@ if(mode==='coalesced')process.stdout.write([{id:m.id,result:{turn:{id}}},{method
 else send({id:m.id,result:{turn:{id}}});
 if(n===1 && mode==='tools'){send({method:'item/started',params:{threadId:'same-thread',item:{type:'commandExecution',id:'cmd-1',command:'fake tool'}}});setTimeout(()=>{send({method:'item/completed',params:{threadId:'same-thread',item:{type:'commandExecution',id:'cmd-1'}}});send({method:'turn/completed',params:{threadId:'same-thread',turn:{id,status:'completed'}}});},1300);}
 if(n===1 && mode==='quota'){setTimeout(()=>send({method:'turn/completed',params:{threadId:'same-thread',turn:{id,status:'failed',error:{message:'Daily quota exhausted; lower priority when busy'}}}}),50);}
-if(n===1 && !['load','coalesced','quota'].includes(mode))setTimeout(()=>{const now=Date.now();db.prepare('INSERT INTO logs(ts,ts_nanos,thread_id,process_uuid,feedback_log_body) VALUES(?,?,?,?,?)').run(Math.floor(now/1000),(now%1000)*1e6,'same-thread','pid:'+process.pid+':fake','Trae request_wait_in_queue Your queue position is 71');send({method:'hook/completed',params:{threadId:'same-thread',turnId:id,run:{}}});},600);
+if(n===1 && !['load','coalesced','quota'].includes(mode))setTimeout(()=>{const now=Date.now();db.prepare('INSERT INTO logs(ts,ts_nanos,thread_id,process_uuid,feedback_log_body) VALUES(?,?,?,?,?)').run(Math.floor(now/1000),(now%1000)*1e6,mode==='wrapped'?null:'same-thread','pid:'+process.pid+':fake','Trae request_wait_in_queue Your queue position is 71');send({method:'hook/completed',params:{threadId:'same-thread',turnId:id,run:{}}});},600);
 else if(!(n===1&&mode==='quota'))setTimeout(()=>{send({method:'item/completed',params:{threadId:'same-thread',item:{type:'agentMessage',id:'answer-'+n,text:'complete',phase:'final_answer'}}});send({method:'turn/completed',params:{threadId:'same-thread',turn:{id,status:'completed'}}});},50);
 return;}
 if(m.method==='turn/interrupt'){send({id:m.id,result:{}});send({method:'turn/completed',params:{threadId:'same-thread',turn:{id:'turn-'+n,status:mode==='completion-race'?'completed':'interrupted'}}});return;}
 send({id:m.id,result});});
 `, { mode: 0o700 });
-    const runner = spawn(process.execPath, ['--import','tsx',resolve('src/codex-app-runner.ts'),'--session-id','adaptive-session','--traex-bin',executable,'--cwd',dir], {
+    // 模拟真实 Hook 包装器：被 spawn 的 PID 与写 SQLite 的 app-server PID 不同。
+    const wrapper = join(dir, 'wrapper.cjs');
+    writeFileSync(wrapper, `#!/usr/bin/env node
+const {spawn}=require('node:child_process');
+const child=spawn(${JSON.stringify(executable)},process.argv.slice(2),{stdio:'inherit'});
+process.on('SIGTERM',()=>child.kill('SIGTERM'));
+child.on('exit',code=>process.exit(code??0));
+`, { mode: 0o700 });
+    const runner = spawn(process.execPath, ['--import','tsx',resolve('src/codex-app-runner.ts'),'--session-id','adaptive-session','--traex-bin',mode==='wrapped'?wrapper:executable,'--cwd',dir], {
       env: { ...process.env, SESSION_DATA_DIR: dir, TRAE_HOME: dir, TRAEX_ADAPTIVE_MODELS: 'top,low', TRAEX_ADAPTIVE_COOLDOWN_MS: '1000', MODEL_TEST_CALLS: calls, ADAPTIVE_TEST_MODE: mode }, stdio: ['pipe','pipe','pipe'],
     });
     let errors = '', output = ''; runner.stderr.on('data', x => { errors += x; }); runner.stdout.on('data', x => { output += x; });
@@ -207,7 +215,7 @@ send({id:m.id,result});});
         return;
       }
       send('additional constraint');
-      if (mode !== 'queue') {
+      if (!['queue', 'wrapped'].includes(mode)) {
         await vi.waitFor(() => expect(state().runtime?.phase, errors).toBe('completed'), { timeout: 5000 });
         expect(state().runtime?.selection?.model).toBe('top');
         expect(readFileSync(calls,'utf8').trim().split('\n').map(x => JSON.parse(x)).filter(x => x.model)).toHaveLength(1);
