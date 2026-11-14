@@ -9,12 +9,26 @@ const decode = (s: string) => s.replace(/&(#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos|
   return ({ amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' } as Record<string, string>)[e] ?? _m;
 });
 
+// Unicode has an incomplete alphabet: convert a whole script or retain explicit
+// grouping. Never mix baseline and raised characters within the same index.
+const subscript = new Map([..."0123456789+-=()aehijklmnoprstuvxβγρφχ"].map((c, i) => [c, [..."₀₁₂₃₄₅₆₇₈₉₊₋₌₍₎ₐₑₕᵢⱼₖₗₘₙₒₚᵣₛₜᵤᵥₓᵦᵧᵨᵩᵪ"][i]]));
+const superscript = new Map([..."0123456789+-=()abcdefghijklmnoprstuvwxyz"].map((c, i) => [c, [..."⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾ᵃᵇᶜᵈᵉᶠᵍʰⁱʲᵏˡᵐⁿᵒᵖʳˢᵗᵘᵛʷˣʸᶻ"][i]]));
+function script(text: string, upper = false): string {
+  text = text.trim();
+  const alphabet = upper ? superscript : subscript;
+  if (text && [...text].every(c => alphabet.has(c))) return [...text].map(c => alphabet.get(c)).join('');
+  return `${upper ? '^' : '_'}${[...text].length === 1 ? text : `(${text})`}`;
+}
+function brace(node: MathNode | string | undefined): boolean {
+  return !!node && typeof node !== 'string' && ['munder', 'mover'].includes(node.tag)
+    && /[⏟⏞⎵⎴]/.test(plainMath(node.children[1] ?? ''));
+}
+
 function plainMath(node: MathNode | string): string {
   if (typeof node === 'string') return decode(node);
   if (node.tag === 'annotation') return '';
   const parts = node.children.map(plainMath);
   const base = (parts[0] ?? '').trim();
-  const group = (s: string) => [...s].length === 1 ? s : `(${s})`;
   const first = node.children[0];
   const scriptBase = typeof first !== 'string' && first &&
     (first.tag === 'mfrac' || (first.tag === 'mrow' && first.children.length > 1)) ? `(${base})` : base;
@@ -26,10 +40,18 @@ function plainMath(node: MathNode | string): string {
     case 'mfrac': return `(${base})/(${parts[1] ?? ''})`;
     case 'msqrt': return `√(${parts.join('')})`;
     case 'mroot': return `root(${parts[1]}, ${base})`;
-    case 'msub': case 'munder': return `${scriptBase}_${group((parts[1] ?? '').trim())}`;
-    case 'msup': return `${scriptBase}^${group((parts[1] ?? '').trim())}`;
-    case 'msubsup': case 'munderover': return `${scriptBase}_${group((parts[1] ?? '').trim())}^${group((parts[2] ?? '').trim())}`;
-    case 'mover': throw new Error('Keep accent TeX source');
+    case 'munder': case 'mover': {
+      if (brace(first)) return `${base}（${(parts[1] ?? '').trim()}）`;
+      const mark = (parts[1] ?? '').trim();
+      if (/[⏟⏞⎵⎴]/.test(mark)) return `[${base}]`;
+      if (node.tag === 'munder') return `${scriptBase}${script(parts[1] ?? '')}`;
+      const accent: Record<string, string> = { '^': '\u0302', 'ˉ': '\u0304', '¯': '\u0304', '⃗': '\u20d7', '~': '\u0303', '˜': '\u0303', '˙': '\u0307', '¨': '\u0308' };
+      if ([...base].length === 1 && accent[mark]) return base + accent[mark];
+      throw new Error('Keep complex accent TeX source');
+    }
+    case 'msub': return `${scriptBase}${script(parts[1] ?? '')}`;
+    case 'msup': return `${scriptBase}${script(parts[1] ?? '', true)}`;
+    case 'msubsup': case 'munderover': return `${scriptBase}${script(parts[1] ?? '')}${script(parts[2] ?? '', true)}`;
     case 'mtable': return `[${parts.join('; ')}]`;
     case 'mtr': return parts.join(', ');
     case 'mspace': return ' ';
@@ -45,7 +67,6 @@ function plainMath(node: MathNode | string): string {
 
 /** KaTeX supplies symbol/structure semantics; no browser, files, or images. */
 export function mathToText(tex: string): string {
-  if (/\\(?:underbrace|overbrace|underbracket|overbracket)\b/.test(tex)) throw new Error('Keep brace annotations as TeX source');
   const xml = katex.renderToString(tex, { output: 'mathml', throwOnError: true, trust: false, strict: 'ignore', maxExpand: 1000, maxSize: 20 });
   const root: MathNode = { tag: 'root', children: [] };
   const stack = [root];

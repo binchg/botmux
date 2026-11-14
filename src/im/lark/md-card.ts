@@ -154,7 +154,7 @@ function unescapeFenceLines(input: string): string {
  * Split markdown into card v2 body elements:
  *   1. Pipe tables → native `table` widget (Feishu's markdown widget can't
  *      render them as a grid).
- *   2. Headings → bold (Feishu's markdown widget doesn't render ATX `#`).
+ *   2. Headings → native ATX headings, preserving levels supported by card v2.
  *   3. Code fences → re-emitted with the original backtick run, joined with
  *      blank lines on either side (Feishu's widget needs them to recognise the
  *      fence).
@@ -210,8 +210,8 @@ function buildMarkdownElements(input: string): any[] {
 
     if (t.type === 'heading_open') {
       const inline = tokens[i + 1];
-      const text = (inline?.content ?? '').replace(/^#{1,6}\s+/, '').trim();
-      if (text) buf.push(`**${text}**`);
+      const text = (inline?.content ?? '').trim();
+      if (text) buf.push(`${'#'.repeat(Number(t.tag.slice(1)))} ${text}`);
       i += 3; // heading_open, inline, heading_close
       continue;
     }

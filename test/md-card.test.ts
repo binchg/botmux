@@ -41,11 +41,12 @@ describe('buildCardBodyElements', () => {
     });
   });
 
-  it('promotes ATX headings to bold (Feishu markdown widget can\'t render #)', () => {
+  it('preserves native ATX heading levels in card v2', () => {
     const out = buildCardBodyElements('# Title\n\nbody text');
     const text = mdElements(out)[0].content;
-    expect(text).toContain('**Title**');
-    expect(text).not.toMatch(/^#\s/m);
+    expect(text).toContain('# Title');
+    const headings = mdElements(buildCardBodyElements('# One\n\n## Two\n\n### Three')).map(e => e.content).join('\n');
+    expect(headings).toBe('# One\n\n## Two\n\n### Three');
   });
 
   it('Bug A: code fence with no blank line before/after still emits a fenced block', () => {
