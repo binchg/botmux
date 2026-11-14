@@ -29,8 +29,8 @@ describe('per-session model control card', () => {
     writeSessionModelRuntime(d, { sessionId: 'a', pid: process.pid, phase: 'running', revision: first.revision, selection });
     writeSessionModel(d, 'a', { ...selection, effort: 'high', serviceTier: 'priority' });
     const rows = JSON.stringify(sessionModelCardElements('a', 'codex-app'));
-    expect(rows).toContain('medium'); expect(rows).toContain('Fast：OFF');
-    expect(rows).toContain('待下一轮生效'); expect(rows).toContain('Fast：ON');
+    expect(rows).toContain('**当前** · test-a · medium · Fast OFF');
+    expect(rows).toContain('待下一轮生效 · test-a · high · Fast ON');
     expect(sessionModelButton('a', { root_id: 'root' }, 'claude-code')).toEqual([]);
   });
   it('applies only to the bound session, preserving the other session and speed', async () => {

@@ -56,6 +56,7 @@ send({id:m.id,result});});
     const turns = rows().filter(row => row.method === 'turn/start');
     expect(turns.map(row => row.params.model)).toEqual(['busy', 'tools'].includes(mode) ? ['gpt-5.5', 'gpt-6.1-sol'] : ['gpt-6.1-sol']);
     expect(turns.at(-1).params).toMatchObject({ model: 'gpt-6.1-sol', effort: 'xhigh', serviceTier: 'default' });
+    expect(output).not.toContain('本轮请求已应用');
     if (mode === 'waiting') expect(turns[0].params.input[0].text).toContain('原任务需要继续完成');
     if (mode === 'tools') expect(rows().findIndex(row => row.method === 'turn/interrupt')).toBeGreaterThan(rows().findIndex(row => row.method === 'tool_finished'));
     expect(rows().filter(row => row.method === 'turn/interrupt')).toHaveLength(['busy', 'tools'].includes(mode) ? 1 : 0);

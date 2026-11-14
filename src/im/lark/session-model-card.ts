@@ -5,7 +5,7 @@ import type { Locale } from '../../i18n/index.js';
 
 const text = (content: string) => ({ tag: 'div', text: { tag: 'lark_md', content } });
 const safe = (value?: string) => value?.replace(/[^\w.:-]/g, '') || '未知';
-const label = (s: ModelSelection, en: boolean) => `${en ? 'Model' : '模型'}：${safe(s.model)} · ${en ? 'Reasoning' : '推理'}：${safe(s.effort)} · Fast：${s.serviceTier === 'priority' ? 'ON' : s.serviceTier === 'default' ? 'OFF' : (en ? 'unknown' : '未知')}`;
+const label = (s: ModelSelection, en: boolean) => `${safe(s.model)} · ${safe(s.effort)} · Fast ${s.serviceTier === 'priority' ? 'ON' : s.serviceTier === 'default' ? 'OFF' : (en ? 'unknown' : '未知')}`;
 
 /** Actual runtime and requested settings remain distinct until the runner acknowledges them. */
 export function sessionModelCardElements(sessionId: string, cliId?: string, locale?: Locale): any[] {

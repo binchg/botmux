@@ -40,7 +40,6 @@ export async function runSingleTurn(context: SingleTurnContext, content: string,
     emitMarker, sharedContextPrefix, flushSteers, queuePendingSteersAsNextTurns } = context;
   // 当前轮冻结期望配置；切换只发生在两个 turn 之间。
   const requested = readSessionModel(config.session.dataDir, args.sessionId);
-  const applyingSelection = !!requested && readSessionModelRuntime(config.session.dataDir, args.sessionId)?.revision !== requested.revision;
   try { await ensureExecutor(requested); } catch (error) {
     writeSessionModelRuntime(config.session.dataDir, { sessionId: args.sessionId, pid: process.pid,
       threadId: context.threadId, phase: 'failed', revision: requested?.revision,
@@ -162,9 +161,6 @@ export async function runSingleTurn(context: SingleTurnContext, content: string,
     turn.modelSwitchCheck?.();
     context.pendingHandoff = ''; persistExecutor();
     modelReceipt('running', turn.turnId, turn.adaptiveActivityAt ? undefined : 'requested');
-    if (applyingSelection) emitMarker('progress', {
-      content: `本轮请求已应用：${activeExecutor === 'traex' ? 'TraeX' : 'Codex'} · ${selection.model} · ${selection.effort} · ${selection.serviceTier === 'priority' ? 'fast' : '标准速度（非 fast）'}。`,
-      turnId: turn.turnId, startedAtMs: turn.startedAtMs, updatedAtMs: Date.now(), complete: true });
     if (activeExecutor === 'traex' && !turn.structuredOutput) {
       const notice = readSessionModelDisplay(config.session.dataDir, args.sessionId)?.label;
       if (notice) {
