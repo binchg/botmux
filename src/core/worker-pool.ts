@@ -1615,6 +1615,7 @@ function resolvesToHome(p: string): boolean {
 }
 
 export function forkWorker(ds: DaemonSession, prompt: string, resumeOrTurnId: boolean | string = false, explicitTurnId?: string): void {
+  if (ds.pendingRepo || ds.session.pendingRepoSelection) return;
   // 失败的目录请求必须先修正/取消；带新输入的冷分支不能静默回退旧目录。
   if (prompt && ds.session.pendingWorkingDirError) throw new Error(ds.session.pendingWorkingDirError);
   // 切换等待旧 worker 退出时，所有冷分支输入也必须进入同一串行队列。

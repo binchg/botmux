@@ -6,7 +6,6 @@ import { getSession } from '../../services/session-store.js';
 
 const text = (content: string) => ({ tag: 'div', text: { tag: 'lark_md', content } });
 const safe = (value?: string) => value?.replace(/[^\w.:-]/g, '') || '未知';
-const label = (s: ModelSelection, en: boolean) => `${safe(s.model)} · ${safe(s.effort)} · Fast ${s.serviceTier === 'priority' ? 'ON' : s.serviceTier === 'default' ? 'OFF' : (en ? 'unknown' : '未知')}`;
 
 /** Actual runtime and requested settings remain distinct until the runner acknowledges them. */
 export function sessionModelCardElements(sessionId: string, cliId?: string, locale?: Locale): any[] {
@@ -15,14 +14,12 @@ export function sessionModelCardElements(sessionId: string, cliId?: string, loca
   try {
     const state = sessionModelStatus(config.session.dataDir, sessionId);
     const current = state.runtime?.selection;
-    const rows = [text(current
-      ? `**${state.runnerAlive ? (en ? 'Current' : '当前') : (en ? 'Last run settings' : '上次运行配置')}** · ${label(current, en)}`
-      : `${en ? 'Current model / reasoning / Fast: awaiting runtime receipt' : '当前模型 / 推理 / Fast：等待运行回执'}`)];
-    if (state.desired && state.desired.revision !== state.runtime?.revision) {
-      rows.push(text(`${en ? 'Pending next turn' : '待下一轮生效'} · ${label(state.desired, en)}`));
-    }
-    const workingDir = getSession(sessionId)?.workingDir;
-    rows.push({ tag: 'div', text: { tag: 'plain_text', content: `📁 ${en ? 'Working directory' : '工作目录'}：${workingDir || (en ? 'Unknown' : '未知')}` } });
+    const workingDir = getSession(sessionId)?.workingDir || (en ? 'Unknown directory' : '目录未知');
+    const compact = (v: ModelSelection) => `${safe(v.model).replace(/^gpt-/, '')} ${safe(v.effort).replace('medium', 'M').replace('xhigh', 'XH').replace('high', 'H').replace('low', 'L')} F${v.serviceTier === 'priority' ? '+' : v.serviceTier === 'default' ? '−' : '?'}`;
+    const status = current ? `${state.runnerAlive ? '' : (en ? 'last ' : '上次 ')}${compact(current)}` : (en ? 'awaiting receipt' : '待回执');
+    const pending = state.desired && state.desired.revision !== state.runtime?.revision
+      ? ` → ${compact(state.desired)}${en ? ' next' : ' 待生效'}` : '';
+    const rows = [{ tag: 'div', text: { tag: 'plain_text', content: `📁 ${workingDir} · ${status}${pending}` } }];
     return rows;
   } catch { return [text(en ? 'Model status unavailable' : '模型状态暂不可用')]; }
 }

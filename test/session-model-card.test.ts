@@ -25,24 +25,25 @@ const context = (option: string, field = 'effort', id = 'session-a'): any => ({ 
 describe('per-session model control card', () => {
   it('shows actual settings separately from pending changes and does not invent missing runtime values', () => {
     const d = temp();
-    expect(JSON.stringify(sessionModelCardElements('a', 'codex-app'))).toContain('等待运行回执');
+    expect(JSON.stringify(sessionModelCardElements('a', 'codex-app'))).toContain('待回执');
     const first = writeSessionModel(d, 'a', selection);
     writeSessionModelRuntime(d, { sessionId: 'a', pid: process.pid, phase: 'running', revision: first.revision, selection });
     writeSessionModel(d, 'a', { ...selection, effort: 'high', serviceTier: 'priority' });
     const rows = JSON.stringify(sessionModelCardElements('a', 'codex-app'));
-    expect(rows).toContain('**当前** · test-a · medium · Fast OFF');
-    expect(rows).toContain('待下一轮生效 · test-a · high · Fast ON');
-    expect(rows).toContain('工作目录：/home/ubuntu/my/project');
+    expect(rows).toContain('test-a M F−');
+    expect(rows).toContain('→ test-a H F+ 待生效');
+    expect(rows).toContain('📁 /home/ubuntu/my/project');
+    expect(sessionModelCardElements('a', 'codex-app')).toHaveLength(1);
     expect(sessionModelButton('a', { root_id: 'root' }, 'claude-code')).toEqual([]);
   });
   it('labels a previous receipt without an offline warning or pretending it is current', () => {
     const d = temp();
     writeSessionModelRuntime(d, { sessionId: 'a', pid: 2147483647, phase: 'completed', selection });
     const rows = JSON.stringify(sessionModelCardElements('a', 'codex-app'));
-    expect(rows).toContain('**上次运行配置** · test-a');
+    expect(rows).toContain('上次 test-a');
     expect(rows).not.toContain('运行器离线');
-    expect(rows).not.toContain('**当前**');
-    expect(JSON.stringify(sessionModelCardElements('a', 'codex-app', 'en'))).toContain('Working directory');
+    expect(rows).not.toContain('当前');
+    expect(JSON.stringify(sessionModelCardElements('a', 'codex-app', 'en'))).toContain('/home/ubuntu/my/project');
   });
   it('applies only to the bound session, preserving the other session and speed', async () => {
     const d = temp(); writeSessionModel(d, 'session-a', { ...selection, serviceTier: 'priority' });

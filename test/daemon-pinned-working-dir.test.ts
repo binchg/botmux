@@ -57,6 +57,16 @@ afterEach(() => {
 });
 
 describe('resolvePinnedWorkingDir', () => {
+  it('requires an explicit card choice for the opted-in bot, leaving the other bot defaults intact', async () => {
+    const { botRegistry, daemon } = await loadFreshModules();
+    const dir = tempDir('default');
+    botRegistry.registerBot({ larkAppId: 'nene', larkAppSecret: 's', cliId: 'codex-app', defaultWorkingDir: dir, requireWorkingDirSelection: true });
+    botRegistry.registerBot({ larkAppId: 'chen', larkAppSecret: 's', cliId: 'codex-app', defaultWorkingDir: dir });
+    const base = { scope: 'thread' as const, anchor: 'om_root', chatId: 'oc_chat', chatType: 'group' as const };
+    expect((await daemon.__testOnly_resolvePinnedWorkingDir({ ...base, larkAppId: 'nene' })).pinnedWorkingDir).toBeUndefined();
+    expect((await daemon.__testOnly_resolvePinnedWorkingDir({ ...base, larkAppId: 'chen' })).pinnedWorkingDir).toBe(dir);
+  });
+
   it('prefers THIS bot\'s own defaultWorkingDir over a valid same-anchor peer (no cross-bot dir pollution)', async () => {
     const { botRegistry, sessionStore, daemon } = await loadFreshModules();
     const peerDir = tempDir('peer-repo');

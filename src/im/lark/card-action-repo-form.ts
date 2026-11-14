@@ -20,6 +20,12 @@ import { handleCardAction } from './card-handler.js';
 /** 仓库选择与工作区表单提交；未命中时交给下一处理器。 */
 export async function handleRepoFormAction(context: SessionCardContext): Promise<any> {
   const { data, deps, larkAppId, activeSessions, lastRepoScan, sessionReply, action, value, cardMessageId, operatorOpenId, actionType, rootId, ds } = context;
+    if (actionType === 'skip_repo' && ds && getBot(ds.larkAppId).config.requireWorkingDirSelection && ds.pendingRepo) {
+      const validation = validateWorkingDir(getSessionWorkingDir(ds));
+      if (!validation.ok) return { toast: { type: 'error', content: validation.error } };
+      await commitRepoSelection({ ds, rootId, cardMessageId, larkAppId, operatorOpenId, activeSessions, sessionReply }, validation.resolvedPath, validation.resolvedPath);
+      return { toast: { type: 'success', content: '已选择工作目录' } };
+    }
     if (actionType === 'skip_repo' && ds) {
       const locDs = localeForBot(ds.larkAppId);
       if (ds.pendingRepo) {
@@ -28,6 +34,7 @@ export async function handleRepoFormAction(context: SessionCardContext): Promise
         const effectiveCliId = sessionCliId(ds);
         // Skip repo selection — spawn CLI with default working dir
         ds.pendingRepo = false;
+        ds.session.pendingRepoSelection = undefined;
         publishAttentionPatch(ds);
         const pendingPrompt = ds.pendingPrompt ?? '';
         const pendingRawInput = ds.pendingRawInput;
@@ -122,7 +129,7 @@ export async function handleRepoFormAction(context: SessionCardContext): Promise
       // await so a rejected delete is caught here (not an unhandled rejection);
       // a missing/already-gone card is fine — we post the fresh one regardless.
       if (ds.repoCardMessageId && ds.larkAppId) { try { await deleteMessage(ds.larkAppId, ds.repoCardMessageId); } catch { /* card already gone */ } }
-      const newCard = buildRepoSelectCard(projects, getSessionWorkingDir(ds), rootId, locDs, next);
+      const newCard = buildRepoSelectCard(projects, getSessionWorkingDir(ds), rootId, locDs, next, getBot(ds.larkAppId).config.requireWorkingDirSelection);
       ds.repoCardMessageId = await sessionReply(rootId, newCard, 'interactive');
       return { toast: { type: 'info', content: t(next ? 'card.repo.toast_worktree_mode_switched' : 'card.repo.toast_worktree_mode_switched_back', undefined, locDs) } };
     }

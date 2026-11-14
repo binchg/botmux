@@ -97,6 +97,8 @@ export async function commitRepoSelection(
     const effectiveCliId = sessionCliId(ds);
     // First-time repo selection — now spawn CLI with the original prompt
     ds.pendingRepo = false;
+    ds.session.pendingRepoSelection = undefined;
+    sessionStore.updateSession(ds.session);
     publishAttentionPatch(ds);
     const pendingPrompt = ds.pendingPrompt ?? '';
     const pendingRawInput = ds.pendingRawInput;

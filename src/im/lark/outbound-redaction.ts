@@ -23,7 +23,7 @@ export function maskTechnicalReferences(text: string): string {
 }
 
 /** 标记式替换不会保留仍可识别的邮箱域名或完整号码。 */
-function redactValues(text: string): string {
+function redactValuesOutsideNode(text: string): string {
   const emailCandidates = maskTechnicalReferences(text);
   return text.replace(email, (value, offset: number) =>
     emailCandidates.slice(offset, offset + value.length).trim() === '' ? value : '［邮箱已隐藏］')
@@ -34,6 +34,24 @@ function redactValues(text: string): string {
     .replace(/((?:password|access_token|refresh_token|api[_-]?key|密码|密钥|令牌)\s*[:=：]\s*)[^\s,，;；]+/gi, '$1［凭据已隐藏］')
     .replace(/((?:姓名|取货人|收件人)\s*[:：]\s*)[^\s,，;；]+/g, '$1［姓名已隐藏］')
     .replace(/姓\s*[:：]?\s*[^\s,，;；]{1,8}\s+名\s*[:：]?\s*[^\s,，;；]{1,12}/g, '［姓名已隐藏］');
+}
+
+/** Only a validated SIP002 node authority is a technical reference. Labels and
+ * adjacent text still pass through ordinary privacy rules. */
+function redactValues(text: string): string {
+  const node = /\bss:\/\/[A-Za-z0-9_+\/=-]+@(?:\d{1,3}(?:\.\d{1,3}){3}|[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?):\d{1,5}(?=[#/?\s`<>"'）)]|$)/gi;
+  let cursor = 0;
+  let result = '';
+  for (const match of text.matchAll(node)) {
+    const authority = match[0];
+    const at = authority.lastIndexOf('@');
+    const credentials = Buffer.from(authority.slice(5, at), 'base64url').toString('utf8');
+    const port = Number(authority.slice(authority.lastIndexOf(':') + 1));
+    if (!/^(?:chacha20-ietf-poly1305|aes-(?:128|192|256)-gcm|2022-blake3-(?:aes-(?:128|256)-gcm|chacha20-poly1305)):[^\s]+$/.test(credentials) || port < 1 || port > 65535) continue;
+    result += redactValuesOutsideNode(text.slice(cursor, match.index)) + authority;
+    cursor = match.index! + authority.length;
+  }
+  return result + redactValuesOutsideNode(text.slice(cursor));
 }
 
 /** 链接含个人资料时移除整个链接，不输出仍可还原资料的编码或链接目标。 */

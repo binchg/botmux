@@ -1273,7 +1273,8 @@ export async function handleCommand(
       }
 
       case '/repo': {
-        const repoArg = message.content.replace(/^\/repo\s*/, '').trim();
+        const requireDirectoryChoice = !!ds?.pendingRepo && !!getBot(ds.larkAppId).config.requireWorkingDirSelection;
+        const repoArg = requireDirectoryChoice ? '' : message.content.replace(/^\/repo\s*/, '').trim();
 
         // First-spawn fork: consume the buffered prompt/attachments and start the
         // CLI in whatever workingDir is currently set on the session. Shared by
@@ -1284,6 +1285,8 @@ export async function handleCommand(
           const botCfg = selfBot.config;
           const commitGenSessionId = ds!.session.sessionId;
           ds!.pendingRepo = false;
+          ds!.session.pendingRepoSelection = undefined;
+          sessionStore.updateSession(ds!.session);
           publishAttentionPatch(ds!);
           const pendingPrompt = ds!.pendingPrompt ?? '';
           const pendingRawInput = ds!.pendingRawInput;
@@ -1562,7 +1565,7 @@ export async function handleCommand(
         // default workingDir. This is the text-command twin of the card's
         // "start directly" button (and replaces the old `/skip` command).
         // Mid-session bare `/repo` (no pending) still falls through to the card.
-        if (!repoArg && ds?.pendingRepo) {
+        if (!repoArg && ds?.pendingRepo && !getBot(ds.larkAppId).config.requireWorkingDirSelection) {
           // Validate the configured workingDir before spawning — `forkWorker`
           // doesn't, so a dead cwd would otherwise spawn-and-fail silently. Same
           // guard the card path runs below. On failure we keep the pending state
@@ -1593,18 +1596,18 @@ export async function handleCommand(
           break;
         }
         const validDirs = scanDirs.filter(d => existsSync(d));
-        if (validDirs.length === 0) {
+        if (validDirs.length === 0 && !requireDirectoryChoice) {
           await sessionReply(rootId, t('cmd.repo.scan_dir_not_exist', { dirs: scanDirs.join(', ') }, loc));
           break;
         }
         const projects = scanMultipleProjects(validDirs, 3, repoPickerScanOptions());
-        if (projects.length === 0) {
+        if (projects.length === 0 && !requireDirectoryChoice) {
           await sessionReply(rootId, t('cmd.repo.no_git_repos', { dirs: validDirs.join(', ') }, loc));
           break;
         }
         if (ds) lastRepoScan.set(ds.chatId, projects);
         const currentCwd = getSessionWorkingDir(ds);
-        const cardJson = buildRepoSelectCard(projects, currentCwd, rootId, loc, ds ? getBot(ds.larkAppId).config.worktreeMultiPicker : undefined);
+        const cardJson = buildRepoSelectCard(projects, currentCwd, rootId, loc, ds ? getBot(ds.larkAppId).config.worktreeMultiPicker : undefined, ds ? getBot(ds.larkAppId).config.requireWorkingDirSelection : undefined);
         const repoCardMsgId = await sessionReply(rootId, cardJson, 'interactive');
         if (ds) {
           ds.repoCardMessageId = repoCardMsgId;

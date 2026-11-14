@@ -2231,6 +2231,9 @@ async function resolvePinnedWorkingDir(ctx: {
   chatType: 'group' | 'p2p';
   larkAppId: string;
 }) {
+  if (getBot(ctx.larkAppId).config.requireWorkingDirSelection) {
+    return { pinnedWorkingDir: undefined, oncallEntry: undefined, inheritedFrom: null };
+  }
   let oncallEntry = findOncallChat(ctx.larkAppId, ctx.chatId);
   if (!oncallEntry) {
     oncallEntry = await maybeAutoBindDefaultOncall(ctx.larkAppId, ctx.chatId, ctx.chatType);
@@ -2375,9 +2378,10 @@ async function startInitialPassthroughSession(args: {
   if (await replyInvalidWorkingDirs(anchor, larkAppId, ds)) return;
   const scanDirs = getProjectScanDirs(ds).filter(d => existsSync(d));
   const projects = scanDirs.length > 0 ? scanMultipleProjects(scanDirs, 3, repoPickerScanOptions()) : [];
-  if (projects.length > 0) {
+  if (projects.length > 0 || getBot(larkAppId).config.requireWorkingDirSelection) {
     lastRepoScan.set(chatId, projects);
-    const cardJson = buildRepoSelectCard(projects, getSessionWorkingDir(ds), anchor, localeForBot(larkAppId), getBot(larkAppId).config.worktreeMultiPicker);
+    const cardJson = buildRepoSelectCard(projects, getSessionWorkingDir(ds), anchor, localeForBot(larkAppId), getBot(larkAppId).config.worktreeMultiPicker, getBot(larkAppId).config.requireWorkingDirSelection);
+    if (getBot(larkAppId).config.requireWorkingDirSelection) announcePendingRepoSession(ds);
     ds.repoCardMessageId = await sessionReply(anchor, cardJson, 'interactive', larkAppId);
     announcePendingRepoSession(ds);
     logger.info(`[${tag(ds)}] Waiting for repo selection before initial raw passthrough (${projects.length} projects)`);
@@ -2715,10 +2719,11 @@ async function handleNewTopic(data: any, ctx: RoutingContext): Promise<void> {
   if (scanDirs.length > 0) {
     projects = scanMultipleProjects(scanDirs, 3, repoPickerScanOptions());
   }
-  if (projects.length > 0) {
+  if (projects.length > 0 || getBot(larkAppId).config.requireWorkingDirSelection) {
     lastRepoScan.set(chatId, projects);
     const currentCwd = getSessionWorkingDir(ds);
-    const cardJson = buildRepoSelectCard(projects, currentCwd, anchor, localeForBot(larkAppId), getBot(larkAppId).config.worktreeMultiPicker);
+    const cardJson = buildRepoSelectCard(projects, currentCwd, anchor, localeForBot(larkAppId), getBot(larkAppId).config.worktreeMultiPicker, getBot(larkAppId).config.requireWorkingDirSelection);
+    if (getBot(larkAppId).config.requireWorkingDirSelection) announcePendingRepoSession(ds);
     ds.repoCardMessageId = await sessionReply(anchor, cardJson, 'interactive', larkAppId);
     announcePendingRepoSession(ds);
     logger.info(`[${tag(ds)}] Waiting for repo selection (${projects.length} projects)`);
@@ -2918,9 +2923,10 @@ async function handleBotAdded(chatId: string, operatorOpenId: string | undefined
     if (await replyInvalidWorkingDirs(anchor, larkAppId, ds)) return;
     const scanDirs = getProjectScanDirs(ds).filter(d => existsSync(d));
     const projects = scanDirs.length > 0 ? scanMultipleProjects(scanDirs, 3, repoPickerScanOptions()) : [];
-    if (projects.length > 0) {
+    if (projects.length > 0 || getBot(larkAppId).config.requireWorkingDirSelection) {
       lastRepoScan.set(chatId, projects);
-      const cardJson = buildRepoSelectCard(projects, getSessionWorkingDir(ds), anchor, localeForBot(larkAppId), getBot(larkAppId).config.worktreeMultiPicker);
+      const cardJson = buildRepoSelectCard(projects, getSessionWorkingDir(ds), anchor, localeForBot(larkAppId), getBot(larkAppId).config.worktreeMultiPicker, getBot(larkAppId).config.requireWorkingDirSelection);
+      if (getBot(larkAppId).config.requireWorkingDirSelection) announcePendingRepoSession(ds);
       ds.repoCardMessageId = await sessionReply(anchor, cardJson, 'interactive', larkAppId);
       announcePendingRepoSession(ds);
       logger.info(`[auto-start:入群] ${chatId.substring(0, 12)} 无默认目录，弹 repo 选择卡（${projects.length} 个项目）`);
@@ -3354,6 +3360,7 @@ async function handleThreadReply(data: any, ctx: RoutingContext): Promise<void> 
     }
     if (!ds.pendingFollowUps) ds.pendingFollowUps = [];
     ds.pendingFollowUps.push(enriched);
+    announcePendingRepoSession(ds);
     await sessionReply(anchor, tr('daemon.choose_repo_first', undefined, localeForBot(larkAppId)), 'text', larkAppId);
     return;
   }
@@ -3474,10 +3481,11 @@ async function handleThreadReply(data: any, ctx: RoutingContext): Promise<void> 
     if (scanDirs2.length > 0) {
       projects = scanMultipleProjects(scanDirs2, 3, repoPickerScanOptions());
     }
-    if (projects.length > 0) {
+    if (projects.length > 0 || getBot(larkAppId).config.requireWorkingDirSelection) {
       lastRepoScan.set(autoCreateChatId, projects);
       const currentCwd = getSessionWorkingDir(newDs);
-      const cardJson = buildRepoSelectCard(projects, currentCwd, anchor, localeForBot(larkAppId), getBot(larkAppId).config.worktreeMultiPicker);
+      const cardJson = buildRepoSelectCard(projects, currentCwd, anchor, localeForBot(larkAppId), getBot(larkAppId).config.worktreeMultiPicker, getBot(larkAppId).config.requireWorkingDirSelection);
+      if (getBot(larkAppId).config.requireWorkingDirSelection) announcePendingRepoSession(newDs);
       newDs.repoCardMessageId = await sessionReply(anchor, cardJson, 'interactive', larkAppId);
       announcePendingRepoSession(newDs);
       logger.info(`[${tag(newDs)}] Waiting for repo selection (${projects.length} projects)`);

@@ -998,7 +998,7 @@ function worktreeMultiForm(worktreeOptions: Array<{ text: { tag: 'plain_text'; c
 /** Repo selection card. `multiPicker` (persisted per-bot via worktreeMultiPicker)
  *  flips the worktree control between an instant single-select dropdown (false)
  *  and the inline multi-select form (true). */
-export function buildRepoSelectCard(projects: ProjectInfo[], currentPath?: string, rootMessageId?: string, locale?: Locale, multiPicker?: boolean): string {
+export function buildRepoSelectCard(projects: ProjectInfo[], currentPath?: string, rootMessageId?: string, locale?: Locale, multiPicker?: boolean, requireDirectoryChoice = false): string {
   const currentMarker = t('card.repo.current_marker', undefined, locale);
   const options = projects.map((p, i) => {
     const currentTag = p.path === currentPath ? currentMarker : '';
@@ -1060,7 +1060,7 @@ export function buildRepoSelectCard(projects: ProjectInfo[], currentPath?: strin
             elements: [
               {
                 tag: 'button',
-                text: { tag: 'plain_text', content: t('card.btn.skip_repo', undefined, locale) },
+                text: { tag: 'plain_text', content: requireDirectoryChoice ? (locale === 'en' ? 'Use this directory' : '使用此目录') : t('card.btn.skip_repo', undefined, locale) },
                 type: 'primary',
                 value: { action: 'skip_repo', root_id: rootMessageId ?? '' },
               },
@@ -1205,6 +1205,10 @@ export function buildRepoSelectCard(projects: ProjectInfo[], currentPath?: strin
     ],
   };
 
+  if (requireDirectoryChoice) {
+    card.header.title.content = locale === 'en' ? 'Choose a working directory to start' : '请先选择工作目录';
+    card.elements = card.elements.filter((element: any) => !(element.tag === 'action' && element.actions?.some((a: any) => a.tag === 'select_static' && a.options?.length === 0)));
+  }
   return JSON.stringify(card);
 }
 

@@ -36,3 +36,13 @@ it('恢复或终端重连的空 prompt 不抢先 fork、不额外产生新轮', 
   expect(sendSessionInput).not.toHaveBeenCalled(); expect(ds.worker).toBeNull();
   expect(ds.session.pendingWorkingDir).toBe('/synthetic/target');
 });
+
+
+it('never starts a runner while the first directory choice is pending, including after restore', () => {
+  const ds = switching(); ds.workingDirSwitchInFlight = undefined;
+  ds.session.pendingWorkingDir = undefined;
+  ds.session.pendingRepoSelection = { prompt: 'original task' };
+  forkWorker(ds, '', true);
+  expect(ds.worker).toBeNull();
+  expect(sendSessionInput).not.toHaveBeenCalled();
+});

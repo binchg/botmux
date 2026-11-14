@@ -547,6 +547,8 @@ export interface BotConfig {
    * persists so all of this bot's future sessions default to it. Default false.
    */
   worktreeMultiPicker?: boolean;
+  /** New interactive sessions must wait for an explicit directory card choice. */
+  requireWorkingDirSelection?: boolean;
   /**
    * Per-bot DEFAULT session mode for regular Lark groups (overridable per-chat
    * via `/reply-mode` → `chatReplyModes`). Resolved by
@@ -1197,6 +1199,7 @@ export function parseBotConfigsFromText(jsonText: string): BotConfig[] {
         : undefined,
       autoStartOnNewTopic: entry.autoStartOnNewTopic === true || undefined,
       worktreeMultiPicker: entry.worktreeMultiPicker === true || undefined,
+      requireWorkingDirSelection: entry.requireWorkingDirSelection === true || undefined,
       // Per-bot regular-group default mode. Only the non-default modes
       // ('chat-topic' | 'new-topic' | 'shared') are meaningful; 'chat' (the flat
       // default) and anything else normalize to undefined so bots.json stays clean.

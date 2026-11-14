@@ -84,6 +84,9 @@ vi.mock('../src/services/whiteboard-store.js', () => ({
   ensureDefaultWhiteboard: vi.fn(),
 }));
 
+import { getBot } from '../src/bot-registry.js';
+import { scanMultipleProjects } from '../src/services/project-scanner.js';
+vi.mock('../src/services/project-scanner.js', () => ({ scanMultipleProjects: vi.fn(() => []) }));
 import { spawnDashboardSession, activateQueuedSession } from '../src/core/session-manager.js';
 import { sessionKey } from '../src/core/types.js';
 import { dashboardEventBus } from '../src/core/dashboard-events.js';
@@ -205,5 +208,40 @@ describe('activateQueuedSession', () => {
   it('is a no-op error for a session that was never queued', async () => {
     const ds = { worker: null, session: { queued: false } } as unknown as DaemonSession;
     expect(await activateQueuedSession(ds)).toMatchObject({ ok: false, error: 'not_queued' });
+  });
+});
+
+
+describe('explicit first-run directory selection', () => {
+  it('holds dashboard-created sessions even with a default directory and no scanned repos', async () => {
+    const get = vi.mocked(getBot);
+    const original: any = get.getMockImplementation()!;
+    get.mockImplementation((...args: any[]) => ({ ...original(...args), config: { cliId: 'codex-app', defaultWorkingDir: '/tmp', requireWorkingDirSelection: true } } as any));
+    try {
+      const active = new Map<string, DaemonSession>();
+      const r = await spawnDashboardSession(active, undefined, { larkAppId: APP, chatId: CHAT, content: 'keep this first prompt', column: 'in_progress', role: 'solo' });
+      expect(r.ok).toBe(true);
+      expect(forkWorkerMock).not.toHaveBeenCalled();
+      const ds = [...active.values()][0];
+      expect(ds.pendingRepo).toBe(true);
+      expect(ds.session.pendingRepoSelection?.prompt).toContain('keep this first prompt');
+      const card = sendMessageMock.mock.calls.find((a: any[]) => a[3] === 'interactive');
+      expect(card).toBeDefined();
+      const body = String((card as any)[2]);
+      expect(body).toContain('请先选择工作目录');
+      expect(body).toContain('使用此目录');
+      expect(body).not.toContain('"options":[]');
+    } finally { get.mockImplementation(original); }
+  });
+  it('does not fall back to spawning when the required directory card fails to send', async () => {
+    const get = vi.mocked(getBot); const original: any = get.getMockImplementation()!;
+    get.mockImplementation((...args: any[]) => ({ ...original(...args), config: { cliId: 'codex-app', defaultWorkingDir: '/tmp', requireWorkingDirSelection: true } } as any));
+    sendMessageMock.mockRejectedValueOnce(new Error('card delivery failed'));
+    try {
+      const active = new Map<string, DaemonSession>();
+      await expect(spawnDashboardSession(active, undefined, { larkAppId: APP, chatId: CHAT, content: 'preserve me', column: 'in_progress', role: 'solo' })).rejects.toThrow('card delivery failed');
+      expect(forkWorkerMock).not.toHaveBeenCalled();
+      expect([...active.values()][0].session.pendingRepoSelection?.prompt).toContain('preserve me');
+    } finally { get.mockImplementation(original); }
   });
 });

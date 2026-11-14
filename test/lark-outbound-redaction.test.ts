@@ -106,4 +106,17 @@ describe('出站正文自动脱敏', () => {
     expect(JSON.parse(redactOutboundContent(JSON.stringify({ email: reference }))).email)
       .toBe('［个人资料已隐藏］');
   });
+  it('preserves validated Shadowsocks share links in prose, code and cards while masking adjacent email', () => {
+    const auth = Buffer.from('chacha20-ietf-poly1305:private-node-password').toString('base64url');
+    const uri = `ss://${auth}@62.234.70.112:80#Tenyun-Tail%E5%86%85%E7%BD%91`;
+    expect(redactOutboundText(uri)).toBe(uri);
+    expect(redactOutboundText(`\`\`\`text\n${uri}\n\`\`\``)).toContain(uri);
+    expect(redactOutboundText(`${uri} contact alice@example.com`)).toBe(`${uri} contact ［邮箱已隐藏］`);
+    expect(redactOutboundText(`${uri} alice@example.com 13800138000`)).not.toContain('13800138000');
+    const card = JSON.stringify({ elements: [{ tag: 'markdown', content: uri }], actions: [{ tag: 'button', url: uri }] });
+    expect(redactOutboundContent(card)).toBe(card);
+    expect(redactOutboundText(`ss://alice@example.com:80#bad`)).toContain('［邮箱已隐藏］');
+    expect(redactOutboundText(`ss://${auth}@62.234.70.112:99999#bad`)).toContain('［邮箱已隐藏］');
+  });
+
 });

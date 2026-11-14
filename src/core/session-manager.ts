@@ -766,7 +766,7 @@ export async function staggeredRecoveryFork(
 ): Promise<void> {
   let spawnedInBatch = 0;
   for (const ds of sessions) {
-    if (ds.worker) continue; // already woken by a real message — don't clobber it
+    if (ds.worker || ds.pendingRepo) continue; // already woken by a real message — don't clobber it
     fork(ds);
     if (++spawnedInBatch >= batchSize) {
       spawnedInBatch = 0;
@@ -867,7 +867,7 @@ export async function restoreActiveSessions(activeSessions: Map<string, DaemonSe
     // Queued（待办池）会话：CLI 从没起过，restore 必须保持 parked（hasHistory:false +
     // queued），绝不能走下面 hasHistory:true 的通用分支——否则下一条消息会 --resume 一个
     // 不存在的 CLI 会话。pendingPrompt 从持久化的 queuedPrompt 恢复，供激活时发首轮。
-    if (session.queued) {
+    if (session.queued || session.pendingRepoSelection) {
       const larkAppId = session.larkAppId ?? getAllBots()[0]?.config.larkAppId ?? '';
       const ds: DaemonSession = {
         session,
@@ -884,7 +884,14 @@ export async function restoreActiveSessions(activeSessions: Map<string, DaemonSe
         hasHistory: false,
         workingDir: session.workingDir,
         ownerOpenId: session.ownerOpenId,
-        pendingPrompt: session.queuedPrompt,
+        pendingRepo: !!session.pendingRepoSelection,
+        pendingPrompt: session.pendingRepoSelection?.prompt ?? session.queuedPrompt,
+        pendingRawInput: session.pendingRepoSelection?.rawInput,
+        repoCardMessageId: session.pendingRepoSelection?.cardMessageId,
+        pendingAttachments: session.pendingRepoSelection?.attachments,
+        pendingMentions: session.pendingRepoSelection?.mentions,
+        pendingSender: session.pendingRepoSelection?.sender,
+        pendingFollowUps: session.pendingRepoSelection?.followUps,
         currentTurnTitle: session.currentTurnTitle ?? session.title,
       };
       const anchor = sessionAnchorId(ds);
@@ -1507,6 +1514,7 @@ export async function executeScheduledTask(
  *  forkOrShowRepoCard 弹 /repo 卡片让用户在群里选。与普通新话题的 resolvePinnedWorkingDir
  *  同口径（少了 sibling 继承那层，新群无 sibling 可继承）。*/
 function resolveDashboardSpawnWorkingDir(larkAppId: string, chatId: string): string | undefined {
+  if (getBot(larkAppId).config.requireWorkingDirSelection) return undefined;
   const oncall = findOncallChat(larkAppId, chatId)?.workingDir;
   if (oncall) return oncall;
   const raw = effectiveDefaultWorkingDir(getBot(larkAppId).config);
@@ -1535,16 +1543,17 @@ async function forkOrShowRepoCard(ds: DaemonSession, userContent: string): Promi
     { larkAppId, chatId: ds.chatId, whiteboardId: ds.session.whiteboardId },
   );
 
-  if (!ds.workingDir) {
+  if (!ds.workingDir || bot.config.requireWorkingDirSelection) {
     // 没钉目录 → 复用 /repo 选择卡片让用户在群里选仓库。
     const scanDirs = getProjectScanDirs(ds).filter(d => existsSync(d));
     const projects = scanDirs.length > 0 ? scanMultipleProjects(scanDirs, 3, repoPickerScanOptions()) : [];
-    if (projects.length > 0) {
+    if (projects.length > 0 || bot.config.requireWorkingDirSelection) {
       try {
-        const card = buildRepoSelectCard(projects, getSessionWorkingDir(ds), ds.chatId, locale, bot.config.worktreeMultiPicker);
+        const card = buildRepoSelectCard(projects, getSessionWorkingDir(ds), ds.chatId, locale, bot.config.worktreeMultiPicker, bot.config.requireWorkingDirSelection);
         const { sendMessage } = await import('../im/lark/client.js');
         ds.pendingRepo = true;
         ds.pendingPrompt = userContent;
+        if (bot.config.requireWorkingDirSelection) announcePendingRepoSession(ds);
         ds.repoCardMessageId = await sendMessage(larkAppId, ds.chatId, card, 'interactive');
         announcePendingRepoSession(ds);
         // 弹卡片这条路不经 forkWorker，session.spawned 不会自动发——手动 upsert 一条，
@@ -1553,6 +1562,11 @@ async function forkOrShowRepoCard(ds: DaemonSession, userContent: string): Promi
         logger.info(`[createSession] repo select card posted for session ${ds.session.sessionId.substring(0, 8)} (${projects.length} projects)`);
         return;
       } catch (err) {
+        if (bot.config.requireWorkingDirSelection) {
+          ds.pendingRepo = true;
+          announcePendingRepoSession(ds);
+          throw err; // fail closed: never start before a directory choice
+        }
         // 发卡失败：退回直接起，别把会话卡死在 pendingRepo。
         ds.pendingRepo = false;
         ds.pendingPrompt = undefined;
