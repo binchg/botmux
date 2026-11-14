@@ -223,7 +223,10 @@ export async function triggerSessionTurn(
     };
   }
 
-  if (ds && ((ds.worker && !ds.worker.killed) || ds.workingDirSwitchInFlight)) {
+  // A restored/idle session still owns its original topic and history. Let the
+  // input runtime resume its worker; worker liveness must never select creation
+  // of a different session below.
+  if (ds) {
     ensureSessionWhiteboard(ds);
     const content = buildFollowUpContent(prompt, ds.session.sessionId, {
       isAdoptMode: false,
