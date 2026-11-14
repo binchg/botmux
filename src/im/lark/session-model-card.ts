@@ -15,7 +15,7 @@ export function sessionModelCardElements(sessionId: string, cliId?: string, loca
     const state = sessionModelStatus(config.session.dataDir, sessionId);
     const current = state.runtime?.selection;
     const workingDir = getSession(sessionId)?.workingDir || (en ? 'Unknown directory' : '目录未知');
-    const compact = (v: ModelSelection) => `${safe(v.model).replace(/^gpt-/, '')} ${safe(v.effort).replace('medium', 'M').replace('xhigh', 'XH').replace('high', 'H').replace('low', 'L')} F${v.serviceTier === 'priority' ? '+' : v.serviceTier === 'default' ? '−' : '?'}`;
+    const compact = (v: ModelSelection) => `${safe(v.model).replace(/^gpt-/, '')} ${safe(v.effort).replace('medium', 'M').replace('xhigh', 'XH').replace('high', 'H').replace('low', 'L')} F${v.serviceTier === 'priority' ? '√' : v.serviceTier === 'default' ? '×' : '?'}`;
     const status = current ? `${state.runnerAlive ? '' : (en ? 'last ' : '上次 ')}${compact(current)}` : (en ? 'awaiting receipt' : '待回执');
     const pending = state.desired && state.desired.revision !== state.runtime?.revision
       ? ` → ${compact(state.desired)}${en ? ' next' : ' 待生效'}` : '';

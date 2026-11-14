@@ -6,7 +6,9 @@ import { ExternalCodexBridge, type ExternalCodexBinding } from './external-codex
 
 export interface AutoCodexBinding extends ExternalCodexBinding {
   codexHome: string;
+  /** Legacy protection marker; normal replies still resume this exact thread. */
   readOnly: boolean;
+  sourceThreadId?: string;
   targetKey?: string;
 }
 interface Baseline { offset: number; protected: boolean }
@@ -34,7 +36,7 @@ export class CodexAutoBridge {
     topic: (b: Omit<AutoCodexBinding, 'rootMessageId'>, uuid: string) => Promise<string>;
     reply: (b: AutoCodexBinding, text: string, uuid: string) => Promise<unknown>;
     turn: (b: AutoCodexBinding, text: string, checkpoint: () => void) => Promise<void>;
-    fork: (b: AutoCodexBinding) => Promise<{ threadId: string; rolloutPath: string }>;
+    fork?: (b: AutoCodexBinding) => Promise<{ threadId: string; rolloutPath: string }>;
     excluded: () => Set<string>;
     error: (error: unknown) => void;
   }) {
@@ -42,6 +44,8 @@ export class CodexAutoBridge {
     this.registry = existsSync(stateFile) ? JSON.parse(readFileSync(stateFile, 'utf8')) : { initialized: false, startedAt: Date.now(), baselines: {}, bindings: {} };
     for (const [key, b] of Object.entries(this.registry.bindings)) {
       if (existsSync(b.rolloutPath)) {
+        const meta = JSON.parse(readFileSync(b.rolloutPath, 'utf8').split('\n')[0]).payload;
+        if (typeof meta?.forked_from_id === 'string') b.sourceThreadId = meta.forked_from_id;
         this.rememberOrigin(b.rolloutPath);
         if (!this.isManaged(b)) this.observe(key, b);
       }
@@ -79,17 +83,11 @@ export class CodexAutoBridge {
     const previous = this.routes.get(key) ?? Promise.resolve();
     const operation = previous.catch(() => {}).then(async () => {
       if (this.isManaged(source)) return;
-      let targetKey = source.targetKey ?? key;
-      if (source.readOnly && !source.targetKey) {
-        const fork = await this.deps.fork(source);
-        targetKey = this.key(source.codexHome, fork.threadId);
-        const target = { ...source, ...fork, readOnly: false, targetKey: undefined };
-        this.registry.bindings[targetKey] = target;
-        source.targetKey = targetKey;
-        this.save(); // Reuse this fork for every later reply, including restart.
-        this.observe(targetKey, target);
-      }
-      const target = this.registry.bindings[targetKey];
+      // A normal follow-up always resumes the thread explicitly bound to this
+      // topic. Historical readOnly/targetKey flags must never create or select
+      // a test fork. Explicit test topics bind the fork's own threadId.
+      const targetKey = key;
+      const target = source;
       if (target && !this.isManaged(target)) {
         await this.observers.get(targetKey)?.receive(root, app, sender, messageId, text);
       }
@@ -159,7 +157,8 @@ export class CodexAutoBridge {
           const candidate = {
             threadId: id, rolloutPath: path, cwd: meta.payload.cwd, codexHome: home,
             larkAppId: this.cfg.larkAppId, chatId: this.cfg.chatId, ownerOpenId: this.cfg.ownerOpenId,
-            readOnly: baseline.protected && !this.cfg.writableThreadIds?.includes(id),
+            readOnly: false,
+            ...(typeof meta.payload.forked_from_id === 'string' ? { sourceThreadId: meta.payload.forked_from_id } : {}),
           };
           if (typeof candidate.cwd !== 'string') continue;
           const rootMessageId = priorBinding?.rootMessageId ?? await this.deps.topic(candidate, key.slice(0, 32));

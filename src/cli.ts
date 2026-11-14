@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { renderMathBlockImages } from './services/outbound-math.js';
 /**
  * CLI entry point for botmux.
  *
@@ -4730,7 +4731,7 @@ async function cmdSend(rest: string[]): Promise<void> {
       // `![alt](img:N)` inlines a full-width image; a grouped `![](img:0,1[,2…])`
       // renders one row of images side by side (2/row, 3/row …); any image not
       // referenced by a placeholder is appended full-width at the end.
-      const elements = (md || imageKeys.length > 0) ? buildImageCardElements(md, imageKeys) : [];
+      const elements = (md || imageKeys.length > 0) ? buildImageCardElements(await renderMathBlockImages(md, path => uploadImage(appId, path)), imageKeys) : [];
 
       // Footer: de-emphasized markdown (v2 dropped the `note` tag). Use small
       // text size + grey font tag so it reads like a footnote below the hr.

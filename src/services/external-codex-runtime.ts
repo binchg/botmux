@@ -2,7 +2,9 @@ import { existsSync, readFileSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname, basename } from 'node:path';
 import { spawn } from 'node:child_process';
-import { replyMessage, sendMessage } from '../im/lark/client.js';
+import { buildMarkdownCard } from '../im/lark/md-card.js';
+import { renderMathBlockImages } from './outbound-math.js';
+import { replyMessage, sendMessage, uploadImage } from '../im/lark/client.js';
 import { logger } from '../utils/logger.js';
 import { ExternalCodexBridge, type ExternalCodexBinding } from './external-codex-bridge.js';
 import { CodexAutoBridge, type AutoCodexBinding } from './codex-auto-bridge.js';
@@ -26,10 +28,10 @@ export function startExternalCodexBridge(selfAppId: string): void {
     if (!Array.isArray(cfg.codexHomes) || !cfg.codexHomes.length || !cfg.larkAppId || !cfg.chatId || !cfg.ownerOpenId || !cfg.codexBin) throw new Error('Invalid automatic Codex bridge config');
     const auto = new CodexAutoBridge(cfg, join(homedir(), '.local/state/botmux/codex-auto/registry.json'), {
       topic: (b, uuid) => sendMessage(b.larkAppId, b.chatId,
-        `Codex · ${basename(b.cwd)} · ${b.threadId.slice(0, 8)}\n此话题自动同步该会话的新回复，可直接追问。${b.readOnly ? '\n原档保留，首次追问会创建并固定复用一个 fork。' : ''}`, 'text', uuid),
-      reply: (b, text, uuid) => replyMessage(b.larkAppId, b.rootMessageId, text, 'text', true, uuid),
+        `Codex · ${basename(b.cwd)} · ${b.sourceThreadId ? 'fork 分支' : '原会话'} · ${b.threadId.slice(0, 8)}\n此话题自动同步该会话的新回复，可直接追问。\n追问直接续用此话题绑定的会话，不自动创建 fork。`, 'text', uuid),
+      reply: async (b, text, uuid) => replyMessage(b.larkAppId, b.rootMessageId,
+        buildMarkdownCard(await renderMathBlockImages(text, path => uploadImage(b.larkAppId, path))), 'interactive', true, uuid),
       turn: (b, text, checkpoint) => runExternalCodexTurn(cfg.codexBin, b.codexHome, b, text, checkpoint),
-      fork: b => forkExternalCodexThread(cfg.codexBin, b),
       excluded: () => collectBotmuxSessionIdentities() ?? new Set(),
       error: e => logger.error(`[codex-auto] ${String(e)}`),
     });
@@ -39,20 +41,20 @@ export function startExternalCodexBridge(selfAppId: string): void {
   }
   if (!Array.isArray(cfg.bindings) || !cfg.codexHome || !cfg.codexBin) throw new Error('Invalid external Codex bridge config');
   for (const b of cfg.bindings) {
-    for (const field of ['threadId', 'sourceThreadId', 'rolloutPath', 'cwd', 'chatId', 'larkAppId', 'ownerOpenId', 'rootMessageId']) {
+    for (const field of ['threadId', 'rolloutPath', 'cwd', 'chatId', 'larkAppId', 'ownerOpenId', 'rootMessageId']) {
       if (typeof b[field] !== 'string' || !b[field]) throw new Error(`Missing external Codex binding ${field}`);
     }
-    if (b.threadId === b.sourceThreadId) throw new Error('Refusing to bind the original Codex archive');
   }
   const statePath = join(homedir(), '.local/state/botmux/external-codex.json');
   mkdirSync(dirname(statePath), { recursive: true, mode: 0o700 });
   externalCodexBridge = new ExternalCodexBridge(cfg.bindings, statePath, {
-    reply: (b, text, uuid) => replyMessage(b.larkAppId, b.rootMessageId, text, 'text', true, uuid),
+    reply: async (b, text, uuid) => replyMessage(b.larkAppId, b.rootMessageId,
+        buildMarkdownCard(await renderMathBlockImages(text, path => uploadImage(b.larkAppId, path))), 'interactive', true, uuid),
     turn: (b, text, checkpoint) => runExternalCodexTurn(cfg.codexBin, cfg.codexHome, b, text, checkpoint),
     error: e => logger.error(`[external-codex] ${String(e)}`),
   });
   externalCodexBridge.start();
-  logger.info(`[external-codex] observing ${cfg.bindings.length} explicitly bound fork(s)`);
+  logger.info(`[external-codex] observing ${cfg.bindings.length} explicitly bound thread(s)`);
 }
 
 export async function forkExternalCodexThread(binary: string, b: AutoCodexBinding): Promise<{ threadId: string; rolloutPath: string }> {

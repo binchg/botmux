@@ -11,3 +11,14 @@ Every conversation turn produces a live-updating Lark card, your primary window 
 - **An "recoverable" card on close**: it includes the CLI's native resume command, so you can click back in to continue anytime.
 
 > The card body is a **live screenshot (image)** of the terminal, not text rendering. Messages the CLI proactively sends (via `botmux send`) are separate rich-text / image-and-text messages that can carry images, files, and @mentions.
+
+### Math formulas
+
+Replies support `$...$`, `$$...$$`, `\(...\)`, and `\[...\]`.
+Formula-bearing paragraphs, lists, or tables are typeset locally with KaTeX and
+uploaded as 2× resolution images; other blocks remain native rich text. Code
+and currency are preserved. Invalid TeX, missing browsers, or upload failures
+leave the original source intact. Text in images cannot be selected and images
+do not follow the client's dark theme, so this differs from VS Code rendering.
+Install Chromium with `node node_modules/playwright/cli.js install chromium`,
+or set `BOTMUX_CHROMIUM_PATH`. Typesetting does not fetch external resources.

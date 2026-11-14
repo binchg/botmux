@@ -40,7 +40,7 @@ it('discovers every active thread across both libraries, skips history and exclu
   } finally { bridge.stop(); rmSync(f.dir, { recursive: true, force: true }); }
 });
 
-it('forks an existing archive once, persists its reply mapping, and leaves the original untouched', async () => {
+it('resumes the original topic thread directly across restart without creating a fork', async () => {
   const f = fixture(); let forks = 0, turns = 0;
   const original = file(f.homes[0], 'original');
   const deps = {
@@ -51,13 +51,21 @@ it('forks an existing archive once, persists its reply mapping, and leaves the o
   try {
     const bridge = new CodexAutoBridge(f.cfg, f.stateFile, deps);
     await bridge.scan(); appendFileSync(original, done('activity', 'visible activity')); await bridge.scan();
-    const before = readFileSync(original, 'utf8');
-    await bridge.receive('root', 'app', 'owner', 'q1', 'first'); await bridge.scan();
+    // Existing readOnly/targetKey flags came from the old automatic-fork
+    // policy. They must not redirect a normal follow-up after restart.
+    const saved = JSON.parse(readFileSync(f.stateFile, 'utf8'));
+    const entry = Object.values(saved.bindings)[0] as any;
+    entry.readOnly = true; entry.targetKey = 'legacy-test-fork';
+    writeFileSync(f.stateFile, JSON.stringify(saved));
+    const legacy = new CodexAutoBridge(f.cfg, f.stateFile, deps);
+    await legacy.receive('root', 'app', 'owner', 'q1', 'first'); await legacy.scan();
     await vi.waitFor(() => expect(turns).toBe(1));
     const restored = new CodexAutoBridge(f.cfg, f.stateFile, deps);
     await restored.receive('root', 'app', 'owner', 'q2', 'second'); await restored.scan();
     await vi.waitFor(() => expect(turns).toBe(2));
-    expect(forks).toBe(1); expect(readFileSync(original, 'utf8')).toBe(before);
+    expect(forks).toBe(0);
+    expect(readFileSync(original, 'utf8')).toContain('first');
+    expect(readFileSync(original, 'utf8')).toContain('second');
   } finally { rmSync(f.dir, { recursive: true, force: true }); }
 });
 
