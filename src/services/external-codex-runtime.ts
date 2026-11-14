@@ -8,6 +8,7 @@ import { ExternalCodexBridge, type ExternalCodexBinding } from './external-codex
 import { CodexAutoBridge, type AutoCodexBinding } from './codex-auto-bridge.js';
 import { CodexAppServerProbe } from './codex-app-threads.js';
 import { collectBotmuxSessionIdentities } from './session-store.js';
+import { submitToCodexOwner } from './codex-owner-ipc.js';
 
 export let externalCodexBridge: ExternalCodexBridge | CodexAutoBridge | undefined;
 
@@ -63,6 +64,7 @@ export async function forkExternalCodexThread(binary: string, b: AutoCodexBindin
 }
 
 export async function runExternalCodexTurn(binary: string, codexHome: string, b: ExternalCodexBinding, text: string, checkpoint: () => void): Promise<void> {
+  if (await submitToCodexOwner(codexHome, b.threadId, text, checkpoint)) return;
   const child = spawn(binary, ['app-server', '--listen', 'stdio://'], {
     cwd: b.cwd, env: { ...process.env, HOME: homedir(), CODEX_HOME: codexHome }, stdio: ['pipe', 'pipe', 'pipe'],
   });
