@@ -27,6 +27,7 @@ export class CodexAutoBridge {
   private registry: Registry;
   private observers = new Map<string, ExternalCodexBridge>();
   private scanning = false;
+  private botmuxThreads = new Set<string>();
   private routes = new Map<string, Promise<void>>();
   private timer?: NodeJS.Timeout;
   constructor(private cfg: AutoCodexConfig, private stateFile: string, private deps: {
@@ -40,30 +41,44 @@ export class CodexAutoBridge {
     mkdirSync(dirname(stateFile), { recursive: true, mode: 0o700 });
     this.registry = existsSync(stateFile) ? JSON.parse(readFileSync(stateFile, 'utf8')) : { initialized: false, startedAt: Date.now(), baselines: {}, bindings: {} };
     for (const [key, b] of Object.entries(this.registry.bindings)) {
-      if (existsSync(b.rolloutPath)) this.observe(key, b);
+      if (existsSync(b.rolloutPath)) {
+        this.rememberOrigin(b.rolloutPath);
+        if (!this.isManaged(b)) this.observe(key, b);
+      }
       else this.deps.error(new Error(`Codex transcript unavailable for ${b.threadId}; other sessions remain active`));
     }
+  }
+  private rememberOrigin(path: string): void {
+    const first = JSON.parse(readFileSync(path, 'utf8').split('\n')[0]);
+    const originator = first.payload?.originator;
+    if (typeof originator === 'string' && /^botmux(?:-|$)/.test(originator)) {
+      this.botmuxThreads.add(first.payload.id);
+    }
+  }
+  private isManaged(b: AutoCodexBinding): boolean {
+    return this.botmuxThreads.has(b.threadId) || this.deps.excluded().has(b.threadId);
   }
   private save(): void { atomicWriteFileSync(this.stateFile, JSON.stringify(this.registry, null, 2), { mode: 0o600 }); }
   private key(home: string, id: string): string { return createHash('sha256').update(`${home}:${id}`).digest('hex'); }
   private observe(key: string, b: AutoCodexBinding, offset?: number): ExternalCodexBridge {
     const observer = new ExternalCodexBridge([b], join(dirname(this.stateFile), `${key}.json`), {
-      reply: (_, text, uuid) => this.deps.reply(b, text, uuid),
-      turn: (_, text, checkpoint) => this.deps.turn(b, text, checkpoint), error: this.deps.error,
+      reply: async (_, text, uuid) => { if (!this.isManaged(b)) await this.deps.reply(b, text, uuid); },
+      turn: async (_, text, checkpoint) => { if (!this.isManaged(b)) await this.deps.turn(b, text, checkpoint); }, error: this.deps.error,
     }, offset === undefined ? undefined : { [b.threadId]: offset }, this.registry.startedAt);
     this.observers.set(key, observer);
     return observer;
   }
   owns(root: string, app: string): boolean {
-    return Object.values(this.registry.bindings).some(b => b.rootMessageId === root && b.larkAppId === app);
+    return Object.values(this.registry.bindings).some(b => b.rootMessageId === root && b.larkAppId === app && !this.isManaged(b));
   }
   async receive(root: string, app: string, sender: string, messageId: string, text: string): Promise<boolean> {
-    const found = Object.entries(this.registry.bindings).find(([, b]) => b.rootMessageId === root && b.larkAppId === app);
+    const found = Object.entries(this.registry.bindings).find(([, b]) => b.rootMessageId === root && b.larkAppId === app && !this.isManaged(b));
     if (!found) return false;
     if (sender !== this.cfg.ownerOpenId) return true;
     const [key, source] = found;
     const previous = this.routes.get(key) ?? Promise.resolve();
     const operation = previous.catch(() => {}).then(async () => {
+      if (this.isManaged(source)) return;
       let targetKey = source.targetKey ?? key;
       if (source.readOnly && !source.targetKey) {
         const fork = await this.deps.fork(source);
@@ -74,7 +89,10 @@ export class CodexAutoBridge {
         this.save(); // Reuse this fork for every later reply, including restart.
         this.observe(targetKey, target);
       }
-      await this.observers.get(targetKey)!.receive(root, app, sender, messageId, text);
+      const target = this.registry.bindings[targetKey];
+      if (target && !this.isManaged(target)) {
+        await this.observers.get(targetKey)?.receive(root, app, sender, messageId, text);
+      }
     });
     this.routes.set(key, operation);
     try { await operation; } finally { if (this.routes.get(key) === operation) this.routes.delete(key); }
@@ -104,6 +122,9 @@ export class CodexAutoBridge {
     this.scanning = true;
     try {
       const excluded = this.deps.excluded();
+      for (const [key, b] of Object.entries(this.registry.bindings)) {
+        if (excluded.has(b.threadId) || this.botmuxThreads.has(b.threadId)) this.observers.delete(key);
+      }
       let changed = !this.registry.initialized;
       for (const home of this.cfg.codexHomes) for (const path of this.files(join(home, 'sessions'))) {
         const size = statSync(path).size;
@@ -119,6 +140,15 @@ export class CodexAutoBridge {
         try { meta = JSON.parse(firstLine); } catch { continue; }
         if (meta.type !== 'session_meta' || typeof meta.payload?.id !== 'string') continue;
         const id = meta.payload.id, key = this.key(home, id);
+        if (typeof meta.payload.originator === 'string' && /^botmux(?:-|$)/.test(meta.payload.originator)) {
+          this.botmuxThreads.add(id);
+        }
+        if (excluded.has(id) || this.botmuxThreads.has(id)) {
+          this.observers.delete(key);
+          baseline.offset = size;
+          changed = true;
+          continue;
+        }
         const priorBinding = this.registry.bindings[key];
         if (priorBinding && priorBinding.rolloutPath !== path && !excluded.has(id)) {
           priorBinding.rolloutPath = path;

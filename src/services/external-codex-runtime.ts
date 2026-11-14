@@ -12,11 +12,16 @@ import { submitToCodexOwner } from './codex-owner-ipc.js';
 
 export let externalCodexBridge: ExternalCodexBridge | CodexAutoBridge | undefined;
 
-export function startExternalCodexBridge(): void {
+export function startExternalCodexBridge(selfAppId: string): void {
   const configPath = join(homedir(), '.config/botmux/external-codex.json');
   if (!existsSync(configPath)) return;
   const cfg = JSON.parse(readFileSync(configPath, 'utf8'));
   if (cfg.enabled !== true) return;
+  // Exactly one bot daemon owns global discovery and its persisted registry.
+  // Other bots retain their native session hooks without observing this bridge.
+  const ownerApps = cfg.mode === 'auto' ? [cfg.larkAppId] : cfg.bindings?.map((b: ExternalCodexBinding) => b.larkAppId);
+  if (!ownerApps?.includes(selfAppId)) return;
+  if (ownerApps.some((app: string) => app !== selfAppId)) throw new Error('External Codex bindings must belong to one bot');
   if (cfg.mode === 'auto') {
     if (!Array.isArray(cfg.codexHomes) || !cfg.codexHomes.length || !cfg.larkAppId || !cfg.chatId || !cfg.ownerOpenId || !cfg.codexBin) throw new Error('Invalid automatic Codex bridge config');
     const auto = new CodexAutoBridge(cfg, join(homedir(), '.local/state/botmux/codex-auto/registry.json'), {

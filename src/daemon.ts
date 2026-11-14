@@ -4093,7 +4093,7 @@ export async function startDaemon(botIndex?: number): Promise<void> {
 
   // Restore active sessions from previous run
   await restoreActiveSessions(activeSessions);
-  try { startExternalCodexBridge(); }
+  try { startExternalCodexBridge(cfg.larkAppId); }
   catch (err) { logger.error(`[external-codex] bridge disabled: ${String(err)}`); }
 
   // Agent Team crash reconciliation：先恢复 session registry，再重放 queued 依赖节点

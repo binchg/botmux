@@ -60,3 +60,59 @@ it('forks an existing archive once, persists its reply mapping, and leaves the o
     expect(forks).toBe(1); expect(readFileSync(original, 'utf8')).toBe(before);
   } finally { rmSync(f.dir, { recursive: true, force: true }); }
 });
+
+it('skips botmux origins before their native session identity has been saved', async () => {
+  const f = fixture();
+  const topic = vi.fn(async (_b: { threadId: string }) => 'root'), reply = vi.fn(async () => {});
+  const bridge = new CodexAutoBridge(f.cfg, f.stateFile, {
+    topic, reply, turn: async () => {}, fork: async () => { throw new Error('unexpected fork'); },
+    excluded: () => new Set(), error: e => { throw e; },
+  });
+  try {
+    await bridge.scan();
+    const path = file(f.homes[1], 'native');
+    writeFileSync(path, JSON.stringify({ type: 'session_meta', payload: {
+      id: 'native', cwd: f.homes[1], originator: 'botmux-codex-app', source: 'vscode',
+    } }) + '\n' + done('native', 'already forwarded'));
+    file(f.homes[0], 'vscode', done('vscode', 'external reply'));
+    await bridge.scan();
+    await vi.waitFor(() => expect(reply).toHaveBeenCalledTimes(1));
+    expect(topic).toHaveBeenCalledTimes(1);
+    expect(topic.mock.calls[0][0].threadId).toBe('vscode');
+  } finally { bridge.stop(); rmSync(f.dir, { recursive: true, force: true }); }
+});
+
+it('stops forwarding and routing an existing binding when native botmux takes ownership, including restart', async () => {
+  const f = fixture(); const excluded = new Set<string>();
+  const reply = vi.fn(async () => {}), turn = vi.fn(async () => {});
+  const deps = {
+    topic: async () => 'root', reply, turn, fork: async () => { throw new Error('unexpected fork'); },
+    excluded: () => excluded, error: (e: unknown) => { throw e; },
+  };
+  try {
+    const bridge = new CodexAutoBridge(f.cfg, f.stateFile, deps);
+    await bridge.scan();
+    const path = file(f.homes[0], 'external', done('first', 'external reply'));
+    await bridge.scan();
+    await vi.waitFor(() => expect(reply).toHaveBeenCalledTimes(1));
+    excluded.add('external');
+    appendFileSync(path, done('second', 'native reply'));
+    await bridge.scan();
+    expect(bridge.owns('root', 'app')).toBe(false);
+    expect(await bridge.receive('root', 'app', 'owner', 'q', 'do not send')).toBe(false);
+    const restored = new CodexAutoBridge(f.cfg, f.stateFile, deps);
+    await restored.scan();
+    expect(restored.owns('root', 'app')).toBe(false);
+    expect(reply).toHaveBeenCalledTimes(1);
+    expect(turn).not.toHaveBeenCalled();
+    // Stale persisted bindings must also be filtered by origin without store IDs.
+    const lines = readFileSync(path, 'utf8').split('\n');
+    const meta = JSON.parse(lines[0]); meta.payload.originator = 'botmux-codex-app';
+    lines[0] = JSON.stringify(meta); writeFileSync(path, lines.join('\n'));
+    excluded.clear();
+    const byOrigin = new CodexAutoBridge(f.cfg, f.stateFile, deps);
+    await byOrigin.scan();
+    expect(byOrigin.owns('root', 'app')).toBe(false);
+    expect(reply).toHaveBeenCalledTimes(1);
+  } finally { rmSync(f.dir, { recursive: true, force: true }); }
+});
