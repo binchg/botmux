@@ -2,7 +2,7 @@ import { it, expect } from 'vitest';
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runExternalCodexTurn } from '../src/services/external-codex-runtime.js';
+import { runExternalCodexTurn, buildExternalCodexForwardCard } from '../src/services/external-codex-runtime.js';
 
 it('submits a Lark follow-up to the exact fork in the default library and waits for completion', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'external-codex-rpc-'));
@@ -30,4 +30,14 @@ rl.on('line', l => {
     expect(rows.find(r => r.m.method === 'turn/start').m.params.input).toEqual([{ type: 'text', text: 'follow-up' }]);
     expect(rows.some(r => r.m.method === 'thread/fork')).toBe(false);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+
+it('labels forwarding separately from execution and keeps the original assistant body', () => {
+  const text = 'VS Code 原始结果\n第二行保留';
+  const card = buildExternalCodexForwardCard({ threadId: 'main-session-123', rolloutPath: '', cwd: '/repo', chatId: 'chat', larkAppId: 'app', ownerOpenId: 'owner', rootMessageId: 'root' }, text);
+  const parsed = JSON.parse(card);
+  expect(parsed.header.title.content).toBe('原会话转发 · main-ses');
+  expect(card).toContain('VS Code 原始结果'); expect(card).toContain('第二行保留');
+  expect(card).not.toContain('fork 分支');
 });

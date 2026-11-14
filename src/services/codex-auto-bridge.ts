@@ -1,3 +1,4 @@
+import { readCodexTopicSource, isCodexSubagent, isCodexFork } from './codex-topic-source.js';
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, openSync, readSync, closeSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -10,6 +11,9 @@ export interface AutoCodexBinding extends ExternalCodexBinding {
   readOnly: boolean;
   sourceThreadId?: string;
   targetKey?: string;
+  firstUserMessage?: string;
+  /** Auto-discovered child-agent bindings are retained only as routing tombstones. */
+  suppressed?: boolean;
 }
 interface Baseline { offset: number; protected: boolean }
 interface Registry {
@@ -30,6 +34,7 @@ export class CodexAutoBridge {
   private observers = new Map<string, ExternalCodexBridge>();
   private scanning = false;
   private botmuxThreads = new Set<string>();
+  private subagentThreads = new Set<string>();
   private routes = new Map<string, Promise<void>>();
   private timer?: NodeJS.Timeout;
   constructor(private cfg: AutoCodexConfig, private stateFile: string, private deps: {
@@ -44,8 +49,9 @@ export class CodexAutoBridge {
     this.registry = existsSync(stateFile) ? JSON.parse(readFileSync(stateFile, 'utf8')) : { initialized: false, startedAt: Date.now(), baselines: {}, bindings: {} };
     for (const [key, b] of Object.entries(this.registry.bindings)) {
       if (existsSync(b.rolloutPath)) {
-        const meta = JSON.parse(readFileSync(b.rolloutPath, 'utf8').split('\n')[0]).payload;
+        const meta = readCodexTopicSource(b.rolloutPath).meta;
         if (typeof meta?.forked_from_id === 'string') b.sourceThreadId = meta.forked_from_id;
+        if (isCodexSubagent(meta)) { this.subagentThreads.add(b.threadId); b.suppressed = true; }
         this.rememberOrigin(b.rolloutPath);
         if (!this.isManaged(b)) this.observe(key, b);
       }
@@ -53,14 +59,14 @@ export class CodexAutoBridge {
     }
   }
   private rememberOrigin(path: string): void {
-    const first = JSON.parse(readFileSync(path, 'utf8').split('\n')[0]);
-    const originator = first.payload?.originator;
+    const meta = readCodexTopicSource(path).meta;
+    const originator = meta?.originator;
     if (typeof originator === 'string' && /^botmux(?:-|$)/.test(originator)) {
-      this.botmuxThreads.add(first.payload.id);
+      this.botmuxThreads.add(meta!.id);
     }
   }
   private isManaged(b: AutoCodexBinding): boolean {
-    return this.botmuxThreads.has(b.threadId) || this.deps.excluded().has(b.threadId);
+    return b.suppressed === true || this.subagentThreads.has(b.threadId) || this.botmuxThreads.has(b.threadId) || this.deps.excluded().has(b.threadId);
   }
   private save(): void { atomicWriteFileSync(this.stateFile, JSON.stringify(this.registry, null, 2), { mode: 0o600 }); }
   private key(home: string, id: string): string { return createHash('sha256').update(`${home}:${id}`).digest('hex'); }
@@ -76,8 +82,11 @@ export class CodexAutoBridge {
     return Object.values(this.registry.bindings).some(b => b.rootMessageId === root && b.larkAppId === app && !this.isManaged(b));
   }
   async receive(root: string, app: string, sender: string, messageId: string, text: string): Promise<boolean> {
-    const found = Object.entries(this.registry.bindings).find(([, b]) => b.rootMessageId === root && b.larkAppId === app && !this.isManaged(b));
+    const found = Object.entries(this.registry.bindings).find(([, b]) => b.rootMessageId === root && b.larkAppId === app);
     if (!found) return false;
+    // A recalled erroneous child topic must never fall through to a fresh bot session.
+    if (found[1].suppressed || this.subagentThreads.has(found[1].threadId)) return true;
+    if (this.isManaged(found[1])) return false;
     if (sender !== this.cfg.ownerOpenId) return true;
     const [key, source] = found;
     const previous = this.routes.get(key) ?? Promise.resolve();
@@ -121,7 +130,7 @@ export class CodexAutoBridge {
     try {
       const excluded = this.deps.excluded();
       for (const [key, b] of Object.entries(this.registry.bindings)) {
-        if (excluded.has(b.threadId) || this.botmuxThreads.has(b.threadId)) this.observers.delete(key);
+        if (this.isManaged(b)) this.observers.delete(key);
       }
       let changed = !this.registry.initialized;
       for (const home of this.cfg.codexHomes) for (const path of this.files(join(home, 'sessions'))) {
@@ -133,12 +142,26 @@ export class CodexAutoBridge {
           changed = true;
         }
         if (size <= baseline.offset) continue;
-        const firstLine = readFileSync(path, 'utf8').split('\n')[0];
-        let meta: any;
-        try { meta = JSON.parse(firstLine); } catch { continue; }
-        if (meta.type !== 'session_meta' || typeof meta.payload?.id !== 'string') continue;
-        const id = meta.payload.id, key = this.key(home, id);
-        if (typeof meta.payload.originator === 'string' && /^botmux(?:-|$)/.test(meta.payload.originator)) {
+        const source = readCodexTopicSource(path);
+        const meta = source.meta;
+        if (typeof meta?.id !== 'string') continue;
+        const id = meta.id, key = this.key(home, id);
+        if (isCodexSubagent(meta)) {
+          this.subagentThreads.add(id);
+          if (this.registry.bindings[key]) this.registry.bindings[key].suppressed = true;
+          this.observers.delete(key);
+          baseline.offset = size;
+          changed = true;
+          continue;
+        }
+        // Discover main conversations only. Existing explicit test-fork topics
+        // keep their own bindings; never rebind them to their parent.
+        if (isCodexFork(meta) && !this.registry.bindings[key]) {
+          baseline.offset = size;
+          changed = true;
+          continue;
+        }
+        if (typeof meta.originator === 'string' && /^botmux(?:-|$)/.test(meta.originator)) {
           this.botmuxThreads.add(id);
         }
         if (excluded.has(id) || this.botmuxThreads.has(id)) {
@@ -148,24 +171,33 @@ export class CodexAutoBridge {
           continue;
         }
         const priorBinding = this.registry.bindings[key];
+        // Imported copies in another library are the same conversation, not
+        // another task or another place to resume a model. Preserve the first binding.
+        const sameThread = Object.entries(this.registry.bindings).find(([other, b]) => other !== key && b.threadId === id && !this.isManaged(b));
+        if (!priorBinding && sameThread) {
+          baseline.offset = size; changed = true; continue;
+        }
         if (priorBinding && priorBinding.rolloutPath !== path && !excluded.has(id)) {
           priorBinding.rolloutPath = path;
           this.observe(key, priorBinding);
           changed = true;
         }
         if (!excluded.has(id) && !this.observers.has(key)) {
+          // A Hook/completion alone is never enough to create a topic.
+          if (!priorBinding && !source.firstUserMessage) continue;
           const candidate = {
-            threadId: id, rolloutPath: path, cwd: meta.payload.cwd, codexHome: home,
+            threadId: id, rolloutPath: path, cwd: meta.cwd, codexHome: home,
             larkAppId: this.cfg.larkAppId, chatId: this.cfg.chatId, ownerOpenId: this.cfg.ownerOpenId,
             readOnly: false,
-            ...(typeof meta.payload.forked_from_id === 'string' ? { sourceThreadId: meta.payload.forked_from_id } : {}),
+            ...(source.firstUserMessage ? { firstUserMessage: source.firstUserMessage } : {}),
+            ...(typeof meta.forked_from_id === 'string' ? { sourceThreadId: meta.forked_from_id } : {}),
           };
           if (typeof candidate.cwd !== 'string') continue;
           const rootMessageId = priorBinding?.rootMessageId ?? await this.deps.topic(candidate, key.slice(0, 32));
           const binding = { ...candidate, ...priorBinding, rolloutPath: path, rootMessageId };
           this.registry.bindings[key] = binding;
           this.save();
-          this.observe(key, binding, baseline.offset);
+          this.observe(key, binding, Math.max(baseline.offset, source.firstUserOffset ?? 0));
         }
         baseline.offset = size;
         changed = true;

@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, dirname, basename } from 'node:path';
+import { join, dirname } from 'node:path';
 import { spawn } from 'node:child_process';
 import { buildMarkdownCard } from '../im/lark/md-card.js';
 import { formatMathForLark } from './outbound-math.js';
@@ -27,10 +27,12 @@ export function startExternalCodexBridge(selfAppId: string): void {
   if (cfg.mode === 'auto') {
     if (!Array.isArray(cfg.codexHomes) || !cfg.codexHomes.length || !cfg.larkAppId || !cfg.chatId || !cfg.ownerOpenId || !cfg.codexBin) throw new Error('Invalid automatic Codex bridge config');
     const auto = new CodexAutoBridge(cfg, join(homedir(), '.local/state/botmux/codex-auto/registry.json'), {
-      topic: (b, uuid) => sendMessage(b.larkAppId, b.chatId,
-        `Codex · ${basename(b.cwd)} · ${b.sourceThreadId ? 'fork 分支' : '原会话'} · ${b.threadId.slice(0, 8)}\n此话题自动同步该会话的新回复，可直接追问。\n追问直接续用此话题绑定的会话，不自动创建 fork。`, 'text', uuid),
+      topic: (b, uuid) => {
+        if (!b.firstUserMessage) throw new Error('Automatic topic requires the original user message');
+        return sendMessage(b.larkAppId, b.chatId, b.firstUserMessage, 'text', uuid);
+      },
       reply: async (b, text, uuid) => replyMessage(b.larkAppId, b.rootMessageId,
-        buildMarkdownCard(formatMathForLark(text)), 'interactive', true, uuid),
+        buildExternalCodexForwardCard(b, text), 'interactive', true, uuid),
       turn: (b, text, checkpoint) => runExternalCodexTurn(cfg.codexBin, b.codexHome, b, text, checkpoint),
       excluded: () => collectBotmuxSessionIdentities() ?? new Set(),
       error: e => logger.error(`[codex-auto] ${String(e)}`),
@@ -49,12 +51,19 @@ export function startExternalCodexBridge(selfAppId: string): void {
   mkdirSync(dirname(statePath), { recursive: true, mode: 0o700 });
   externalCodexBridge = new ExternalCodexBridge(cfg.bindings, statePath, {
     reply: async (b, text, uuid) => replyMessage(b.larkAppId, b.rootMessageId,
-        buildMarkdownCard(formatMathForLark(text)), 'interactive', true, uuid),
+        buildExternalCodexForwardCard(b, text), 'interactive', true, uuid),
     turn: (b, text, checkpoint) => runExternalCodexTurn(cfg.codexBin, cfg.codexHome, b, text, checkpoint),
     error: e => logger.error(`[external-codex] ${String(e)}`),
   });
   externalCodexBridge.start();
   logger.info(`[external-codex] observing ${cfg.bindings.length} explicitly bound thread(s)`);
+}
+
+/** Source provenance is card metadata; the mirrored assistant body is unchanged. */
+export function buildExternalCodexForwardCard(binding: ExternalCodexBinding, text: string): string {
+  const card = JSON.parse(buildMarkdownCard(formatMathForLark(text)));
+  card.header = { template: 'blue', title: { tag: 'plain_text', content: `原会话转发 · ${binding.threadId.slice(0, 8)}` } };
+  return JSON.stringify(card);
 }
 
 export async function forkExternalCodexThread(binary: string, b: AutoCodexBinding): Promise<{ threadId: string; rolloutPath: string }> {

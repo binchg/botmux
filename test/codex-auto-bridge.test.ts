@@ -2,13 +2,14 @@ import { it, expect, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { createHash } from 'node:crypto';
 import { CodexAutoBridge } from '../src/services/codex-auto-bridge.js';
 
 const done = (id: string, text: string, timestamp = new Date().toISOString()) => JSON.stringify({ timestamp, type: 'event_msg', payload: { type: 'task_complete', turn_id: id, last_agent_message: text } }) + '\n';
 function file(home: string, id: string, body = '') {
   mkdirSync(join(home, 'sessions'), { recursive: true });
   const path = join(home, 'sessions', `rollout-${id}.jsonl`);
-  writeFileSync(path, JSON.stringify({ type: 'session_meta', payload: { id, cwd: home } }) + '\n' + body);
+  writeFileSync(path, JSON.stringify({ type: 'session_meta', payload: { id, cwd: home } }) + '\n' + JSON.stringify({ type: 'event_msg', payload: { type: 'user_message', message: `Original user input ${id}` } }) + '\n' + body);
   return path;
 }
 function fixture() {
@@ -123,4 +124,73 @@ it('stops forwarding and routing an existing binding when native botmux takes ow
     expect(byOrigin.owns('root', 'app')).toBe(false);
     expect(reply).toHaveBeenCalledTimes(1);
   } finally { rmSync(f.dir, { recursive: true, force: true }); }
+});
+
+
+it('creates topics from the exact original user message, never assistant-only or environment rows', async () => {
+  const f = fixture(); const topic = vi.fn(async () => 'root'); const turn = vi.fn(async () => {}); const reply = vi.fn(async () => {});
+  const bridge = new CodexAutoBridge(f.cfg, f.stateFile, { topic, turn, reply, excluded: () => new Set(), error: e => { throw e; } });
+  try {
+    await bridge.scan();
+    const path = file(f.homes[0], 'main');
+    const meta = readFileSync(path, 'utf8').split('\n')[0];
+    writeFileSync(path, meta + '\n' + JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '<environment_context>not a prompt</environment_context>' }] } }) + '\n' + done('hook', 'assistant Hook output'));
+    await bridge.scan(); expect(topic).not.toHaveBeenCalled();
+    const input = '  测试会话，从 vscode 原样同步。\n保留换行、空格和 /media/ubuntu 路径。\n';
+    appendFileSync(path, JSON.stringify({ type: 'event_msg', payload: { type: 'user_message', message: input } }) + '\n');
+    await bridge.scan(); expect(topic).toHaveBeenCalledTimes(1); expect(topic.mock.calls[0][0].firstUserMessage).toBe(input);
+    expect(reply).not.toHaveBeenCalled(); expect(turn).not.toHaveBeenCalled();
+  } finally { bridge.stop(); rmSync(f.dir, { recursive: true, force: true }); }
+});
+
+it('filters native subagents and newly discovered forks; main scans only forward and never invoke Codex', async () => {
+  const f = fixture(); const topic = vi.fn(async b => 'root-' + b.threadId), turn = vi.fn(async () => {}), reply = vi.fn(async () => {}), fork = vi.fn();
+  const deps = { topic, turn, reply, fork, excluded: () => new Set<string>(), error: e => { throw e; } };
+  const bridge = new CodexAutoBridge(f.cfg, f.stateFile, deps);
+  try {
+    await bridge.scan();
+    file(f.homes[0], 'main', done('main-turn', 'VS Code main result'));
+    const child = file(f.homes[0], 'child', done('child-turn', 'different internal subagent result'));
+    const lines = readFileSync(child, 'utf8').split('\n'); const m = JSON.parse(lines[0]); m.payload.forked_from_id = 'main'; m.payload.source = { subagent: { thread_spawn: { parent_thread_id: 'main' } } }; lines[0] = JSON.stringify(m); writeFileSync(child, lines.join('\n'));
+    const forked = file(f.homes[0], 'branch', done('fork-turn', 'fork result'));
+    const branch = readFileSync(forked, 'utf8').split('\n'); const fm = JSON.parse(branch[0]); fm.payload.forked_from_id = 'main'; branch[0] = JSON.stringify(fm); writeFileSync(forked, branch.join('\n'));
+    await bridge.scan(); await vi.waitFor(() => expect(reply).toHaveBeenCalledTimes(1));
+    expect(topic).toHaveBeenCalledTimes(1); expect(topic.mock.calls[0][0].threadId).toBe('main'); expect(reply.mock.calls[0][1]).toBe('VS Code main result');
+    expect(turn).not.toHaveBeenCalled(); expect(fork).not.toHaveBeenCalled();
+    // A previously leaked child topic becomes a tombstone, including after restart.
+    const saved = JSON.parse(readFileSync(f.stateFile, 'utf8')); saved.bindings.leaked = { ...Object.values(saved.bindings)[0], threadId: 'child', rolloutPath: child, rootMessageId: 'leaked-root' }; writeFileSync(f.stateFile, JSON.stringify(saved));
+    const restored = new CodexAutoBridge(f.cfg, f.stateFile, deps); await restored.scan();
+    expect(restored.owns('leaked-root', 'app')).toBe(false);
+    expect(await restored.receive('leaked-root', 'app', 'owner', 'duplicate', 'do not start work')).toBe(true);
+    expect(turn).not.toHaveBeenCalled(); expect(topic).toHaveBeenCalledTimes(1);
+  } finally { bridge.stop(); rmSync(f.dir, { recursive: true, force: true }); }
+});
+
+
+it('deduplicates the same thread copied across Codex libraries without starting work', async () => {
+  const f = fixture(); const topic = vi.fn(async () => 'root'), reply = vi.fn(async () => {}), turn = vi.fn(async () => {});
+  const bridge = new CodexAutoBridge(f.cfg, f.stateFile, { topic, reply, turn, excluded: () => new Set(), error: e => { throw e; } });
+  try {
+    await bridge.scan(); file(f.homes[0], 'same-thread', done('turn', 'one result')); file(f.homes[1], 'same-thread', done('turn', 'one result'));
+    await bridge.scan(); await vi.waitFor(() => expect(reply).toHaveBeenCalledTimes(1));
+    expect(topic).toHaveBeenCalledTimes(1); expect(turn).not.toHaveBeenCalled();
+    await bridge.scan(); expect(topic).toHaveBeenCalledTimes(1); expect(Object.keys(JSON.parse(readFileSync(f.stateFile, 'utf8')).bindings)).toHaveLength(1);
+  } finally { bridge.stop(); rmSync(f.dir, { recursive: true, force: true }); }
+});
+
+
+it('preserves an explicitly bound existing test fork and deduplicates repeated follow-up IDs', async () => {
+  const f = fixture(); let turns = 0; const forkPath = file(f.homes[0], 'explicit-test');
+  const lines = readFileSync(forkPath, 'utf8').split('\n'); const meta = JSON.parse(lines[0]); meta.payload.forked_from_id = 'original'; meta.payload.source = 'vscode'; lines[0] = JSON.stringify(meta); writeFileSync(forkPath, lines.join('\n'));
+  const key = createHash('sha256').update(`${f.homes[0]}:explicit-test`).digest('hex');
+  mkdirSync(join(f.dir, 'state'), { recursive: true });
+  writeFileSync(f.stateFile, JSON.stringify({ initialized: true, startedAt: Date.now(), baselines: {}, bindings: { [key]: { threadId: 'explicit-test', rolloutPath: forkPath, cwd: f.homes[0], codexHome: f.homes[0], larkAppId: 'app', chatId: 'chat', ownerOpenId: 'owner', rootMessageId: 'explicit-root', readOnly: false } } }));
+  const topic = vi.fn(async () => 'unexpected');
+  const bridge = new CodexAutoBridge(f.cfg, f.stateFile, { topic, reply: async () => {}, turn: async (b, text, checkpoint) => { expect(b.threadId).toBe('explicit-test'); expect(text).toBe('exact user input'); checkpoint(); turns++; }, excluded: () => new Set(), error: e => { throw e; } });
+  try {
+    expect(await bridge.receive('explicit-root', 'app', 'owner', 'message-1', 'exact user input')).toBe(true);
+    await bridge.receive('explicit-root', 'app', 'owner', 'message-1', 'exact user input');
+    await bridge.scan(); await vi.waitFor(() => expect(turns).toBe(1));
+    expect(topic).not.toHaveBeenCalled(); expect(JSON.parse(readFileSync(f.stateFile, 'utf8')).bindings[key].threadId).toBe('explicit-test');
+  } finally { bridge.stop(); rmSync(f.dir, { recursive: true, force: true }); }
 });
