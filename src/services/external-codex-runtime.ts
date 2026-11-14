@@ -3,8 +3,8 @@ import { homedir } from 'node:os';
 import { join, dirname, basename } from 'node:path';
 import { spawn } from 'node:child_process';
 import { buildMarkdownCard } from '../im/lark/md-card.js';
-import { renderMathBlockImages } from './outbound-math.js';
-import { replyMessage, sendMessage, uploadImage } from '../im/lark/client.js';
+import { formatMathForLark } from './outbound-math.js';
+import { replyMessage, sendMessage } from '../im/lark/client.js';
 import { logger } from '../utils/logger.js';
 import { ExternalCodexBridge, type ExternalCodexBinding } from './external-codex-bridge.js';
 import { CodexAutoBridge, type AutoCodexBinding } from './codex-auto-bridge.js';
@@ -30,7 +30,7 @@ export function startExternalCodexBridge(selfAppId: string): void {
       topic: (b, uuid) => sendMessage(b.larkAppId, b.chatId,
         `Codex · ${basename(b.cwd)} · ${b.sourceThreadId ? 'fork 分支' : '原会话'} · ${b.threadId.slice(0, 8)}\n此话题自动同步该会话的新回复，可直接追问。\n追问直接续用此话题绑定的会话，不自动创建 fork。`, 'text', uuid),
       reply: async (b, text, uuid) => replyMessage(b.larkAppId, b.rootMessageId,
-        buildMarkdownCard(await renderMathBlockImages(text, path => uploadImage(b.larkAppId, path))), 'interactive', true, uuid),
+        buildMarkdownCard(formatMathForLark(text)), 'interactive', true, uuid),
       turn: (b, text, checkpoint) => runExternalCodexTurn(cfg.codexBin, b.codexHome, b, text, checkpoint),
       excluded: () => collectBotmuxSessionIdentities() ?? new Set(),
       error: e => logger.error(`[codex-auto] ${String(e)}`),
@@ -49,7 +49,7 @@ export function startExternalCodexBridge(selfAppId: string): void {
   mkdirSync(dirname(statePath), { recursive: true, mode: 0o700 });
   externalCodexBridge = new ExternalCodexBridge(cfg.bindings, statePath, {
     reply: async (b, text, uuid) => replyMessage(b.larkAppId, b.rootMessageId,
-        buildMarkdownCard(await renderMathBlockImages(text, path => uploadImage(b.larkAppId, path))), 'interactive', true, uuid),
+        buildMarkdownCard(formatMathForLark(text)), 'interactive', true, uuid),
     turn: (b, text, checkpoint) => runExternalCodexTurn(cfg.codexBin, cfg.codexHome, b, text, checkpoint),
     error: e => logger.error(`[external-codex] ${String(e)}`),
   });

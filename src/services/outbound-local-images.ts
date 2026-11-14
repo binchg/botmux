@@ -1,4 +1,4 @@
-import { renderMathBlockImages } from './outbound-math.js';
+import { formatMathForLark } from './outbound-math.js';
 import { realpathSync, statSync } from 'node:fs';
 import { extname, isAbsolute, relative, sep } from 'node:path';
 
@@ -143,7 +143,7 @@ export async function resolveOutboundLocalImages(
   input: string,
   opts: ResolveOutboundLocalImagesOptions,
 ): Promise<ResolvedOutboundLocalImages> {
-  input = await renderMathBlockImages(input, opts.upload);
+  input = formatMathForLark(input);
   const prepared = prepareOutboundLocalImages(input, opts);
   if (prepared.paths.length === 0) {
     return {

@@ -15,10 +15,8 @@ Every conversation turn produces a live-updating Lark card, your primary window 
 ### Math formulas
 
 Replies support `$...$`, `$$...$$`, `\(...\)`, and `\[...\]`.
-Formula-bearing paragraphs, lists, or tables are typeset locally with KaTeX and
-uploaded as 2× resolution images; other blocks remain native rich text. Code
-and currency are preserved. Invalid TeX, missing browsers, or upload failures
-leave the original source intact. Text in images cannot be selected and images
-do not follow the client's dark theme, so this differs from VS Code rendering.
-Install Chromium with `node node_modules/playwright/cli.js install chromium`,
-or set `BOTMUX_CHROMIUM_PATH`. Typesetting does not fetch external resources.
+Formulas become copyable Unicode symbols and linear subscript/superscript notation,
+for example `M_B = ∑_(j∈B) a_j x_j`. Inline math uses inline code; standalone math
+uses text code blocks. Prose, lists, and tables remain native rich text.
+Unsupported formulas retain copyable LaTeX source. Code and currency stay unchanged.
+No formula images or Chromium are required. Linear text does not provide 2D fraction layout.

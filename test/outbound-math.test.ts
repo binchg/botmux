@@ -1,46 +1,59 @@
 import { describe, it, expect, vi } from 'vitest';
-import { readFileSync, copyFileSync } from 'node:fs';
-import { mathBlocks, renderMathBlockImages } from '../src/services/outbound-math.js';
+import { formatMathForLark, mathToText } from '../src/services/outbound-math.js';
+import { resolveOutboundLocalImages } from '../src/services/outbound-local-images.js';
+import { buildMarkdownCard } from '../src/im/lark/md-card.js';
 
-describe('outbound mathematical rich text', () => {
-  it('recognizes all four math delimiters, lists, tables and display equations', () => {
-    for (const source of [String.raw`源 $M_B$`, String.raw`源 \(M_B\)`, String.raw`$$\sum_i x_i$$`, String.raw`\[\frac{a}{b}\]`, '- 源 $M_B$', '| 项 | 值 |\n|---|---|\n| 聚合 | $x_i$ |']) {
-      const blocks = mathBlocks(source);
-      expect(blocks).toHaveLength(1);
-      expect(blocks[0].html).toContain('class="katex');
+describe('copyable mathematical rich text', () => {
+  it('renders all delimiters as text, with display math in copyable code blocks', () => {
+    for (const source of [String.raw`源 $M_B$`, String.raw`源 \(M_B\)`]) {
+      expect(formatMathForLark(source)).toBe('源 ` M_B `');
     }
-    expect(mathBlocks('$$\n\\sum_i x_i\n$$')[0].html).toContain('katex-display');
+    expect(formatMathForLark('$$\n\\sum_i x_i\n$$')).toBe('```text\n∑_i x_i\n```');
+    expect(formatMathForLark(String.raw`\[\frac{a+b}{c}\]`)).toBe('```text\n(a + b)/(c)\n```');
+    expect(formatMathForLark(String.raw`结果 $$x_i$$。`)).toBe('结果 ` x_i `。');
   });
-  it('leaves code, currency, escaped dollars, and incomplete or invalid TeX intact', () => {
-    for (const source of ['`$x_i$`', '```tex\n$x_i$\n```', '    $x_i$', '$20 and $30', String.raw`\$20`, '$x_i', String.raw`$\notARealCommand{x}$`]) {
-      expect(mathBlocks(source)).toEqual([]);
+  it('preserves fraction grouping, bounds, roots, greek letters, and matrix rows', () => {
+    expect(mathToText(String.raw`\frac{a+b}{c+d}`)).toBe('(a + b)/(c + d)');
+    expect(mathToText(String.raw`\sum_{j\in B}^{N} a_j x_j`)).toBe('∑_(j ∈ B)^N a_j x_j');
+    expect(mathToText(String.raw`\sqrt{x+1}+\alpha`)).toBe('√(x + 1) + α');
+    expect(mathToText(String.raw`\begin{pmatrix}a&b\\c&d\end{pmatrix}`)).toContain('[a, b; c, d]');
+    expect(mathToText(String.raw`\frac{x}{y}^2`)).toBe('((x)/(y))^2');
+    expect(mathToText(String.raw`{a+b}^2`)).toBe('(a + b)^2');
+    expect(mathToText(String.raw`\mathbf{J}`)).toBe('𝐉');
+    expect(mathToText(String.raw`L_T^{direct}`)).toBe('L_T^(direct)');
+    expect(mathToText(String.raw`Z_{ij}`)).toBe('Z_(ij)');
+  });
+  it('protects fenced and indented code, variable-length inline code, currency and escaped dollars', () => {
+    for (const source of ['`$x_i$`', '`` `$x$` ``', '```tex\n$x_i$\n```', '~~~tex\n\\[x\\]\n~~~', '    $x_i$', '$20 and $30', String.raw`\$20`, '$x_i', 'hello `world`']) {
+      expect(formatMathForLark(source)).toBe(source);
     }
-    expect(mathBlocks('before\n\n`$code$`\n\n$x_i$')).toHaveLength(1);
+    expect(formatMathForLark('`$code$`\n\n$x_i$')).toBe('`$code$`\n\n` x_i `');
+    for (const source of ['[download](./$a$/file)', 'https://example.com/$a$/file', '[link](https://example.com/$a$)']) expect(formatMathForLark(source)).toBe(source);
   });
-  it('escapes model HTML and never enables trusted KaTeX commands', () => {
-    const html = mathBlocks('<script>alert(1)</script> $x_i$')[0].html;
-    expect(html).toContain('&lt;script&gt;');
-    expect(html).not.toContain('<script>');
+  it('preserves surrounding prose, bold, links, lists and native tables', () => {
+    const source = '**源** $M_B$ [文档](https://example.com)\n\n- 目标 $x_i$\n\n| 项 | 值 |\n|---|---|\n| 聚合 | $x_i$ |';
+    const text = formatMathForLark(source);
+    expect(text).toContain('**源** ` M_B ` [文档](https://example.com)');
+    expect(text).toContain('- 目标 ` x_i `');
+    const card = JSON.parse(buildMarkdownCard(text));
+    expect(card.body.elements.some((e: any) => e.tag === 'table')).toBe(true);
+    expect(JSON.stringify(card)).not.toContain('img_v');
   });
-  it('preserves ordinary text without launching or uploading', async () => {
+  it('keeps invalid TeX readable and copyable rather than discarding it', () => {
+    expect(formatMathForLark(String.raw`结果 $\notARealCommand{x}$。`)).toBe('结果 ` \\notARealCommand{x} `。');
+    const dangerous = formatMathForLark(String.raw`$\text{<script>alert(1)</script>}$`);
+    expect(dangerous).toContain('` <script>alert(1)</script> `');
+    expect(formatMathForLark(dangerous)).toBe(dangerous);
+    expect(formatMathForLark(String.raw`$\hat{x}$`)).toBe('` \\hat{x} `');
+    expect(formatMathForLark(String.raw`$\underbrace{x}_{\text{source}}$`)).toBe('` \\underbrace{x}_{\\text{source}} `');
+  });
+  it('does not upload formula images and still supports explicit user images', async () => {
     const upload = vi.fn();
-    expect(await renderMathBlockImages('hello `world`', upload)).toBe('hello `world`');
+    const result = await resolveOutboundLocalImages('源 $M_B$，权重 $\\alpha_i$。', { roots: [], upload });
+    expect(result.content).toContain('` M_B `');
+    expect(result.content).toContain('α_i');
+    expect(result.imageKeys).toEqual([]);
+    expect(result.discovered).toBe(0);
     expect(upload).not.toHaveBeenCalled();
   });
-  it('renders a real high-resolution PNG and falls back on failed uploads', async () => {
-    const source = '# Source cluster attention 聚合\n\n源簇将 RWG 系数聚合为 $M_B=\\sum_i x_i f_i$。\n\n[文档](https://example.com)';
-    const upload = vi.fn(async (path: string) => {
-      const bytes = readFileSync(path);
-      expect(bytes.subarray(1, 4).toString()).toBe('PNG');
-      expect(bytes.readUInt32BE(16)).toBeGreaterThan(1000);
-      if (process.env.BOTMUX_MATH_PREVIEW) copyFileSync(path, process.env.BOTMUX_MATH_PREVIEW);
-      return 'img_v3_math_test';
-    });
-    const rendered = await renderMathBlockImages(source, upload);
-    expect(upload).toHaveBeenCalledOnce();
-    expect(rendered).toContain('![公式排版](img_v3_math_test)');
-    expect(rendered).toContain('[文档](https://example.com)');
-    expect(rendered).toContain('# Source cluster attention 聚合');
-    expect(await renderMathBlockImages(source, async () => { throw new Error('offline'); })).toBe(source);
-  }, 30000);
 });

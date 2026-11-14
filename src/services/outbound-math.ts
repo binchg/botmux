@@ -1,111 +1,131 @@
-/** Local KaTeX layout for formula-bearing blocks; ordinary prose stays native. */
+/** Copyable mathematical text for card clients without a TeX renderer. */
 import MarkdownIt from 'markdown-it';
 import katex from 'katex';
-import { createRequire } from 'node:module';
-import { readFileSync, mkdtempSync, rmSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { tmpdir } from 'node:os';
-import { chromium } from 'playwright';
 
-const require = createRequire(import.meta.url);
-const parser = new MarkdownIt({ html: false, breaks: true });
-const escaped = (s: string, i: number) => {
-  let n = 0;
-  while (i > 0 && s[--i] === '\\') n++;
-  return n % 2 === 1;
-};
-
-// Before CommonMark escape handling, so \(...\) survives intact. Code spans
-// and fences are consumed by their own parser rules and never interpreted.
-parser.inline.ruler.before('escape', 'math', (state, silent) => {
-  const start = state.pos;
-  const src = state.src;
-  const open = src.startsWith('\\(', start) ? '\\(' : src.startsWith('\\[', start) ? '\\[' : src.startsWith('$$', start) ? '$$' : src[start] === '$' ? '$' : '';
-  if (!open || escaped(src, start)) return false;
-  const close = open === '\\(' ? '\\)' : open === '\\[' ? '\\]' : open;
-  const from = start + open.length;
-  if (open === '$' && /\s/.test(src[from] ?? ' ')) return false;
-  let end = src.indexOf(close, from);
-  while (end >= 0 && escaped(src, end)) end = src.indexOf(close, end + close.length);
-  if (end < 0 || end === from) return false;
-  if (open === '$' && (/\s/.test(src[end - 1]) || /\d/.test(src[end + 1] ?? '') || src.slice(from, end).includes('\n'))) return false;
-  const tex = src.slice(from, end);
-  // Currency pairs like "$20 and $30" are not equations.
-  if (open === '$' && /^\d[\d.,]*(?:\s+[A-Za-z]+)*$/.test(tex)) return false;
-  if (!silent) {
-    const token = state.push('math', '', 0);
-    token.content = tex;
-    token.markup = open;
-  }
-  state.pos = end + close.length;
-  return true;
-});
-parser.renderer.rules.math = (tokens, idx) => katex.renderToString(tokens[idx].content, {
-  displayMode: ['$$', '\\['].includes(tokens[idx].markup),
-  throwOnError: true, trust: false, maxExpand: 1000, maxSize: 20,
+const parser = new MarkdownIt({ html: false });
+interface MathNode { tag: string; variant?: string; children: Array<MathNode | string> }
+const decode = (s: string) => s.replace(/&(#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos|nbsp);/gi, (_m, e: string) => {
+  if (e.startsWith('#')) return String.fromCodePoint(parseInt(e.slice(e[1] === 'x' ? 2 : 1), e[1] === 'x' ? 16 : 10));
+  return ({ amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' } as Record<string, string>)[e] ?? _m;
 });
 
-export interface MathBlock { start: number; end: number; source: string; html: string }
-/** Top-level source ranges preserve lists/tables around inline formulae. */
-export function mathBlocks(input: string): MathBlock[] {
-  const tokens = parser.parse(input, {});
-  const lines = input.split('\n');
-  const blocks: MathBlock[] = [];
-  for (let i = 0; i < tokens.length; i++) {
-    const token = tokens[i];
-    if (token.level !== 0 || !token.map || token.nesting === -1 || ['fence', 'code_block'].includes(token.type)) continue;
-    let j = i + 1;
-    if (token.nesting === 1) while (j < tokens.length && !(tokens[j].level === 0 && tokens[j].nesting === -1)) j++;
-    const inner = tokens.slice(i, j + 1);
-    if (!inner.some(t => t.children?.some(c => c.type === 'math'))) continue;
-    const [start, end] = token.map;
-    const source = lines.slice(start, end).join('\n');
-    // Bad/unsupported TeX leaves the entire original block readable.
-    try { blocks.push({ start, end, source, html: parser.render(source) }); } catch { /* keep source */ }
-    i = j;
+function plainMath(node: MathNode | string): string {
+  if (typeof node === 'string') return decode(node);
+  if (node.tag === 'annotation') return '';
+  const parts = node.children.map(plainMath);
+  const base = (parts[0] ?? '').trim();
+  const group = (s: string) => [...s].length === 1 ? s : `(${s})`;
+  const first = node.children[0];
+  const scriptBase = typeof first !== 'string' && first &&
+    (first.tag === 'mfrac' || (first.tag === 'mrow' && first.children.length > 1)) ? `(${base})` : base;
+  if (node.variant && !['normal', 'italic'].includes(node.variant)) {
+    if (node.variant !== 'bold' || !/^[A-Za-z0-9]+$/.test(parts.join(''))) throw new Error('Keep styled TeX source');
+    return [...parts.join('')].map(c => String.fromCodePoint(c.charCodeAt(0) + (/[A-Z]/.test(c) ? 0x1d400 - 65 : /[a-z]/.test(c) ? 0x1d41a - 97 : 0x1d7ce - 48))).join('');
   }
-  return blocks;
+  switch (node.tag) {
+    case 'mfrac': return `(${base})/(${parts[1] ?? ''})`;
+    case 'msqrt': return `√(${parts.join('')})`;
+    case 'mroot': return `root(${parts[1]}, ${base})`;
+    case 'msub': case 'munder': return `${scriptBase}_${group((parts[1] ?? '').trim())}`;
+    case 'msup': return `${scriptBase}^${group((parts[1] ?? '').trim())}`;
+    case 'msubsup': case 'munderover': return `${scriptBase}_${group((parts[1] ?? '').trim())}^${group((parts[2] ?? '').trim())}`;
+    case 'mover': throw new Error('Keep accent TeX source');
+    case 'mtable': return `[${parts.join('; ')}]`;
+    case 'mtr': return parts.join(', ');
+    case 'mspace': return ' ';
+    case 'mo': return ` ${parts.join('')} `;
+    default: return parts.map((part, i) => {
+      const previous = node.children[i - 1], current = node.children[i];
+      // TeX's unbraced words/indices arrive as consecutive identifier nodes.
+      const identifiers = previous && typeof previous !== 'string' && typeof current !== 'string' && previous.tag === 'mi' && current.tag === 'mi';
+      return (i && !identifiers ? ' ' : '') + part;
+    }).join('');
+  }
 }
 
-export async function renderMathBlockImages(input: string, upload: (path: string) => Promise<string>): Promise<string> {
+/** KaTeX supplies symbol/structure semantics; no browser, files, or images. */
+export function mathToText(tex: string): string {
+  if (/\\(?:underbrace|overbrace|underbracket|overbracket)\b/.test(tex)) throw new Error('Keep brace annotations as TeX source');
+  const xml = katex.renderToString(tex, { output: 'mathml', throwOnError: true, trust: false, strict: 'ignore', maxExpand: 1000, maxSize: 20 });
+  const root: MathNode = { tag: 'root', children: [] };
+  const stack = [root];
+  for (const token of xml.match(/<[^>]*>|[^<]+/g) ?? []) {
+    if (token.startsWith('</')) { stack.pop(); continue; }
+    if (token.startsWith('<')) {
+      const tag = token.match(/^<([\w-]+)/)?.[1];
+      if (!tag) continue;
+      if (/accentunder="true"/.test(token) || ['menclose', 'mphantom', 'mpadded', 'maction'].includes(tag)) throw new Error('Keep complex TeX source');
+      const node: MathNode = { tag, variant: token.match(/mathvariant="([^"]+)"/)?.[1], children: [] };
+      stack[stack.length - 1].children.push(node);
+      if (!token.endsWith('/>')) stack.push(node);
+    } else stack[stack.length - 1].children.push(token);
+  }
+  return plainMath(root).replace(/[\u2061\u2062\u200b]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function code(text: string): string {
+  const longest = Math.max(0, ...(text.match(/`+/g) ?? []).map(s => s.length));
+  const fence = '`'.repeat(longest + 1);
+  return `${fence} ${text} ${fence}`;
+}
+
+/** Preserve Markdown source byte-for-byte outside formula spans. */
+export function formatMathForLark(input: string): string {
   if (!/\$|\\[([]/.test(input)) return input;
-  const blocks = mathBlocks(input);
-  if (!blocks.length) return input;
-  const dir = mkdtempSync(join(tmpdir(), 'botmux-math-'));
-  let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
-  try {
-    browser = await chromium.launch({ headless: true, timeout: 15000,
-      ...(process.env.BOTMUX_CHROMIUM_PATH ? { executablePath: process.env.BOTMUX_CHROMIUM_PATH } : {}) });
-    const page = await browser.newPage({ viewport: { width: 600, height: 600 }, deviceScaleFactor: 2 });
-    // No external URLs from model output are fetched; font assets are embedded.
-    await page.route('**/*', route => route.abort());
-    const root = dirname(require.resolve('katex/package.json'));
-    const css = readFileSync(join(root, 'dist/katex.min.css'), 'utf8').replace(/url\(([^)]+)\)/g, (_m, name: string) => {
-      const path = name.replace(/['"]/g, '');
-      return `url(data:font/woff2;base64,${readFileSync(join(root, 'dist', path)).toString('base64')})`;
-    });
-    const lines = input.split('\n');
-    // Reverse replacement keeps line positions stable. Uploads stay bot-scoped.
-    for (const block of [...blocks].reverse()) {
-      try {
-        await page.setContent(`<meta charset="utf-8"><style>${css}
-body{margin:0;background:white;color:#202124;font:22px/1.65 sans-serif}article{padding:14px 20px;width:560px;box-sizing:border-box;overflow-wrap:anywhere}p{margin:0 0 10px}.katex-display{overflow:visible}table{border-collapse:collapse}td,th{border:1px solid #ddd;padding:8px}pre,code{font-family:monospace}a{color:#2767bd}</style><article>${block.html}</article>`, { timeout: 10000 });
-        await page.evaluate(() => document.fonts.ready);
-        const article = page.locator('article');
-        const size = await article.boundingBox();
-        if (!size || size.height > 8000) continue;
-        // Include wide equations rather than silently clipping them.
-        const width = await article.evaluate(el => el.scrollWidth);
-        if (width > 2000) continue;
-        if (width > 560) await article.evaluate((el, w) => { (el as HTMLElement).style.width = `${w}px`; }, width);
-        const file = join(dir, `${block.start}.png`);
-        await article.screenshot({ path: file, timeout: 10000 });
-        const key = await upload(file);
-        if (!/^img_v\d+_[A-Za-z0-9_-]+$/.test(key)) continue;
-        lines.splice(block.start, block.end - block.start, `\n![公式排版](${key})\n`);
-      } catch { /* Rendering or upload failure must not drop the answer. */ }
+  const lines = input.split('\n');
+  const offsets = [0];
+  for (const line of lines) offsets.push(offsets[offsets.length - 1] + line.length + 1);
+  const protectedRanges = parser.parse(input, {}).filter(t => ['fence', 'code_block', 'html_block'].includes(t.type) && t.map)
+    .map(t => [offsets[t.map![0]], offsets[t.map![1]]] as const);
+  let result = '', from = 0, i = 0;
+  const escaped = (at: number) => { let n = 0; while (at > 0 && input[--at] === '\\') n++; return n % 2 === 1; };
+  while (i < input.length) {
+    const range = protectedRanges.find(([start, end]) => i >= start && i < end);
+    if (range) { i = range[1]; continue; }
+    // Link destinations and explicit URLs are data, even when they contain $.
+    if (/^https?:\/\//.test(input.slice(i))) {
+      const tail = input.slice(i).search(/[\s<>]/);
+      i = tail < 0 ? input.length : i + tail;
+      continue;
     }
-    return lines.join('\n');
-  } catch { return input; }
-  finally { await browser?.close().catch(() => {}); rmSync(dir, { recursive: true, force: true }); }
+    if (input.startsWith('](', i)) {
+      let depth = 1, end = i + 2;
+      while (end < input.length && depth) {
+        if (!escaped(end)) {
+          if (input[end] === '(') depth++;
+          else if (input[end] === ')') depth--;
+        }
+        end++;
+      }
+      if (!depth) { i = end; continue; }
+    }
+    if (input[i] === '`' && !escaped(i)) {
+      const run = input.slice(i).match(/^`+/)![0];
+      let end = input.indexOf(run, i + run.length);
+      while (end >= 0 && (input[end - 1] === '`' || input[end + run.length] === '`')) end = input.indexOf(run, end + run.length);
+      i = end < 0 ? i + run.length : end + run.length;
+      continue;
+    }
+    const open = input.startsWith('\\(', i) ? '\\(' : input.startsWith('\\[', i) ? '\\[' : input.startsWith('$$', i) ? '$$' : input[i] === '$' ? '$' : '';
+    if (!open || escaped(i)) { i++; continue; }
+    const close = open === '\\(' ? '\\)' : open === '\\[' ? '\\]' : open;
+    const start = i + open.length;
+    let end = input.indexOf(close, start);
+    while (end >= 0 && escaped(end)) end = input.indexOf(close, end + close.length);
+    if (end < 0 || end === start || protectedRanges.some(([a, b]) => a < end + close.length && b > i)) { i += open.length; continue; }
+    const tex = input.slice(start, end);
+    if (open === '$' && (/^\s|\s$|\n/.test(tex) || /\d/.test(input[end + 1] ?? '') || /^\d[\d.,]*(?:\s+[A-Za-z]+)*$/.test(tex))) { i += open.length; continue; }
+    let text: string;
+    try { text = mathToText(tex); } catch { text = tex.trim(); }
+    if (!text) { i = end + close.length; continue; }
+    const lineEnd = input.indexOf('\n', end + close.length);
+    const standalone = ['$$', '\\['].includes(open) && !input.slice(input.lastIndexOf('\n', i - 1) + 1, i).trim()
+      && !input.slice(end + close.length, lineEnd < 0 ? input.length : lineEnd).trim();
+    const fence = '`'.repeat(Math.max(3, ...(text.match(/`+/g) ?? []).map(s => s.length + 1)));
+    const replacement = standalone ? `${fence}text\n${text}\n${fence}` : code(text);
+    result += input.slice(from, i) + replacement;
+    from = end + close.length;
+    i = from;
+  }
+  return result + input.slice(from);
 }
