@@ -66,8 +66,11 @@ export function normalizeStartupCommandList(arr: unknown): string[] {
  * effort/model/context already established, so re-typing `/effort` (idempotent)
  * or `/clear`,`/compact` (NOT idempotent) would corrupt it. Skip on reattach.
  */
-export function shouldRunStartupCommandsOnSpawn(opts: { willReattachPersistent: boolean }): boolean {
-  return !opts.willReattachPersistent;
+export function shouldRunStartupCommandsOnSpawn(opts: { willReattachPersistent: boolean; cliId?: string }): boolean {
+  // App-server has no TUI command parser. A raw /model line becomes a user
+  // prompt, starting an unrelated inference before the actual user message.
+  // Configure model/effort/speed through the session model API instead.
+  return opts.cliId !== 'codex-app' && !opts.willReattachPersistent;
 }
 
 /**

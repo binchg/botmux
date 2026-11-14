@@ -390,6 +390,10 @@ function awaitPtyQuiescence(quietMs: number, capMs: number): Promise<void> {
 async function runStartupCommands(): Promise<void> {
   const cmds = lastInitConfig?.startupCommands;
   if (!cmds || cmds.length === 0) return;
+  if (!shouldRunStartupCommandsOnSpawn({ willReattachPersistent: false, cliId: lastInitConfig?.cliId })) {
+    log('Skipped TUI startup commands for App server; use session model settings');
+    return;
+  }
   if (lastInitConfig?.adoptMode) return;
   if (!backend) return;
   log(`Running ${cmds.length} startup command(s) before first prompt`);

@@ -60,6 +60,12 @@ describe('normalizeStartupCommandList', () => {
 });
 
 describe('shouldRunStartupCommandsOnSpawn', () => {
+  it('never injects TUI startup commands into App-server user input, including recovery', () => {
+    for (const willReattachPersistent of [false, true]) {
+      expect(shouldRunStartupCommandsOnSpawn({ cliId: 'codex-app', willReattachPersistent })).toBe(false);
+    }
+    expect(shouldRunStartupCommandsOnSpawn({ cliId: 'claude', willReattachPersistent: false })).toBe(true);
+  });
   it('runs on a fresh spawn, SKIPS on reattach to a live persistent pane', () => {
     // Reattach = same CLP with settings already applied — replaying /clear etc.
     // would corrupt the recovered context (Codex review P1).

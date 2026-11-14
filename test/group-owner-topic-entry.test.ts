@@ -3,7 +3,7 @@ import { beforeEach, expect, it, vi } from 'vitest';
 import type { IncomingMessageContext } from '../src/im/lark/event-message-context.js';
 
 const state = vi.hoisted(() => ({
-  enabled: true, allowed: true, scope: 'thread', prepare: vi.fn(), chatMode: vi.fn(),
+  enabled: true, allowed: true, chatGranted: false, scope: 'thread', prepare: vi.fn(), chatMode: vi.fn(),
 }));
 vi.mock('../src/services/group-direct-mention-policy.js', () => ({
   requiresDirectGroupMention: () => true,
@@ -15,6 +15,7 @@ vi.mock('../src/im/lark/event-summary-command.js', () => ({ resolveSummaryComman
 vi.mock('../src/im/lark/event-group-stats.js', () => ({ getGroupStats: async () => ({ userCount: 3, botCount: 2 }) }));
 vi.mock('../src/im/lark/client.js', () => ({ getChatMode: state.chatMode, getChatModeStrict: state.chatMode }));
 vi.mock('../src/im/lark/event-access.js', () => ({
+  hasChatGrant: (app: string, chat: string, sender: string) => state.chatGranted && app === 'app' && chat === 'chat' && sender === 'granted-user',
   checkGroupMessageAccess: async () => state.allowed ? 'allowed' : 'not_allowed',
   maybeSendGrantRequestCard: vi.fn(),
 }));
@@ -42,6 +43,7 @@ function context(senderId = 'owner'): IncomingMessageContext {
 beforeEach(() => {
   state.enabled = true;
   state.allowed = true;
+  state.chatGranted = false;
   state.scope = 'thread';
   state.chatMode.mockReset().mockResolvedValue('topic');
   state.prepare.mockReset().mockImplementation(async () => ({
@@ -57,6 +59,27 @@ it.each(['owner', 'co-owner'])('指定话题群主人 %s 不用 @ 即可启动�
   await handleHumanMessage(input);
   expect(state.chatMode).toHaveBeenCalledWith('app', 'chat');
   expect(input.handlers.handleNewTopic).toHaveBeenCalledWith(input.data, expect.objectContaining({ scope: 'thread' }));
+});
+
+it('本群已获对话授权的用户无需成为机器人管理员即可新开话题', async () => {
+  state.chatGranted = true;
+  const input = context('granted-user');
+  await handleHumanMessage(input);
+  expect(input.handlers.handleNewTopic).toHaveBeenCalledOnce();
+});
+
+it('本群对话授权不能用于其它群的免 @ 入口', async () => {
+  state.chatGranted = true;
+  const input = context('granted-user');
+  input.chatId = 'other-chat';
+  await handleHumanMessage(input);
+  expect(state.prepare).not.toHaveBeenCalled();
+});
+
+it('本群对话授权撤销后不再免 @ 启动', async () => {
+  const input = context('granted-user');
+  await handleHumanMessage(input);
+  expect(state.prepare).not.toHaveBeenCalled();
 });
 
 it('富文本新话题无需 @，带真实话题标识的未绑定消息也可启动', async () => {
