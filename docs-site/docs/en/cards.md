@@ -21,4 +21,4 @@ uses text code blocks. Prose, lists, and tables remain native rich text.
 Unsupported formulas retain copyable LaTeX source. Code and currency stay unchanged.
 No formula images or Chromium are required. Linear text does not provide 2D fraction layout.
 
-Card v2 preserves native Markdown heading levels 1–6. Mathematical text uses complete Unicode scripts where available, preserves explicit grouping for other indices, and keeps brace annotations as `[expression] (label)`. Single-symbol accents remain copyable combining characters. API readback verifies content and structure only; desktop/mobile appearance and clipboard behavior require separate client checks.
+Card v2 preserves native Markdown heading levels 1–6. Mathematical text uses complete Unicode scripts where available, preserves explicit grouping for other indices, and keeps brace annotations as `[expression] (label)`. Single-symbol hats and bars remain copyable combining characters; vectors use `vec(a)` to avoid missing combining-arrow glyphs. API readback verifies content and structure only; desktop/mobile appearance and clipboard behavior require separate client checks.

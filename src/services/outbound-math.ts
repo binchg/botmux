@@ -45,7 +45,8 @@ function plainMath(node: MathNode | string): string {
       const mark = (parts[1] ?? '').trim();
       if (/[⏟⏞⎵⎴]/.test(mark)) return `[${base}]`;
       if (node.tag === 'munder') return `${scriptBase}${script(parts[1] ?? '')}`;
-      const accent: Record<string, string> = { '^': '\u0302', 'ˉ': '\u0304', '¯': '\u0304', '⃗': '\u20d7', '~': '\u0303', '˜': '\u0303', '˙': '\u0307', '¨': '\u0308' };
+      if (mark === '⃗') return `vec(${base})`;
+      const accent: Record<string, string> = { '^': '\u0302', 'ˉ': '\u0304', '¯': '\u0304', '~': '\u0303', '˜': '\u0303', '˙': '\u0307', '¨': '\u0308' };
       if ([...base].length === 1 && accent[mark]) return base + accent[mark];
       throw new Error('Keep complex accent TeX source');
     }

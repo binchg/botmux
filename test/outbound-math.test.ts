@@ -71,7 +71,7 @@ describe('readable math without losing annotations', () => {
     expect(text).not.toContain('underbrace');
   });
   it('renders single-symbol accents but retains complex accents as source', () => {
-    expect(mathToText(String.raw`\hat{x}+\bar{y}+\vec{a}`)).toBe('x̂ + ȳ + a⃗');
+    expect(mathToText(String.raw`\hat{x}+\bar{y}+\vec{a}`)).toBe('x̂ + ȳ + vec(a)');
     expect(formatMathForLark(String.raw`$\widehat{xy}$`)).toBe('` \\widehat{xy} `');
     expect(mathToText(String.raw`\overbrace{x+y}^{\text{total}}`)).toBe('[x + y]（total）');
   });
