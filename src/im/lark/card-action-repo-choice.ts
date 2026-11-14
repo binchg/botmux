@@ -1,3 +1,6 @@
+import { pendingNewSessionModelSetup } from './new-session-setup.js';
+import { validateWorkingDir } from '../../core/working-dir.js';
+import { getBot } from '../../bot-registry.js';
 /** 仓库下拉选择与异步工作区创建；由 card-handler.ts 拆分，来源 c397c9af。 */
 import { CardActionContext } from './card-action-context.js';
 import { logger } from '../../utils/logger.js';
@@ -27,6 +30,14 @@ export async function handleRepoChoice(context: CardActionContext, option: strin
   if (!targetDs) {
     logger.warn(`Card action: no active session found for root ${rootId}`);
     return;
+  }
+
+  if (value?.session_id && value.session_id !== targetDs.session.sessionId) return { toast: { type: 'error', content: '此创建卡片已过期' } };
+  if (pendingNewSessionModelSetup(targetDs)) return { toast: { type: 'error', content: '请先确认模型、推理和 Fast' } };
+  if (value?.session_id && getBot(targetDs.larkAppId).config.requireWorkingDirSelection && !targetDs.pendingRepo) return { toast: { type: 'error', content: '此创建卡片已过期' } };
+  if (!isWorktreeOpen && getBot(targetDs.larkAppId).config.requireWorkingDirSelection) {
+    const validation = validateWorkingDir(selectedPath);
+    if (!validation.ok) return { toast: { type: 'error', content: validation.error } };
   }
 
   // 权限边界：pendingRepo（首次选 repo 才能 spawn）放行「会话发起人 或 canOperate」，

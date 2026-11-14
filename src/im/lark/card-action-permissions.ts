@@ -11,7 +11,7 @@ import { config } from '../../config.js';
 /** 敏感操作的用户和会话权限校验；未命中时交给下一处理器。 */
 export async function checkCardActionPermission(context: CardActionContext): Promise<any> {
   const { larkAppId, activeSessions, action, value, operatorOpenId } = context;
-  const isSensitive = value?.action && ['session_model_open', 'session_model_set', 'restart', 'close', 'resume', 'skip_repo', 'repo_manual_submit', 'repo_worktree_submit', 'worktree_toggle_mode', 'retry_last_task', 'get_write_link', 'open_local_terminal', 'toggle_stream', 'toggle_display', 'export_text', 'term_action', 'refresh_screenshot', 'takeover', 'disconnect', 'tui_keys', 'tui_text_input', 'wf_approve', 'wf_reject', 'wf_cancel'].includes(value.action);
+  const isSensitive = value?.action && ['new_session_model_set', 'new_session_model_next', 'new_session_model_retry', 'new_session_directory_select', 'new_session_quick_start', 'new_session_customize', 'session_model_open', 'session_model_set', 'restart', 'close', 'resume', 'skip_repo', 'repo_manual_submit', 'repo_worktree_submit', 'worktree_toggle_mode', 'retry_last_task', 'get_write_link', 'open_local_terminal', 'toggle_stream', 'toggle_display', 'export_text', 'term_action', 'refresh_screenshot', 'takeover', 'disconnect', 'tui_keys', 'tui_text_input', 'wf_approve', 'wf_reject', 'wf_cancel'].includes(value.action);
   if (isSensitive) {
     const rootId = value?.root_id;
     // activeSessions is keyed by sessionKey(anchor, larkAppId) — `${anchor}::${larkAppId}`
@@ -38,7 +38,7 @@ export async function checkCardActionPermission(context: CardActionContext): Pro
     // （影响该 bot 所有后续会话），属管理动作，必须走 canOperate，不能让 talk-only/
     // chat-granted 用户借「开自己的 pending 卡」绕过去改 bot 配置。
     const pendingRepoOwnerException =
-      (value.action === 'skip_repo' || value.action === 'repo_manual_submit' || value.action === 'repo_worktree_submit') && !!ds?.pendingRepo &&
+      (['new_session_model_set', 'new_session_model_next', 'new_session_model_retry', 'new_session_directory_select', 'new_session_quick_start', 'new_session_customize'].includes(value.action) || value.action === 'skip_repo' || value.action === 'repo_manual_submit' || value.action === 'repo_worktree_submit') && !!ds?.pendingRepo &&
       !!operatorOpenId && operatorOpenId === ds.session.ownerOpenId;
     if (effectiveAppId) {
       if (!pendingRepoOwnerException && !canOperate(effectiveAppId, chatId, operatorOpenId)) {

@@ -118,7 +118,9 @@ function main() {
     'test/session-working-dir-api.test.ts', 'test/session-working-dir-runtime.test.ts',
     'test/session-working-dir-ingress.test.ts',
     'test/group-direct-mention-gate.test.ts', 'test/group-topic-followup-delivery.test.ts',
-    'test/group-direct-mention-policy.test.ts', 'test/group-owner-topic-entry.test.ts']);
+    'test/group-direct-mention-policy.test.ts', 'test/group-owner-topic-entry.test.ts',
+    'test/new-session-setup.test.ts', 'test/session-working-dir-choices.test.ts',
+    'test/card-handler-repo-select.test.ts', 'test/dashboard-attention-signals.test.ts', 'test/bot-config-store.test.ts']);
   run('corepack', ['pnpm', 'build']);
 
   // Local deployments preserve unrelated untracked migration artifacts.

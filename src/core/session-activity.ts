@@ -69,7 +69,7 @@ export function announceSessionRow(ds: DaemonSession): void {
  *  the non-pending branch is announced by the real spawn moments later. */
 export function announcePendingRepoSession(ds: DaemonSession): void {
   if (!ds.pendingRepo) return;
-  ds.session.pendingRepoSelection = { prompt: ds.pendingPrompt, rawInput: ds.pendingRawInput, cardMessageId: ds.repoCardMessageId, attachments: ds.pendingAttachments, mentions: ds.pendingMentions, sender: ds.pendingSender, followUps: ds.pendingFollowUps };
+  ds.session.pendingRepoSelection = { ...ds.session.pendingRepoSelection, prompt: ds.pendingPrompt, rawInput: ds.pendingRawInput, cardMessageId: ds.repoCardMessageId, attachments: ds.pendingAttachments, mentions: ds.pendingMentions, sender: ds.pendingSender, followUps: ds.pendingFollowUps };
   sessionStore.updateSession(ds.session);
   announceSessionRow(ds);
 }

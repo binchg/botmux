@@ -1,3 +1,4 @@
+import { buildNewSessionSetupCard, pendingNewSessionModelSetup } from './new-session-setup.js';
 /** 仓库选择与工作区表单提交；由 card-handler.ts 拆分，来源 c397c9af。 */
 import { SessionCardContext, CARD_ACTION_UNHANDLED } from './card-action-context.js';
 import { localeForBot, t } from '../../i18n/index.js';
@@ -13,13 +14,16 @@ import { deleteMessage } from './client.js';
 import { validateWorkingDir } from '../../core/working-dir.js';
 import { commitRepoSelection, stringListFromLarkMultiSelect, multiWorktreeParentPath, duplicateMultiWorktreeChildNames } from './card-action-repo-selection.js';
 import { findConfigField, applyConfigField } from '../../services/bot-config-store.js';
-import { buildRepoSelectCard } from './card-builder.js';
 import { worktreeSlugFromContextAI } from '../../services/worktree-slug-ai.js';
 import { handleCardAction } from './card-handler.js';
 
 /** 仓库选择与工作区表单提交；未命中时交给下一处理器。 */
 export async function handleRepoFormAction(context: SessionCardContext): Promise<any> {
   const { data, deps, larkAppId, activeSessions, lastRepoScan, sessionReply, action, value, cardMessageId, operatorOpenId, actionType, rootId, ds } = context;
+  if (ds && ['skip_repo', 'repo_manual_submit', 'repo_worktree_submit'].includes(actionType)) {
+    if (pendingNewSessionModelSetup(ds)) return { toast: { type: 'error', content: '请先确认模型、推理和 Fast' } };
+    if (value.session_id && getBot(ds.larkAppId).config.requireWorkingDirSelection && !ds.pendingRepo) return { toast: { type: 'error', content: '此创建卡片已过期' } };
+  }
     if (actionType === 'skip_repo' && ds && getBot(ds.larkAppId).config.requireWorkingDirSelection && ds.pendingRepo) {
       const validation = validateWorkingDir(getSessionWorkingDir(ds));
       if (!validation.ok) return { toast: { type: 'error', content: validation.error } };
@@ -129,7 +133,7 @@ export async function handleRepoFormAction(context: SessionCardContext): Promise
       // await so a rejected delete is caught here (not an unhandled rejection);
       // a missing/already-gone card is fine — we post the fresh one regardless.
       if (ds.repoCardMessageId && ds.larkAppId) { try { await deleteMessage(ds.larkAppId, ds.repoCardMessageId); } catch { /* card already gone */ } }
-      const newCard = buildRepoSelectCard(projects, getSessionWorkingDir(ds), rootId, locDs, next, getBot(ds.larkAppId).config.requireWorkingDirSelection);
+      const newCard = await buildNewSessionSetupCard(ds, projects, rootId, getSessionWorkingDir(ds));
       ds.repoCardMessageId = await sessionReply(rootId, newCard, 'interactive');
       return { toast: { type: 'info', content: t(next ? 'card.repo.toast_worktree_mode_switched' : 'card.repo.toast_worktree_mode_switched_back', undefined, locDs) } };
     }

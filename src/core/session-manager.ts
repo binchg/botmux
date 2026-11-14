@@ -1,3 +1,4 @@
+import { buildNewSessionSetupCard } from '../im/lark/new-session-setup.js';
 /**
  * Session manager — session helper functions extracted from daemon.ts.
  * Handles working directory resolution, attachment downloads, prompt building,
@@ -38,7 +39,6 @@ import { sessionKey, sessionAnchorId } from './types.js';
 import type { DaemonSession } from './types.js';
 import { announceSessionRow, markSessionActivity, announcePendingRepoSession } from './session-activity.js';
 import { scanMultipleProjects } from '../services/project-scanner.js';
-import { buildRepoSelectCard } from '../im/lark/card-builder.js';
 import { repoPickerScanOptions } from '../global-config.js';
 import { usageLimitStateKey } from '../utils/cli-usage-limit.js';
 import { t, localeForBot, type Locale } from '../i18n/index.js';
@@ -1549,7 +1549,9 @@ async function forkOrShowRepoCard(ds: DaemonSession, userContent: string): Promi
     const projects = scanDirs.length > 0 ? scanMultipleProjects(scanDirs, 3, repoPickerScanOptions()) : [];
     if (projects.length > 0 || bot.config.requireWorkingDirSelection) {
       try {
-        const card = buildRepoSelectCard(projects, getSessionWorkingDir(ds), ds.chatId, locale, bot.config.worktreeMultiPicker, bot.config.requireWorkingDirSelection);
+        ds.pendingRepo = true;
+        ds.pendingPrompt = userContent;
+        const card = await buildNewSessionSetupCard(ds, projects, ds.chatId, getSessionWorkingDir(ds));
         const { sendMessage } = await import('../im/lark/client.js');
         ds.pendingRepo = true;
         ds.pendingPrompt = userContent;

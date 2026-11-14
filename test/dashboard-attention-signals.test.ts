@@ -157,6 +157,17 @@ describe('attention signals', () => {
     expect(row.status).toBe('dormant'); // no live worker/screen yet; pendingRepo still routes it to needs-you
   });
 
+  it('preserves the setup stage and buffered task when persisting a pending session', () => {
+    const ds = makeDs({ pendingRepo: true, pendingPrompt: 'buffered task' });
+    ds.session.pendingRepoSelection = { modelSetupPending: true, modelConfirmed: false };
+    announcePendingRepoSession(ds);
+    expect(ds.session.pendingRepoSelection).toMatchObject({ modelSetupPending: true, modelConfirmed: false, prompt: 'buffered task' });
+    ds.session.pendingRepoSelection.modelConfirmed = true;
+    ds.session.pendingRepoSelection.modelSetupPending = false;
+    announcePendingRepoSession(ds);
+    expect(ds.session.pendingRepoSelection).toMatchObject({ modelConfirmed: true, modelSetupPending: false, prompt: 'buffered task' });
+  });
+
   it('announceSessionRow publishes a full session.spawned row for restored active sessions', () => {
     const seen = collectEvents();
     announceSessionRow(makeDs({ hasHistory: true }));

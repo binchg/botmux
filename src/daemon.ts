@@ -1,3 +1,4 @@
+import { buildNewSessionSetupCard } from './im/lark/new-session-setup.js';
 import { execFileSync, type ChildProcess } from 'node:child_process';
 import { externalCodexBridge, startExternalCodexBridge } from './services/external-codex-runtime.js';
 import { readFileSync, existsSync, mkdirSync, unlinkSync, watch, readdirSync } from 'node:fs';
@@ -47,7 +48,7 @@ import { terminalProxyRequestAllowed } from './services/terminal-access.js';
 import type { CliId } from './adapters/cli/types.js';
 import * as scheduler from './core/scheduler.js';
 import { scanProjects, scanMultipleProjects } from './services/project-scanner.js';
-import { buildQuotaExhaustedCard, buildRepoSelectCard, buildStreamingCard, getCliDisplayName } from './im/lark/card-builder.js';
+import { buildQuotaExhaustedCard, buildStreamingCard, getCliDisplayName } from './im/lark/card-builder.js';
 import { RECEIVED_REACTION_EMOJI_TYPE } from './core/pending-response.js';
 import { t as tr, botLocale, localeForBot } from './i18n/index.js';
 import { createCliAdapterSync } from './adapters/cli/registry.js';
@@ -2380,7 +2381,7 @@ async function startInitialPassthroughSession(args: {
   const projects = scanDirs.length > 0 ? scanMultipleProjects(scanDirs, 3, repoPickerScanOptions()) : [];
   if (projects.length > 0 || getBot(larkAppId).config.requireWorkingDirSelection) {
     lastRepoScan.set(chatId, projects);
-    const cardJson = buildRepoSelectCard(projects, getSessionWorkingDir(ds), anchor, localeForBot(larkAppId), getBot(larkAppId).config.worktreeMultiPicker, getBot(larkAppId).config.requireWorkingDirSelection);
+    const cardJson = await buildNewSessionSetupCard(ds, projects, anchor, getSessionWorkingDir(ds));
     if (getBot(larkAppId).config.requireWorkingDirSelection) announcePendingRepoSession(ds);
     ds.repoCardMessageId = await sessionReply(anchor, cardJson, 'interactive', larkAppId);
     announcePendingRepoSession(ds);
@@ -2722,7 +2723,7 @@ async function handleNewTopic(data: any, ctx: RoutingContext): Promise<void> {
   if (projects.length > 0 || getBot(larkAppId).config.requireWorkingDirSelection) {
     lastRepoScan.set(chatId, projects);
     const currentCwd = getSessionWorkingDir(ds);
-    const cardJson = buildRepoSelectCard(projects, currentCwd, anchor, localeForBot(larkAppId), getBot(larkAppId).config.worktreeMultiPicker, getBot(larkAppId).config.requireWorkingDirSelection);
+    const cardJson = await buildNewSessionSetupCard(ds, projects, anchor, currentCwd);
     if (getBot(larkAppId).config.requireWorkingDirSelection) announcePendingRepoSession(ds);
     ds.repoCardMessageId = await sessionReply(anchor, cardJson, 'interactive', larkAppId);
     announcePendingRepoSession(ds);
@@ -2925,7 +2926,7 @@ async function handleBotAdded(chatId: string, operatorOpenId: string | undefined
     const projects = scanDirs.length > 0 ? scanMultipleProjects(scanDirs, 3, repoPickerScanOptions()) : [];
     if (projects.length > 0 || getBot(larkAppId).config.requireWorkingDirSelection) {
       lastRepoScan.set(chatId, projects);
-      const cardJson = buildRepoSelectCard(projects, getSessionWorkingDir(ds), anchor, localeForBot(larkAppId), getBot(larkAppId).config.worktreeMultiPicker, getBot(larkAppId).config.requireWorkingDirSelection);
+      const cardJson = await buildNewSessionSetupCard(ds, projects, anchor, getSessionWorkingDir(ds));
       if (getBot(larkAppId).config.requireWorkingDirSelection) announcePendingRepoSession(ds);
       ds.repoCardMessageId = await sessionReply(anchor, cardJson, 'interactive', larkAppId);
       announcePendingRepoSession(ds);
@@ -3484,7 +3485,7 @@ async function handleThreadReply(data: any, ctx: RoutingContext): Promise<void> 
     if (projects.length > 0 || getBot(larkAppId).config.requireWorkingDirSelection) {
       lastRepoScan.set(autoCreateChatId, projects);
       const currentCwd = getSessionWorkingDir(newDs);
-      const cardJson = buildRepoSelectCard(projects, currentCwd, anchor, localeForBot(larkAppId), getBot(larkAppId).config.worktreeMultiPicker, getBot(larkAppId).config.requireWorkingDirSelection);
+      const cardJson = await buildNewSessionSetupCard(newDs, projects, anchor, currentCwd);
       if (getBot(larkAppId).config.requireWorkingDirSelection) announcePendingRepoSession(newDs);
       newDs.repoCardMessageId = await sessionReply(anchor, cardJson, 'interactive', larkAppId);
       announcePendingRepoSession(newDs);

@@ -72,6 +72,18 @@ describe('bot-config store', () => {
     return { registry, store };
   }
 
+  it('round-trips configured directory choices with spaces, deduplicates and clears them', async () => {
+    const { registry, store } = await loaded();
+    const field = store.findConfigField('workingDirPresets')!;
+    const parsed = store.coerceConfigValue(field, '/home/ubuntu/project one, /home/ubuntu/project two\n/home/ubuntu/project one');
+    expect(parsed.ok).toBe(true);
+    const value = (parsed as any).value;
+    expect(value).toEqual(['/home/ubuntu/project one', '/home/ubuntu/project two']);
+    expect((await store.applyConfigField('app_default', field, value)).ok).toBe(true);
+    expect(readConfig().workingDirPresets).toEqual(value);
+    expect(registry.getBot('app_default').config.workingDirPresets).toEqual(value);
+  });
+
   it('CONFIG_FIELDS have unique keys and include allowedUsers', async () => {
     const { store } = await freshModules();
     const keys = store.CONFIG_FIELDS.map(f => f.key);

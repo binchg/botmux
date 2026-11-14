@@ -121,6 +121,7 @@ vi.mock('@larksuiteoapi/node-sdk', () => ({
 
 // ─── Imports ──────────────────────────────────────────────────────────────
 
+import { getBot } from '../src/bot-registry.js';
 import { handleCardAction, type CardHandlerDeps } from '../src/im/lark/card-handler.js';
 import { forkWorker, killWorker, deliverEphemeralOrReply, deliverWriteLinkCard } from '../src/core/worker-pool.js';
 import { getAvailableBots } from '../src/core/session-manager.js';
@@ -764,5 +765,38 @@ describe('repo select card — manual directory entry', () => {
     expect(res?.toast?.content).toContain('已有一个 worktree 正在创建');
     expect(forkWorker).not.toHaveBeenCalled();
     expect(ds.pendingRepo).toBe(true);
+  });
+});
+
+
+describe('explicit model-first setup card boundaries', () => {
+  const enable = () => { vi.mocked(getBot).mockImplementation(() => ({ config: { cliId: 'codex-app', requireWorkingDirSelection: true }, resolvedAllowedUsers: [], botName: 'nene', botOpenId: 'bot' }) as any); };
+  it('blocks legacy dropdown, manual and skip controls before model confirmation', async () => {
+    enable();
+    const ds = makeDs({ pendingRepo: true, worker: null }); const { deps } = makeDeps(ds);
+    const manual = await handleCardAction(makeManualEvent('/tmp'), deps, APP_ID);
+    const dropdown = await handleCardAction(makeSelectEvent('repo_switch', '/tmp'), deps, APP_ID);
+    const skip = await handleCardAction({ operator: { open_id: OWNER }, action: { value: { action: 'skip_repo', root_id: ROOT_ID } } }, deps, APP_ID);
+    for (const result of [manual, dropdown, skip]) expect(result.toast.content).toContain('请先确认模型');
+    expect(forkWorker).not.toHaveBeenCalled();
+  });
+  it('lets the pending owner choose a directory and rejects the same card after it starts', async () => {
+    enable(); vi.mocked(canOperate).mockReturnValue(false);
+    const ds = makeDs({ pendingRepo: true, worker: null }); ds.session.pendingRepoSelection = { modelConfirmed: true };
+    const { deps } = makeDeps(ds);
+    const event = { operator: { open_id: OWNER }, action: { value: { action: 'new_session_directory_select', root_id: ROOT_ID, session_id: ds.session.sessionId }, option: '/tmp' } };
+    expect((await handleCardAction(event, deps, APP_ID)).toast.type).toBe('success');
+    expect((await handleCardAction(event, deps, APP_ID))?.toast?.type).not.toBe('success');
+    expect(forkWorker).toHaveBeenCalledTimes(1);
+    vi.mocked(canOperate).mockReturnValue(true);
+  });
+  it('rejects another user and a stale session binding without starting a worker', async () => {
+    enable(); vi.mocked(canOperate).mockReturnValue(false);
+    const ds = makeDs({ pendingRepo: true, worker: null }); ds.session.pendingRepoSelection = { modelConfirmed: true };
+    const { deps } = makeDeps(ds);
+    const event = { operator: { open_id: 'stranger' }, action: { value: { action: 'new_session_directory_select', root_id: ROOT_ID, session_id: ds.session.sessionId }, option: '/tmp' } };
+    await handleCardAction(event, deps, APP_ID); expect(forkWorker).not.toHaveBeenCalled();
+    vi.mocked(canOperate).mockReturnValue(true); event.action.value.session_id = 'old-session';
+    expect((await handleCardAction(event, deps, APP_ID)).toast.type).toBe('error'); expect(forkWorker).not.toHaveBeenCalled();
   });
 });

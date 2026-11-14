@@ -1,3 +1,6 @@
+import { rememberSessionStartPreferences } from '../../services/session-start-preferences.js';
+import { readSessionModel } from '../../services/session-model-store.js';
+import { pendingNewSessionModelSetup } from './new-session-setup.js';
 /** 工作区选项解析与仓库切换提交；由 card-handler.ts 拆分，来源 c397c9af。 */
 import { dirname, join, basename as pathBasename } from 'node:path';
 import { dirSuffixForBranch } from '../../services/git-worktree.js';
@@ -79,6 +82,7 @@ export async function commitRepoSelection(
   opts?: { suppressConfirmReply?: boolean },
 ): Promise<void> {
   const { ds, rootId, cardMessageId, larkAppId, operatorOpenId, activeSessions, sessionReply } = ctx;
+  if (pendingNewSessionModelSetup(ds)) throw new Error('请先确认模型、推理和 Fast');
   const locTarget = localeForBot(ds.larkAppId);
   // `/close` deletes the active-map entry without touching sessionId or
   // pendingRepo — identity against the map is the only tell that the session
@@ -91,6 +95,7 @@ export async function commitRepoSelection(
     // First spawn: pin the new cwd onto the CURRENT session before forking.
     ds.workingDir = dirPath;
     ds.session.workingDir = dirPath;
+    ds.session.workingDirLastUsedAt = new Date().toISOString();
     sessionStore.updateSession(ds.session);
     const selfBot = getBot(ds.larkAppId);
     const botCfg = selfBot.config;
@@ -146,6 +151,8 @@ export async function commitRepoSelection(
     ds.pendingSender = undefined;
     ds.pendingFollowUps = undefined;
     forkWorker(ds, prompt);
+    const chosenModel = readSessionModel(config.session.dataDir, ds.session.sessionId);
+    if (chosenModel && botCfg.requireWorkingDirSelection) rememberSessionStartPreferences(config.session.dataDir, ds.larkAppId, chosenModel, dirPath);
     // A card click has no turn of its own — anchor the confirmation to the
     // session's current reply-target turn so a shared fold-back topic keeps
     // it in-thread (same leak as the /repo command path).
@@ -197,6 +204,7 @@ export async function commitRepoSelection(
     // exits code 0 immediately, crash-looping until the rate-limiter trips.
     ds.workingDir = dirPath;
     ds.session.workingDir = dirPath;
+    ds.session.workingDirLastUsedAt = new Date().toISOString();
     ds.session.larkAppId = ds.larkAppId;
     sessionStore.updateSession(ds.session);
     ds.hasHistory = false;

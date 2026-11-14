@@ -1,3 +1,4 @@
+import { buildNewSessionSetupCard } from '../im/lark/new-session-setup.js';
 /**
  * Command handler — processes /slash commands from users.
  * Extracted from daemon.ts for modularity.
@@ -1607,7 +1608,7 @@ export async function handleCommand(
         }
         if (ds) lastRepoScan.set(ds.chatId, projects);
         const currentCwd = getSessionWorkingDir(ds);
-        const cardJson = buildRepoSelectCard(projects, currentCwd, rootId, loc, ds ? getBot(ds.larkAppId).config.worktreeMultiPicker : undefined, ds ? getBot(ds.larkAppId).config.requireWorkingDirSelection : undefined);
+        const cardJson = ds?.pendingRepo ? await buildNewSessionSetupCard(ds, projects, rootId, currentCwd) : buildRepoSelectCard(projects, currentCwd, rootId, loc, ds ? getBot(ds.larkAppId).config.worktreeMultiPicker : undefined, ds ? getBot(ds.larkAppId).config.requireWorkingDirSelection : undefined);
         const repoCardMsgId = await sessionReply(rootId, cardJson, 'interactive');
         if (ds) {
           ds.repoCardMessageId = repoCardMsgId;

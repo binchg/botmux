@@ -201,3 +201,24 @@ export async function listCodexAppModels(opts: ListCodexAppThreadsOptions = {}):
     return models;
   } finally { client.close(); }
 }
+
+/** Read capabilities and effective defaults without creating or resuming a thread. */
+export async function readCodexAppModelSetup(opts: ListCodexAppThreadsOptions = {}): Promise<{
+  models: import('./session-model-selection.js').AvailableSessionModel[];
+  defaults: { model?: string; model_reasoning_effort?: string; service_tier?: string };
+}> {
+  const timeout = opts.timeoutMs ?? 7000;
+  const client = new CodexAppServerProbe(resolveCommand(opts.codexBin ?? 'codex'), opts.cwd ?? process.cwd());
+  try {
+    await client.initialize(timeout);
+    const response = await client.withTimeout(client.request('config/read', { cwd: opts.cwd ?? process.cwd() }), timeout, 'config/read');
+    const models: import('./session-model-selection.js').AvailableSessionModel[] = [];
+    let cursor: string | undefined;
+    do {
+      const result = await client.withTimeout(client.request('model/list', { limit: 100, cursor }), timeout, 'model/list');
+      models.push(...(result.data ?? []));
+      cursor = result.nextCursor || undefined;
+    } while (cursor);
+    return { models, defaults: response?.config ?? {} };
+  } finally { client.close(); }
+}

@@ -1,3 +1,4 @@
+import { handleNewSessionSetupAction } from './new-session-setup-action.js';
 /** 会话卡片操作分派；由 card-handler.ts 拆分，来源 c397c9af。 */
 import { CardActionContext, SessionCardContext, CARD_ACTION_UNHANDLED } from './card-action-context.js';
 import { sessionKey } from '../../core/types.js';
@@ -20,7 +21,7 @@ export async function handleSessionCardAction(context: CardActionContext): Promi
 
     if (ds && !validateCardCliBinding(ds, value)) return;
   const sessionContext: SessionCardContext = { ...context, value, actionType, rootId, sKey, ds };
-  for (const handle of [handleSessionModelAction, handleLifecycleAction, handleTerminalInputAction, handleDisplayAction, handleRepoFormAction]) {
+  for (const handle of [handleNewSessionSetupAction, handleSessionModelAction, handleLifecycleAction, handleTerminalInputAction, handleDisplayAction, handleRepoFormAction]) {
     const result = await handle(sessionContext);
     if (result !== CARD_ACTION_UNHANDLED) return result;
   }
