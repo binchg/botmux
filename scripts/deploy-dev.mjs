@@ -33,16 +33,21 @@ function git(args, capture = true) {
 
 function parseArgs(argv) {
   let message = '';
+  let local = false;
+  let deferRestart = false;
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === '--message' || argv[i] === '-m') message = argv[++i] || '';
+    else if (argv[i] === '--local') local = true;
+    else if (argv[i] === '--defer-restart') deferRestart = true;
     else if (argv[i] === '--help' || argv[i] === '-h') {
-      console.log('Usage: corepack pnpm deploy:dev -- --message "fix(scope): 中文描述"');
+      console.log('Usage: corepack pnpm deploy:dev -- --message "fix(scope): 中文描述" [--local --defer-restart]');
       process.exit(0);
     } else if (argv[i] !== '--') throw new Error(`未知参数: ${argv[i]}`);
   }
   if (!message.trim()) throw new Error('必须通过 --message 提供本次提交说明');
   if (/[\r\n]/.test(message)) throw new Error('--message 只允许单行提交标题');
-  return { message: message.trim() };
+  if (deferRestart && !local) throw new Error('--defer-restart requires explicitly authorized --local deployment');
+  return { message: message.trim(), local, deferRestart };
 }
 
 function assertCanonicalCheckout() {
@@ -89,13 +94,14 @@ function verifyRemoteHead(localHead) {
 }
 
 function main() {
-  const { message } = parseArgs(process.argv.slice(2));
+  const { message, local, deferRestart } = parseArgs(process.argv.slice(2));
   assertCanonicalCheckout();
   assertNoSensitiveChanges();
-  assertNotBehindRemote();
+  if (!local) assertNotBehindRemote();
   const { current, next } = bumpVersion();
 
   run('corepack', ['pnpm', 'exec', 'vitest', 'run', '--project', 'unit',
+    'test/codex-auto-bridge.test.ts', 'test/external-codex-bridge.test.ts', 'test/external-codex-runtime.test.ts',
     'test/dev-deploy-version.test.ts', 'test/install-info.test.ts',
     'test/restart-report.test.ts', 'test/codex-app-progress.test.ts',
     'test/persistent-app-runner-reload.test.ts', 'test/session-lifecycle-hooks.test.ts',
@@ -116,18 +122,24 @@ function main() {
     'test/group-direct-mention-policy.test.ts', 'test/group-owner-topic-entry.test.ts']);
   run('corepack', ['pnpm', 'build']);
 
-  git(['add', '-A'], false);
+  // Local deployments preserve unrelated untracked migration artifacts.
+  // Stage intended new source files explicitly before using --local.
+  git(['add', local ? '-u' : '-A'], false);
   git(['diff', '--cached', '--check'], false);
   const staged = git(['diff', '--cached', '--name-only']);
   if (!staged) throw new Error('没有可提交改动');
   git(['commit', '-m', message, '-m', `Dev-Version: v${next}`], false);
   const head = git(['rev-parse', 'HEAD']);
-  git(['push', 'origin', `HEAD:${expectedBranch}`], false);
-  verifyRemoteHead(head);
+  if (!local) {
+    git(['push', 'origin', `HEAD:${expectedBranch}`], false);
+    verifyRemoteHead(head);
+  }
 
   // 只有远程回读已包含当前 HEAD 后，才能改变 live 运行态。
-  run('corepack', ['pnpm', 'use:here']);
-  run('corepack', ['pnpm', 'daemon:restart']);
+  if (!deferRestart) {
+    run('corepack', ['pnpm', 'use:here']);
+    run('corepack', ['pnpm', 'daemon:restart']);
+  }
   const runtimeVersion = execFileSync(process.execPath, [join(repoRoot, 'dist', 'cli.js'), '--version'], {
     cwd: repoRoot,
     encoding: 'utf8',
@@ -139,8 +151,10 @@ function main() {
     version: { previous: current, current: next },
     commit: head,
     remote: `origin/${expectedBranch}`,
-    pushVerified: true,
-    deployedAfterPush: true,
+    pushVerified: !local,
+    deployedAfterPush: !local,
+    localDeployment: local,
+    restartDeferred: deferRestart,
   }, null, 2));
 }
 

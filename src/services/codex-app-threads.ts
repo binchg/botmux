@@ -37,10 +37,10 @@ export class CodexAppServerProbe {
   private lastStderr = '';
   private closed = false;
 
-  constructor(codexBin: string, cwd: string) {
+  constructor(codexBin: string, cwd: string, env: NodeJS.ProcessEnv = process.env) {
     this.child = spawn(codexBin, ['app-server', '--listen', 'stdio://'], {
       cwd,
-      env: process.env,
+      env,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     this.child.stdout.on('data', chunk => this.onStdout(chunk.toString('utf8')));

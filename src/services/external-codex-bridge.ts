@@ -18,6 +18,8 @@ export interface ExternalCodexCursor {
   outbox: Array<{ id: string; text: string }>;
   received: string[];
   completed?: string[];
+  notBefore?: number;
+  queued?: Array<{ messageId: string; text: string }>;
   pending?: { messageId: string; text: string; status: 'queued' | 'started' };
 }
 export function consumeExternalCodex(state: ExternalCodexCursor, text: string): void {
@@ -26,6 +28,7 @@ export function consumeExternalCodex(state: ExternalCodexCursor, text: string): 
   for (const line of lines) {
     if (!line.trim()) continue;
     const row = JSON.parse(line);
+    if (state.notBefore && typeof row.timestamp === 'string' && Date.parse(row.timestamp) < state.notBefore) continue;
     if (row.type !== 'event_msg') continue;
     const p = row.payload;
     if (p.type === 'task_started') state.busy = true;
@@ -48,7 +51,7 @@ export class ExternalCodexBridge {
     reply: (binding: ExternalCodexBinding, text: string, uuid: string) => Promise<unknown>;
     turn: (binding: ExternalCodexBinding, text: string, checkpoint: () => void) => Promise<void>;
     error: (error: unknown) => void;
-  }) {
+  }, initialOffsets?: Record<string, number>, notBefore?: number) {
     const saved = existsSync(stateFile) ? JSON.parse(readFileSync(stateFile, 'utf8')) : {};
     for (const b of bindings) {
       const existing = readFileSync(b.rolloutPath, 'utf8');
@@ -56,9 +59,9 @@ export class ExternalCodexBridge {
       if (first.type !== 'session_meta' || first.payload.id !== b.threadId) throw new Error('External Codex binding metadata mismatch');
       // New bindings start at EOF. Never replay imported archives into Lark.
       const state: ExternalCodexCursor = saved[b.threadId] ?? {
-        offset: statSync(b.rolloutPath).size, carry: '', busy: false, outbox: [], received: [],
+        offset: initialOffsets?.[b.threadId] ?? statSync(b.rolloutPath).size, carry: '', busy: false, outbox: [], received: [], notBefore,
       };
-      if (!saved[b.threadId]) {
+      if (!saved[b.threadId] && initialOffsets?.[b.threadId] === undefined) {
         consumeExternalCodex(state, existing);
         state.outbox = [];
         state.carry = '';
@@ -81,9 +84,9 @@ export class ExternalCodexBridge {
     if (sender !== b.ownerOpenId) return true;
     const state = this.states.get(b.threadId)!;
     if (state.received.includes(messageId)) return true;
-    if (state.pending) throw new Error('External Codex already has a pending input; retry after completion');
     state.received.push(messageId);
-    state.pending = { messageId, text, status: 'queued' };
+    if (state.pending) (state.queued ??= []).push({ messageId, text });
+    else state.pending = { messageId, text, status: 'queued' };
     this.save();
     return true;
   }
@@ -119,6 +122,10 @@ export class ExternalCodexBridge {
           await this.deps.reply(b, item.text, uuid);
           (state.completed ??= []).push(item.id);
           state.outbox.shift();
+          this.save();
+        }
+        if (!state.pending && state.queued?.length) {
+          state.pending = { ...state.queued.shift()!, status: 'queued' };
           this.save();
         }
         if (state.pending?.status === 'queued' && !state.busy) {

@@ -1,0 +1,158 @@
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, openSync, readSync, closeSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { createHash } from 'node:crypto';
+import { atomicWriteFileSync } from '../utils/atomic-write.js';
+import { ExternalCodexBridge, type ExternalCodexBinding } from './external-codex-bridge.js';
+
+export interface AutoCodexBinding extends ExternalCodexBinding {
+  codexHome: string;
+  readOnly: boolean;
+  targetKey?: string;
+}
+interface Baseline { offset: number; protected: boolean }
+interface Registry {
+  initialized: boolean;
+  startedAt: number;
+  baselines: Record<string, Baseline>;
+  bindings: Record<string, AutoCodexBinding>;
+}
+export interface AutoCodexConfig {
+  codexHomes: string[];
+  writableThreadIds?: string[];
+  larkAppId: string;
+  chatId: string;
+  ownerOpenId: string;
+}
+export class CodexAutoBridge {
+  private registry: Registry;
+  private observers = new Map<string, ExternalCodexBridge>();
+  private scanning = false;
+  private routes = new Map<string, Promise<void>>();
+  private timer?: NodeJS.Timeout;
+  constructor(private cfg: AutoCodexConfig, private stateFile: string, private deps: {
+    topic: (b: Omit<AutoCodexBinding, 'rootMessageId'>, uuid: string) => Promise<string>;
+    reply: (b: AutoCodexBinding, text: string, uuid: string) => Promise<unknown>;
+    turn: (b: AutoCodexBinding, text: string, checkpoint: () => void) => Promise<void>;
+    fork: (b: AutoCodexBinding) => Promise<{ threadId: string; rolloutPath: string }>;
+    excluded: () => Set<string>;
+    error: (error: unknown) => void;
+  }) {
+    mkdirSync(dirname(stateFile), { recursive: true, mode: 0o700 });
+    this.registry = existsSync(stateFile) ? JSON.parse(readFileSync(stateFile, 'utf8')) : { initialized: false, startedAt: Date.now(), baselines: {}, bindings: {} };
+    for (const [key, b] of Object.entries(this.registry.bindings)) {
+      if (existsSync(b.rolloutPath)) this.observe(key, b);
+      else this.deps.error(new Error(`Codex transcript unavailable for ${b.threadId}; other sessions remain active`));
+    }
+  }
+  private save(): void { atomicWriteFileSync(this.stateFile, JSON.stringify(this.registry, null, 2), { mode: 0o600 }); }
+  private key(home: string, id: string): string { return createHash('sha256').update(`${home}:${id}`).digest('hex'); }
+  private observe(key: string, b: AutoCodexBinding, offset?: number): ExternalCodexBridge {
+    const observer = new ExternalCodexBridge([b], join(dirname(this.stateFile), `${key}.json`), {
+      reply: (_, text, uuid) => this.deps.reply(b, text, uuid),
+      turn: (_, text, checkpoint) => this.deps.turn(b, text, checkpoint), error: this.deps.error,
+    }, offset === undefined ? undefined : { [b.threadId]: offset }, this.registry.startedAt);
+    this.observers.set(key, observer);
+    return observer;
+  }
+  owns(root: string, app: string): boolean {
+    return Object.values(this.registry.bindings).some(b => b.rootMessageId === root && b.larkAppId === app);
+  }
+  async receive(root: string, app: string, sender: string, messageId: string, text: string): Promise<boolean> {
+    const found = Object.entries(this.registry.bindings).find(([, b]) => b.rootMessageId === root && b.larkAppId === app);
+    if (!found) return false;
+    if (sender !== this.cfg.ownerOpenId) return true;
+    const [key, source] = found;
+    const previous = this.routes.get(key) ?? Promise.resolve();
+    const operation = previous.catch(() => {}).then(async () => {
+      let targetKey = source.targetKey ?? key;
+      if (source.readOnly && !source.targetKey) {
+        const fork = await this.deps.fork(source);
+        targetKey = this.key(source.codexHome, fork.threadId);
+        const target = { ...source, ...fork, readOnly: false, targetKey: undefined };
+        this.registry.bindings[targetKey] = target;
+        source.targetKey = targetKey;
+        this.save(); // Reuse this fork for every later reply, including restart.
+        this.observe(targetKey, target);
+      }
+      await this.observers.get(targetKey)!.receive(root, app, sender, messageId, text);
+    });
+    this.routes.set(key, operation);
+    try { await operation; } finally { if (this.routes.get(key) === operation) this.routes.delete(key); }
+    return true;
+  }
+  private files(dir: string): string[] {
+    if (!existsSync(dir)) return [];
+    const result: string[] = [];
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) result.push(...this.files(path));
+      else if (entry.isFile() && entry.name.startsWith('rollout-') && entry.name.endsWith('.jsonl')) result.push(path);
+    }
+    return result;
+  }
+  private completeOffset(path: string, size: number): number {
+    const fd = openSync(path, 'r');
+    try {
+      const length = Math.min(size, 1024 * 1024), data = Buffer.alloc(length);
+      readSync(fd, data, 0, length, size - length);
+      const newline = data.lastIndexOf(10);
+      return newline < 0 ? 0 : size - length + newline + 1;
+    } finally { closeSync(fd); }
+  }
+  async scan(): Promise<void> {
+    if (this.scanning) return;
+    this.scanning = true;
+    try {
+      const excluded = this.deps.excluded();
+      let changed = !this.registry.initialized;
+      for (const home of this.cfg.codexHomes) for (const path of this.files(join(home, 'sessions'))) {
+        const size = statSync(path).size;
+        if (!size) continue;
+        let baseline = this.registry.baselines[path];
+        if (!baseline) {
+          baseline = this.registry.baselines[path] = { offset: this.registry.initialized ? 0 : this.completeOffset(path, size), protected: !this.registry.initialized };
+          changed = true;
+        }
+        if (size <= baseline.offset) continue;
+        const firstLine = readFileSync(path, 'utf8').split('\n')[0];
+        let meta: any;
+        try { meta = JSON.parse(firstLine); } catch { continue; }
+        if (meta.type !== 'session_meta' || typeof meta.payload?.id !== 'string') continue;
+        const id = meta.payload.id, key = this.key(home, id);
+        const priorBinding = this.registry.bindings[key];
+        if (priorBinding && priorBinding.rolloutPath !== path && !excluded.has(id)) {
+          priorBinding.rolloutPath = path;
+          this.observe(key, priorBinding);
+          changed = true;
+        }
+        if (!excluded.has(id) && !this.observers.has(key)) {
+          const candidate = {
+            threadId: id, rolloutPath: path, cwd: meta.payload.cwd, codexHome: home,
+            larkAppId: this.cfg.larkAppId, chatId: this.cfg.chatId, ownerOpenId: this.cfg.ownerOpenId,
+            readOnly: baseline.protected && !this.cfg.writableThreadIds?.includes(id),
+          };
+          if (typeof candidate.cwd !== 'string') continue;
+          const rootMessageId = priorBinding?.rootMessageId ?? await this.deps.topic(candidate, key.slice(0, 32));
+          const binding = { ...candidate, ...priorBinding, rolloutPath: path, rootMessageId };
+          this.registry.bindings[key] = binding;
+          this.save();
+          this.observe(key, binding, baseline.offset);
+        }
+        baseline.offset = size;
+        changed = true;
+      }
+      this.registry.initialized = true;
+      if (changed) this.save();
+    } finally { this.scanning = false; }
+    for (const observer of this.observers.values()) {
+      // Keep scanning and forwarding other threads while one model runs.
+      void observer.tick().catch(this.deps.error);
+    }
+  }
+  async start(): Promise<void> {
+    await this.scan();
+    this.timer = setInterval(() => { void this.scan().catch(this.deps.error); }, 2000);
+    this.timer.unref();
+  }
+  stop(): void { if (this.timer) clearInterval(this.timer); }
+}

@@ -1,18 +1,36 @@
 import { existsSync, readFileSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, dirname } from 'node:path';
+import { join, dirname, basename } from 'node:path';
 import { spawn } from 'node:child_process';
-import { replyMessage } from '../im/lark/client.js';
+import { replyMessage, sendMessage } from '../im/lark/client.js';
 import { logger } from '../utils/logger.js';
 import { ExternalCodexBridge, type ExternalCodexBinding } from './external-codex-bridge.js';
+import { CodexAutoBridge, type AutoCodexBinding } from './codex-auto-bridge.js';
+import { CodexAppServerProbe } from './codex-app-threads.js';
+import { collectBotmuxSessionIdentities } from './session-store.js';
 
-export let externalCodexBridge: ExternalCodexBridge | undefined;
+export let externalCodexBridge: ExternalCodexBridge | CodexAutoBridge | undefined;
 
 export function startExternalCodexBridge(): void {
   const configPath = join(homedir(), '.config/botmux/external-codex.json');
   if (!existsSync(configPath)) return;
   const cfg = JSON.parse(readFileSync(configPath, 'utf8'));
   if (cfg.enabled !== true) return;
+  if (cfg.mode === 'auto') {
+    if (!Array.isArray(cfg.codexHomes) || !cfg.codexHomes.length || !cfg.larkAppId || !cfg.chatId || !cfg.ownerOpenId || !cfg.codexBin) throw new Error('Invalid automatic Codex bridge config');
+    const auto = new CodexAutoBridge(cfg, join(homedir(), '.local/state/botmux/codex-auto/registry.json'), {
+      topic: (b, uuid) => sendMessage(b.larkAppId, b.chatId,
+        `Codex · ${basename(b.cwd)} · ${b.threadId.slice(0, 8)}\n此话题自动同步该会话的新回复，可直接追问。${b.readOnly ? '\n原档保留，首次追问会创建并固定复用一个 fork。' : ''}`, 'text', uuid),
+      reply: (b, text, uuid) => replyMessage(b.larkAppId, b.rootMessageId, text, 'text', true, uuid),
+      turn: (b, text, checkpoint) => runExternalCodexTurn(cfg.codexBin, b.codexHome, b, text, checkpoint),
+      fork: b => forkExternalCodexThread(cfg.codexBin, b),
+      excluded: () => collectBotmuxSessionIdentities() ?? new Set(),
+      error: e => logger.error(`[codex-auto] ${String(e)}`),
+    });
+    externalCodexBridge = auto;
+    void auto.start().then(() => logger.info(`[codex-auto] watching all sessions in ${cfg.codexHomes.length} libraries`)).catch(e => logger.error(`[codex-auto] startup failed: ${String(e)}`));
+    return;
+  }
   if (!Array.isArray(cfg.bindings) || !cfg.codexHome || !cfg.codexBin) throw new Error('Invalid external Codex bridge config');
   for (const b of cfg.bindings) {
     for (const field of ['threadId', 'sourceThreadId', 'rolloutPath', 'cwd', 'chatId', 'larkAppId', 'ownerOpenId', 'rootMessageId']) {
@@ -29,6 +47,19 @@ export function startExternalCodexBridge(): void {
   });
   externalCodexBridge.start();
   logger.info(`[external-codex] observing ${cfg.bindings.length} explicitly bound fork(s)`);
+}
+
+export async function forkExternalCodexThread(binary: string, b: AutoCodexBinding): Promise<{ threadId: string; rolloutPath: string }> {
+  const client = new CodexAppServerProbe(binary, b.cwd, { ...process.env, HOME: homedir(), CODEX_HOME: b.codexHome });
+  try {
+    await client.initialize(15000);
+    const result = await client.withTimeout(client.request('thread/fork', {
+      threadId: b.threadId, cwd: b.cwd, persistExtendedHistory: true,
+    }), 30000, 'fork external archive');
+    const threadId = result.thread?.id, rolloutPath = result.thread?.path;
+    if (typeof threadId !== 'string' || typeof rolloutPath !== 'string' || threadId === b.threadId) throw new Error('Codex fork did not return a distinct persisted thread');
+    return { threadId, rolloutPath };
+  } finally { client.close(); }
 }
 
 export async function runExternalCodexTurn(binary: string, codexHome: string, b: ExternalCodexBinding, text: string, checkpoint: () => void): Promise<void> {
