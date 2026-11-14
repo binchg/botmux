@@ -10,6 +10,7 @@ export interface ModelSelection {
   model: string;
   effort: string;
   serviceTier?: string;
+  routingMode?: 'fixed' | 'adaptive';
 }
 export interface SessionModelRequest extends ModelSelection {
   sessionId: string;
@@ -47,7 +48,7 @@ export const readSessionModel = (dir: string, id: string) => read<SessionModelRe
 export const readSessionModelRuntime = (dir: string, id: string) => read<SessionModelRuntime>(dir, id, 'runtime');
 export function writeSessionModel(dir: string, sessionId: string, selection: ModelSelection): SessionModelRequest {
   const previous = readSessionModel(dir, sessionId);
-  if (previous && previous.model === selection.model && previous.effort === selection.effort && previous.serviceTier === selection.serviceTier && previous.executor === selection.executor && previous.hookTrust === selection.hookTrust) return previous;
+  if (previous && previous.model === selection.model && previous.effort === selection.effort && previous.serviceTier === selection.serviceTier && previous.executor === selection.executor && previous.hookTrust === selection.hookTrust && previous.routingMode === selection.routingMode) return previous;
   const value = { ...selection, sessionId, revision: randomUUID(), updatedAt: new Date().toISOString() };
   write(dir, sessionId, 'desired', value);
   return value;

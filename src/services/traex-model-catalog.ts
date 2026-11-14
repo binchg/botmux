@@ -74,20 +74,15 @@ export function fetchTraexCatalog(bin = process.env.TRAEX_APP_SERVER_BIN || 'tra
   });
 }
 
-/** A reported catalog queue and an exhausted daily quota while busy are hard
- * exclusions. Load is a soft pressure signal, never a stand-alone gate. */
+/** 优先避免排队：仅请求负载已知且低于 100%、无已知排队且额度未耗尽的候选。 */
 export function isTraexCatalogCandidate(model: TraexCatalogModel, effort = 'xhigh'): boolean {
   if (!model.efforts.includes(effort)) return false;
+  if (model.loadPercent === undefined || model.loadPercent >= 100) return false;
   if (model.queueSize !== undefined && model.queueSize > 0) return false;
-  return !(model.quota.state === 'exhausted' && (model.loadPercent ?? 0) >= 100);
+  return model.quota.state !== 'exhausted';
 }
 
-/**
- * Capability order has a material but not absolute effect. A small overload on
- * a stronger model can still win; extreme server pressure remains expensive.
- * Explicit remaining quota gets a modest preference, and unknown quota remains
- * neutral rather than being fabricated as available.
- */
+/** 在通过准入筛选的模型之间比较能力、负载与已知额度，不拿能力分抵消繁忙状态。 */
 function loadPressure(loadPercent: number | undefined): number {
   if (loadPercent === undefined) return 135;
   if (loadPercent <= 80) return 0;
