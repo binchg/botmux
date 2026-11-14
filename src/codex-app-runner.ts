@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import type { Args, ActiveTurn, JsonObject } from './services/app-runner-types.js';
 import { AppServerClient } from './services/app-runner-client.js';
+import { prefixCodexAppThreadTitle } from './services/codex-app-thread-title.js';
 import { asError, parseArgs, b64Json, writeLine, displayUserContent, prompt, appDeveloperInstructions, userTextInput } from './services/app-runner-protocol.js';
 import { handleAppServerRequest, handleAppNotification } from './services/app-runner-events.js';
 import { runSingleTurn, type SingleTurnContext } from './services/app-runner-turn.js';
@@ -273,7 +274,7 @@ async function ensureThread(model = defaultThreadModel): Promise<string> {
         try {
           await client.request('thread/name/set', {
             threadId: resumedThreadId,
-            name: args.title.trim(),
+            name: prefixCodexAppThreadTitle(args.title, args.botName),
           });
         } catch { /* 命名失败不阻塞会话恢复 */ }
       }
@@ -307,7 +308,7 @@ async function ensureThread(model = defaultThreadModel): Promise<string> {
   try {
     await client.request('thread/name/set', {
       threadId: startedThreadId,
-      name: args.title?.trim() || `botmux ${args.sessionId.slice(0, 8)}`,
+      name: prefixCodexAppThreadTitle(args.title?.trim() || args.sessionId.slice(0, 8), args.botName),
     });
   } catch { /* naming is cosmetic */ }
   return startedThreadId;

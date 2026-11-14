@@ -87,8 +87,8 @@ describe('codex-app runner steering', () => {
   it('uses the local Botmux title through app-server without adding a naming prompt', () => {
     expect(source).toContain("else if (key === '--title'");
     expect(source).toContain("client.request('thread/name/set'");
-    expect(source).toContain('name: args.title?.trim()');
-    expect(source).toContain('name: args.title.trim()');
+    expect(source).toContain('name: prefixCodexAppThreadTitle(args.title?.trim()');
+    expect(source).toContain('name: prefixCodexAppThreadTitle(args.title, args.botName)');
     expect(source).toContain('恢复旧 Botmux 会话时同步迁移');
     expect(source).not.toContain('请生成会话标题');
   });

@@ -63,7 +63,7 @@ import {
 import { resolveOutboundLocalImages } from '../services/outbound-local-images.js';
 import { usageLimitStateKey, type CliUsageLimitState } from '../utils/cli-usage-limit.js';
 import { shouldSuppressAfterTerminalSend, terminalSendDecision } from '../services/terminal-send-barrier.js';
-import { allocateCodexAppThreadTitle } from '../services/codex-app-thread-title.js';
+import { allocateCodexAppThreadTitle, prefixCodexAppThreadTitle } from '../services/codex-app-thread-title.js';
 
 type WindowsForkOptions = ForkOptions & { windowsHide?: boolean };
 
@@ -1731,10 +1731,16 @@ export function forkWorker(ds: DaemonSession, prompt: string, resumeOrTurnId: bo
 
   const agentCfg = sessionAgentConfig(ds, botCfg);
   // 旧版本创建的会话在首次恢复时也补齐标题；持久化后不再重复占用每日序号。
-  if (agentCfg.cliId === 'codex-app' && !ds.session.codexAppThreadTitle) {
+  if (agentCfg.cliId === 'codex-app') {
     try {
-      ds.session.codexAppThreadTitle = allocateCodexAppThreadTitle(ds.session.title, config.session.dataDir);
-      sessionStore.updateSession(ds.session);
+      const title = prefixCodexAppThreadTitle(
+        ds.session.codexAppThreadTitle || allocateCodexAppThreadTitle(ds.session.title, config.session.dataDir),
+        bot.botName,
+      );
+      if (title !== ds.session.codexAppThreadTitle) {
+        ds.session.codexAppThreadTitle = title;
+        sessionStore.updateSession(ds.session);
+      }
     } catch (error) {
       logger.warn(`[${t}] Codex App 标题序号分配失败，将使用原始会话标题：${(error as Error)?.message ?? error}`);
     }

@@ -23,6 +23,15 @@ const LOCK_RETRY_LIMIT = 300;
 const SUMMARY_MAX_CHARS = 24;
 const lockWaitBuffer = new Int32Array(new SharedArrayBuffer(4));
 
+/** 标记创建会话的机器人；恢复同一会话时不会重复添加前缀。 */
+export function prefixCodexAppThreadTitle(title: string, botName?: string): string {
+  const prefix = `bot${botName?.replace(/\s+/g, ' ').trim() || 'mux'}`;
+  const normalized = title.trim();
+  return normalized === prefix || normalized.startsWith(`${prefix} `)
+    ? normalized
+    : `${prefix} ${normalized || '新会话'}`;
+}
+
 interface CounterState {
   day: string;
   next: number;

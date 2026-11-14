@@ -7,6 +7,7 @@ import {
   allocateCodexAppThreadTitle,
   formatCodexAppThreadTitle,
   summarizeCodexAppThreadTitle,
+  prefixCodexAppThreadTitle,
 } from '../src/services/codex-app-thread-title.js';
 
 const tempDirs: string[] = [];
@@ -22,6 +23,12 @@ function makeDataDir(): string {
 }
 
 describe('Codex App 本地会话标题', () => {
+  it('按机器人身份添加前缀，重复恢复保持幂等并保留日期与摘要', () => {
+    expect(prefixCodexAppThreadTitle('111401 修改标题', '陈陈R')).toBe('bot陈陈R 111401 修改标题');
+    expect(prefixCodexAppThreadTitle('bot陈陈R 111401 修改标题', '陈陈R')).toBe('bot陈陈R 111401 修改标题');
+    expect(prefixCodexAppThreadTitle('  测试  ', 'Nene')).toBe('botNene 测试');
+    expect(prefixCodexAppThreadTitle('', '')).toBe('botmux 新会话');
+  });
   it('从首条用户消息提取短句并去掉提及与包装标签', () => {
     expect(summarizeCodexAppThreadTitle(
       '<sender type="user">陈金彬</sender><user_message>@雪球 修改 botmux 会话标题，目前默认不方便</user_message>',
