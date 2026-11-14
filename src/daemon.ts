@@ -1,4 +1,5 @@
 import { execFileSync, type ChildProcess } from 'node:child_process';
+import { externalCodexBridge, startExternalCodexBridge } from './services/external-codex-runtime.js';
 import { readFileSync, existsSync, mkdirSync, unlinkSync, watch, readdirSync } from 'node:fs';
 import { atomicWriteFileSync } from './utils/atomic-write.js';
 import { join, dirname } from 'node:path';
@@ -2973,6 +2974,7 @@ async function handleThreadReply(data: any, ctx: RoutingContext): Promise<void> 
   const { chatId: ctxChatId, chatType: ctxChatType, scope, anchor, larkAppId, replyRootId } = ctx;
   await resolveNonsupportMessage(data, larkAppId);
   const { parsed, resources } = parseEventMessage(data);
+  if (await externalCodexBridge?.receive(anchor, larkAppId, parsed.senderId, parsed.messageId, parsed.content)) return;
 
   // Expand merge_forward: fetch sub-messages and collect their resources
   if (parsed.msgType === 'merge_forward') {
@@ -4064,7 +4066,7 @@ export async function startDaemon(botIndex?: number): Promise<void> {
       handleThreadReply: (data, ctx) => handleThreadReply(data, ctx),
       handleBotAdded: (chatId, operatorOpenId, appId) => handleBotAdded(chatId, operatorOpenId, appId),
       handleDocComment: (ctx) => handleDocComment(ctx),
-      isSessionOwner: (anchor, appId) => activeSessions.has(sessionKey(anchor, appId)),
+      isSessionOwner: (anchor, appId) => activeSessions.has(sessionKey(anchor, appId)) || !!externalCodexBridge?.owns(anchor, appId),
       resolveReplyThreadAlias: (rootId, chatId, appId) => findChatReplyAlias(rootId, chatId, appId),
       // Chat was converted 普通群 → 话题群 while we held a chat-scope session.
       // Evict it from the routing map so subsequent inbound messages can land
@@ -4091,6 +4093,8 @@ export async function startDaemon(botIndex?: number): Promise<void> {
 
   // Restore active sessions from previous run
   await restoreActiveSessions(activeSessions);
+  try { startExternalCodexBridge(); }
+  catch (err) { logger.error(`[external-codex] bridge disabled: ${String(err)}`); }
 
   // Agent Team crash reconciliation：先恢复 session registry，再重放 queued 依赖节点
   // 与持久 report outbox。两步都是幂等的，旧/重复 reportId 不会产生第二次 leader 效果。
