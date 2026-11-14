@@ -2,6 +2,7 @@
 import { CardActionContext, SessionCardContext, CARD_ACTION_UNHANDLED } from './card-action-context.js';
 import { sessionKey } from '../../core/types.js';
 import { getSessionByActionValue, validateCardCliBinding } from './card-action-session-helpers.js';
+import { handleSessionModelAction } from './session-model-card-action.js';
 import { handleLifecycleAction } from './card-action-lifecycle.js';
 import { handleTerminalInputAction } from './card-action-terminal-input.js';
 import { handleDisplayAction } from './card-action-display.js';
@@ -19,7 +20,7 @@ export async function handleSessionCardAction(context: CardActionContext): Promi
 
     if (ds && !validateCardCliBinding(ds, value)) return;
   const sessionContext: SessionCardContext = { ...context, value, actionType, rootId, sKey, ds };
-  for (const handle of [handleLifecycleAction, handleTerminalInputAction, handleDisplayAction, handleRepoFormAction]) {
+  for (const handle of [handleSessionModelAction, handleLifecycleAction, handleTerminalInputAction, handleDisplayAction, handleRepoFormAction]) {
     const result = await handle(sessionContext);
     if (result !== CARD_ACTION_UNHANDLED) return result;
   }

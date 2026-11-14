@@ -9,6 +9,7 @@ import { t, type Locale } from '../../i18n/index.js';
 import { localTerminalCapable } from '../../core/local-terminal-opener.js';
 import { readGlobalConfig } from '../../global-config.js';
 import type { ConfigCardData } from '../../services/bot-config-store.js';
+import { sessionModelCardElements, sessionModelButton } from './session-model-card.js';
 import { conversationHistoryButtons } from './conversation-history-button.js';
 
 /** select_static 里代表「清回默认 / 未设置」的哨兵值（model / lang 下拉用）。 */
@@ -293,6 +294,7 @@ export function buildSessionCard(
       type: 'primary',
       multi_url: terminalMultiUrl(terminalUrl),
     },
+    ...sessionModelButton(sessionId, actionBase, cliId),
     ...conversationHistoryButtons(sessionId, locale),
     ...openLocalTerminalButtons(actionBase, cliName, locale),
   ];
@@ -334,6 +336,7 @@ export function buildSessionCard(
       template: 'blue',
     },
     elements: [
+      ...sessionModelCardElements(sessionId, cliId, locale),
       { tag: 'action', actions },
     ],
   };
@@ -705,6 +708,8 @@ export function buildStreamingCard(
 
   const elements: any[] = [];
 
+  elements.push(...sessionModelCardElements(sessionId, cliId, locale));
+
   // ── Output body (shared with the private snapshot card) ──────────────────
   pushStreamBody(elements, { status, usageLimit, displayMode, imageKey, cliName, locale });
 
@@ -739,6 +744,7 @@ export function buildStreamingCard(
     type: 'primary',
     multi_url: terminalMultiUrl(terminalUrl),
   });
+  headerActions.push(...sessionModelButton(sessionId, actionBase, cliId));
   headerActions.push(...openLocalTerminalButtons(actionBase, cliName, locale));
   headerActions.push(...conversationHistoryButtons(sessionId, locale));
   if (status === 'limited' && usageLimit?.retryReady) {
