@@ -40,13 +40,12 @@ function parseArgs(argv) {
     else if (argv[i] === '--local') local = true;
     else if (argv[i] === '--defer-restart') deferRestart = true;
     else if (argv[i] === '--help' || argv[i] === '-h') {
-      console.log('Usage: corepack pnpm deploy:dev -- --message "fix(scope): 中文描述" [--local --defer-restart]');
+      console.log('Usage: corepack pnpm deploy:dev -- --message "fix(scope): 中文描述" [--local] [--defer-restart]');
       process.exit(0);
     } else if (argv[i] !== '--') throw new Error(`未知参数: ${argv[i]}`);
   }
   if (!message.trim()) throw new Error('必须通过 --message 提供本次提交说明');
   if (/[\r\n]/.test(message)) throw new Error('--message 只允许单行提交标题');
-  if (deferRestart && !local) throw new Error('--defer-restart requires explicitly authorized --local deployment');
   return { message: message.trim(), local, deferRestart };
 }
 

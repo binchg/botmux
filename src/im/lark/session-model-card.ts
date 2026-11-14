@@ -2,6 +2,7 @@ import { config } from '../../config.js';
 import { sessionModelStatus, type ModelSelection } from '../../services/session-model-store.js';
 import type { AvailableSessionModel } from '../../services/session-model-selection.js';
 import type { Locale } from '../../i18n/index.js';
+import { getSession } from '../../services/session-store.js';
 
 const text = (content: string) => ({ tag: 'div', text: { tag: 'lark_md', content } });
 const safe = (value?: string) => value?.replace(/[^\w.:-]/g, '') || '未知';
@@ -15,11 +16,13 @@ export function sessionModelCardElements(sessionId: string, cliId?: string, loca
     const state = sessionModelStatus(config.session.dataDir, sessionId);
     const current = state.runtime?.selection;
     const rows = [text(current
-      ? `**${en ? 'Current' : '当前'}** · ${label(current, en)}${state.runnerAlive ? '' : (en ? ' (last receipt; runner offline)' : '（最近回执，运行器离线）')}`
+      ? `**${state.runnerAlive ? (en ? 'Current' : '当前') : (en ? 'Last run settings' : '上次运行配置')}** · ${label(current, en)}`
       : `${en ? 'Current model / reasoning / Fast: awaiting runtime receipt' : '当前模型 / 推理 / Fast：等待运行回执'}`)];
     if (state.desired && state.desired.revision !== state.runtime?.revision) {
       rows.push(text(`${en ? 'Pending next turn' : '待下一轮生效'} · ${label(state.desired, en)}`));
     }
+    const workingDir = getSession(sessionId)?.workingDir;
+    rows.push({ tag: 'div', text: { tag: 'plain_text', content: `📁 ${en ? 'Working directory' : '工作目录'}：${workingDir || (en ? 'Unknown' : '未知')}` } });
     return rows;
   } catch { return [text(en ? 'Model status unavailable' : '模型状态暂不可用')]; }
 }

@@ -12,6 +12,7 @@ vi.mock('../src/services/codex-app-threads.js', () => ({ listCodexAppModels: vi.
   { model: 'test-b', defaultReasoningEffort: 'low', supportedReasoningEfforts: [{ reasoningEffort: 'low' }] },
 ]) }));
 vi.mock('../src/i18n/index.js', () => ({ localeForBot: () => 'zh' }));
+vi.mock('../src/services/session-store.js', () => ({ getSession: vi.fn(() => ({ workingDir: '/home/ubuntu/my/project' })) }));
 const dirs: string[] = [];
 const original = config.session.dataDir;
 const temp = () => { const d = mkdtempSync(join(tmpdir(), 'model-card-')); dirs.push(d); config.session.dataDir = d; return d; };
@@ -31,7 +32,17 @@ describe('per-session model control card', () => {
     const rows = JSON.stringify(sessionModelCardElements('a', 'codex-app'));
     expect(rows).toContain('**当前** · test-a · medium · Fast OFF');
     expect(rows).toContain('待下一轮生效 · test-a · high · Fast ON');
+    expect(rows).toContain('工作目录：/home/ubuntu/my/project');
     expect(sessionModelButton('a', { root_id: 'root' }, 'claude-code')).toEqual([]);
+  });
+  it('labels a previous receipt without an offline warning or pretending it is current', () => {
+    const d = temp();
+    writeSessionModelRuntime(d, { sessionId: 'a', pid: 2147483647, phase: 'completed', selection });
+    const rows = JSON.stringify(sessionModelCardElements('a', 'codex-app'));
+    expect(rows).toContain('**上次运行配置** · test-a');
+    expect(rows).not.toContain('运行器离线');
+    expect(rows).not.toContain('**当前**');
+    expect(JSON.stringify(sessionModelCardElements('a', 'codex-app', 'en'))).toContain('Working directory');
   });
   it('applies only to the bound session, preserving the other session and speed', async () => {
     const d = temp(); writeSessionModel(d, 'session-a', { ...selection, serviceTier: 'priority' });
