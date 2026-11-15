@@ -34,7 +34,7 @@ export function startExternalCodexBridge(selfAppId: string): void {
       },
       reply: async (b, text, uuid, kind) => replyMessage(b.larkAppId, b.rootMessageId,
         buildExternalCodexForwardCard(b, text, kind, nativeConversationHistoryButtons(b, kind === 'user')), 'interactive', true, uuid),
-      turn: (b, text, checkpoint) => runExternalCodexTurn(cfg.codexBin, b.codexHome, b, text, checkpoint),
+      turn: (b, text, checkpoint, clientUserMessageId) => runExternalCodexTurn(cfg.codexBin, b.codexHome, b, text, checkpoint, clientUserMessageId),
       excluded: () => collectBotmuxSessionIdentities() ?? new Set(),
       error: e => logger.error(`[codex-auto] ${String(e)}`),
     });
@@ -53,7 +53,7 @@ export function startExternalCodexBridge(selfAppId: string): void {
   externalCodexBridge = new ExternalCodexBridge(cfg.bindings, statePath, {
     reply: async (b, text, uuid, kind) => replyMessage(b.larkAppId, b.rootMessageId,
         buildExternalCodexForwardCard(b, text, kind, nativeConversationHistoryButtons(b, kind === 'user')), 'interactive', true, uuid),
-    turn: (b, text, checkpoint) => runExternalCodexTurn(cfg.codexBin, cfg.codexHome, b, text, checkpoint),
+    turn: (b, text, checkpoint, clientUserMessageId) => runExternalCodexTurn(cfg.codexBin, cfg.codexHome, b, text, checkpoint, clientUserMessageId),
     error: e => logger.error(`[external-codex] ${String(e)}`),
   });
   externalCodexBridge.start();
@@ -84,8 +84,8 @@ export async function forkExternalCodexThread(binary: string, b: AutoCodexBindin
   } finally { client.close(); }
 }
 
-export async function runExternalCodexTurn(binary: string, codexHome: string, b: ExternalCodexBinding, text: string, checkpoint: (submitted?: boolean) => void): Promise<void> {
-  if (await submitToCodexOwner(codexHome, b.threadId, text, checkpoint)) return;
+export async function runExternalCodexTurn(binary: string, codexHome: string, b: ExternalCodexBinding, text: string, checkpoint: (submitted?: boolean) => void, clientUserMessageId?: string): Promise<void> {
+  if (await submitToCodexOwner(codexHome, b.threadId, text, checkpoint, clientUserMessageId)) return;
   const child = spawn(binary, ['app-server', '--listen', 'stdio://'], {
     cwd: b.cwd, env: { ...process.env, HOME: homedir(), CODEX_HOME: codexHome }, stdio: ['pipe', 'pipe', 'pipe'],
   });
@@ -132,7 +132,7 @@ export async function runExternalCodexTurn(binary: string, codexHome: string, b:
       persistExtendedHistory: true,
     });
     checkpoint();
-    const started = await request('turn/start', { threadId: b.threadId, input: [{ type: 'text', text }] });
+    const started = await request('turn/start', { threadId: b.threadId, input: [{ type: 'text', text }], ...(clientUserMessageId ? { clientUserMessageId } : {}) });
     turnId = started.turn?.id;
     await completed;
   } finally { clearTimeout(timer); child.kill(); }

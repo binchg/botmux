@@ -4,7 +4,7 @@ import { existsSync, lstatSync } from 'node:fs';
 import { join } from 'node:path';
 
 /** Submit through the IDE that already owns the thread; never steal its writer. */
-export async function submitToCodexOwner(home: string, threadId: string, text: string, checkpoint: (submitted?: boolean) => void): Promise<boolean> {
+export async function submitToCodexOwner(home: string, threadId: string, text: string, checkpoint: (submitted?: boolean) => void, clientUserMessageId?: string): Promise<boolean> {
   const path = join(home, 'ipc', 'ipc.sock');
   if (!existsSync(path)) return false;
   const stat = lstatSync(path);
@@ -24,7 +24,7 @@ export async function submitToCodexOwner(home: string, threadId: string, text: s
     const result = await client.request('thread-follower-start-turn', {
       conversationId: threadId,
       turnStart: {
-        request: { threadId, input: [{ type: 'text', text, text_elements: [] }], clientUserMessageId: randomUUID() },
+        request: { threadId, input: [{ type: 'text', text, text_elements: [] }], clientUserMessageId: clientUserMessageId ?? randomUUID() },
         context: { inheritThreadSettings: true, useAppServerPermissionDefault: true, useAppServerServiceTierDefault: true },
       },
     }, 2, owner.handledByClientId);

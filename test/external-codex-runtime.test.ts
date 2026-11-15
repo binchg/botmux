@@ -22,9 +22,10 @@ rl.on('line', l => {
     let checkpoints = 0;
     await runExternalCodexTurn(binary, '/default-codex', {
       threadId: 'fork', rolloutPath: '', cwd: dir, larkAppId: 'app', chatId: 'chat', ownerOpenId: 'owner', rootMessageId: 'root',
-    }, 'follow-up', () => { checkpoints++; });
+    }, 'follow-up', () => { checkpoints++; }, 'stable-client-receipt');
     const rows = readFileSync(join(dir, 'requests.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
     expect(checkpoints).toBe(1);
+    expect(rows.find(r => r.m.method === 'turn/start').m.params.clientUserMessageId).toBe('stable-client-receipt');
     expect(rows.every(r => r.home === '/default-codex')).toBe(true);
     expect(rows.find(r => r.m.method === 'thread/resume').m.params.threadId).toBe('fork');
     expect(rows.find(r => r.m.method === 'turn/start').m.params.input).toEqual([{ type: 'text', text: 'follow-up' }]);

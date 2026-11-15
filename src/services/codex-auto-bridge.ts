@@ -40,7 +40,7 @@ export class CodexAutoBridge {
   constructor(private cfg: AutoCodexConfig, private stateFile: string, private deps: {
     topic: (b: Omit<AutoCodexBinding, 'rootMessageId'>, uuid: string) => Promise<string>;
     reply: (b: AutoCodexBinding, text: string, uuid: string, kind?: ExternalCodexOutputKind) => Promise<unknown>;
-    turn: (b: AutoCodexBinding, text: string, checkpoint: (submitted?: boolean) => void) => Promise<void>;
+    turn: (b: AutoCodexBinding, text: string, checkpoint: (submitted?: boolean) => void, clientUserMessageId?: string) => Promise<void>;
     fork?: (b: AutoCodexBinding) => Promise<{ threadId: string; rolloutPath: string }>;
     excluded: () => Set<string>;
     error: (error: unknown) => void;
@@ -73,7 +73,7 @@ export class CodexAutoBridge {
   private observe(key: string, b: AutoCodexBinding, offset?: number): ExternalCodexBridge {
     const observer = new ExternalCodexBridge([b], join(dirname(this.stateFile), `${key}.json`), {
       reply: async (source, text, uuid, kind) => { if (!this.isManaged(b)) await this.deps.reply({ ...b, currentUserMessage: source.currentUserMessage }, text, uuid, kind); },
-      turn: async (_, text, checkpoint) => { if (!this.isManaged(b)) await this.deps.turn(b, text, checkpoint); }, error: this.deps.error,
+      turn: async (_, text, checkpoint, clientUserMessageId) => { if (!this.isManaged(b)) await this.deps.turn(b, text, checkpoint, clientUserMessageId); }, error: this.deps.error,
     }, offset === undefined ? undefined : { [b.threadId]: offset }, this.registry.startedAt);
     this.observers.set(key, observer);
     return observer;

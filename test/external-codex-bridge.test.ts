@@ -78,3 +78,27 @@ describe('external Codex fork bridge', () => {
     } finally { f.cleanup(); }
   });
 });
+
+it('clears a timed-out submission only after its exact client receipt and matching turn completion',()=>{
+ const state:ExternalCodexCursor={offset:0,carry:'',busy:false,outbox:[],received:[],pending:{messageId:'m',text:'same question',status:'started',clientUserMessageId:'receipt-id'}};
+ consumeExternalCodex(state,event({type:'task_started',turn_id:'other'})+event({type:'user_message',message:'same question',client_id:'different-id'})+event({type:'task_complete',turn_id:'other',last_agent_message:'other result'}));
+ expect(state.pending?.status).toBe('started');
+ consumeExternalCodex(state,event({type:'task_started',turn_id:'late'})+event({type:'user_message',message:'same question',client_id:'receipt-id'}));
+ expect(state.pending?.receiptTurnId).toBe('late');
+ consumeExternalCodex(state,event({type:'task_complete',turn_id:'late',last_agent_message:'late result'}));expect(state.pending).toBeUndefined();
+});
+
+it('recovers an already-completed exact receipt on restart without resubmitting or replaying output',async()=>{
+ const f=fixture();let calls=0;const deps={reply:async()=>{},turn:async()=>{calls++},error:()=>{}};
+ try{
+  appendFileSync(f.rolloutPath,event({type:'task_started',turn_id:'late'})+event({type:'user_message',message:'question',client_id:'receipt-id'})+event({type:'task_complete',turn_id:'late',last_agent_message:'done'}));
+  const content=readFileSync(f.rolloutPath,'utf8');writeFileSync(f.stateFile,JSON.stringify({fork:{offset:Buffer.byteLength(content),carry:'',busy:false,outbox:[],received:['m'],pending:{messageId:'m',text:'question',status:'started',clientUserMessageId:'receipt-id'}}}));
+  const bridge=new ExternalCodexBridge([f.binding],f.stateFile,deps);await bridge.tick();expect(calls).toBe(0);expect(JSON.parse(readFileSync(f.stateFile,'utf8')).fork.pending).toBeUndefined();
+ }finally{f.cleanup()}
+});
+
+it('reports an uncertain owner failure once, retaining the original input without replay',async()=>{
+ const f=fixture();let calls=0;const notices:string[]=[];
+ const deps={reply:async(_:unknown,text:string)=>{notices.push(text)},turn:async(_:unknown,_text:string,checkpoint:()=>void)=>{calls++;checkpoint();throw Error('timeout')},error:()=>{}};
+ try{const bridge=new ExternalCodexBridge([f.binding],f.stateFile,deps);await bridge.receive('root','app','owner','m','question');await expect(bridge.tick()).rejects.toThrow('timeout');await bridge.tick();await bridge.tick();expect(calls).toBe(1);expect(notices.filter(t=>t.includes('确认结果前不会重复提交'))).toHaveLength(1)}finally{f.cleanup()}
+});

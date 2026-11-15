@@ -1,5 +1,5 @@
 import { readFileSync, statSync, openSync, readSync, closeSync, existsSync } from 'node:fs';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { publicCodexEvent, codexSyncEventKey } from './codex-sync-events.js';
 import { jsonlFrontierAnchor } from './jsonl-cursor.js';
@@ -26,7 +26,7 @@ export interface ExternalCodexCursor {
   completed?: string[];
   notBefore?: number;
   queued?: Array<{ messageId: string; text: string }>;
-  pending?: { messageId: string; text: string; status: 'queued' | 'started' };
+  pending?: { messageId: string; text: string; status: 'queued' | 'started'; clientUserMessageId?: string; receiptTurnId?: string; errorNotified?: boolean };
   turnId?: string;
   eventSequence?: number;
   progressCarry?: string;
@@ -51,6 +51,13 @@ export function consumeExternalCodex(state: ExternalCodexCursor, text: string): 
     }
     const ended = row.type === 'event_msg' && (p.type === 'task_complete' || p.type === 'turn_aborted');
     if (ended) state.busy = false;
+    // A receipt may arrive after the owner RPC timed out. Correlate its exact
+    // client ID, never replay the input or infer delivery from matching text.
+    if (state.pending?.status === 'started' && row.type === 'event_msg' && p.type === 'user_message'
+      && state.pending.clientUserMessageId && p.client_id === state.pending.clientUserMessageId) {
+      state.pending.receiptTurnId = state.turnId;
+    }
+    if (ended && state.pending?.receiptTurnId && state.pending.receiptTurnId === (p.turn_id ?? p.root_turn_id)) state.pending = undefined;
     const event = publicCodexEvent(row, '');
     if (!event) continue;
     const key = codexSyncEventKey(row, event, state.turnId);
@@ -94,7 +101,7 @@ export class ExternalCodexBridge {
   private states = new Map<string, ExternalCodexCursor>();
   constructor(private bindings: ExternalCodexBinding[], private stateFile: string, private deps: {
     reply: (binding: ExternalCodexBinding, text: string, uuid: string, kind?: ExternalCodexOutputKind) => Promise<unknown>;
-    turn: (binding: ExternalCodexBinding, text: string, checkpoint: (submitted?: boolean) => void) => Promise<void>;
+    turn: (binding: ExternalCodexBinding, text: string, checkpoint: (submitted?: boolean) => void, clientUserMessageId?: string) => Promise<void>;
     error: (error: unknown) => void;
   }, initialOffsets?: Record<string, number>, notBefore?: number) {
     const saved = existsSync(stateFile) ? JSON.parse(readFileSync(stateFile, 'utf8')) : {};
@@ -137,6 +144,11 @@ export class ExternalCodexBridge {
           const event = publicCodexEvent(row, '');
           if (event?.kind === 'user') { state.currentUserMessage = event.text; break; }
         }
+      }
+      if (state.pending?.status === 'started' && state.pending.clientUserMessageId) {
+        const seed: ExternalCodexCursor = { offset: 0, carry: '', busy: false, outbox: [], received: [], pending: { ...state.pending } };
+        consumeExternalCodex(seed, Buffer.from(existing).subarray(0, state.offset).toString('utf8'));
+        state.pending = seed.pending;
       }
       const st = statSync(b.rolloutPath);
       state.frontierAnchor ??= jsonlFrontierAnchor(b.rolloutPath, state.offset);
@@ -221,6 +233,8 @@ export class ExternalCodexBridge {
         }
         if (state.pending?.status === 'queued' && !state.busy && !this.submitting.has(b.threadId)) {
           const pending = state.pending;
+          pending.clientUserMessageId ??= randomUUID();
+          this.save();
           // Persist at the turn/start boundary; an uncertain started input is
           // retained for inspection after a crash, never blindly resubmitted.
           this.submitting.add(b.threadId);
@@ -229,9 +243,17 @@ export class ExternalCodexBridge {
               await this.deps.turn(b, pending.text, (submitted = true) => {
                 pending.status = submitted ? 'started' : 'queued';
                 this.save();
-              });
+              }, pending.clientUserMessageId);
               if (state.pending === pending) state.pending = undefined;
               this.save();
+            } catch (error) {
+              if (state.pending === pending && !pending.errorNotified) {
+                pending.errorNotified = true;
+                state.outbox.push({ id: `delivery-status:${pending.messageId}`, kind: 'progress', question: pending.text,
+                  text: pending.status === 'started' ? '原生窗口尚未确认接收，追问已保留；确认结果前不会重复提交。' : '原生窗口暂未就绪，追问已保留，正在等待原会话。' });
+                this.save();
+              }
+              throw error;
             } finally { this.submitting.delete(b.threadId); }
           });
         }

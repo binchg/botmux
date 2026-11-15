@@ -43,9 +43,10 @@ async function fixture(owner = true, submissionError: boolean | string = false) 
 it('submits once to the discovered IDE owner and inherits existing thread settings', async () => {
   const f = await fixture(); let checkpoints = 0;
   try {
-    expect(await submitToCodexOwner(f.home, 'fork', '只读验收', () => { checkpoints++; })).toBe(true);
+    expect(await submitToCodexOwner(f.home, 'fork', '只读验收', () => { checkpoints++; }, 'stable-client-receipt')).toBe(true);
     const request = f.requests[2];
     expect(request.method).toBe('thread-follower-start-turn');
+    expect(request.params.turnStart.request.clientUserMessageId).toBe('stable-client-receipt');
     expect(request.targetClientId).toBe('ide-owner');
     expect(request.version).toBe(2);
     expect(request.params.turnStart.request.input).toEqual([{ type: 'text', text: '只读验收', text_elements: [] }]);
