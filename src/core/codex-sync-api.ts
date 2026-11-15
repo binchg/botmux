@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, mkdirSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
@@ -17,6 +17,7 @@ import { findActiveBySessionId, getActiveSessionsRegistry } from './worker-pool.
 import { reconcileActiveSessionRegistry, buildFollowUpContent, rememberLastCliInput } from './session-manager.js';
 import { sendSessionInput } from './session-working-dir-runtime.js';
 import { markSessionActivity } from './session-activity.js';
+import { logger } from '../utils/logger.js';
 
 type Route = (method: string, path: string, handler: (req: IncomingMessage, res: ServerResponse, params: Record<string, string>) => void | Promise<void>) => void;
 type Thread = { key: string; title: string; bot: string; threadId?: string; cwd?: string; createdAt?: string; kind: 'bot' | 'native'; path?: string; rootMessageId: string; chatId: string; ownerOpenId?: string };
@@ -43,6 +44,26 @@ export function codexSyncThreads(appId: string): Thread[] {
 export function registerCodexSyncApi(appId: string, route: Route,
   json: (res: ServerResponse, status: number, value: unknown) => void,
   body: (req: IncomingMessage) => Promise<any>): void {
+  const receiptDir = join(config.session.dataDir, 'codex-sync-receipts');
+  const mirrors = new Set<string>(), mirroring = new Set<string>();
+  const flushMirror = async (file: string) => {
+    if (mirroring.has(file)) return;
+    mirroring.add(file);
+    try {
+      const saved = JSON.parse(readFileSync(file, 'utf8'));
+      if (!saved.mirror || saved.mirrored || saved.status !== 'accepted') { mirrors.delete(file); return; }
+      await replyMessage(appId, saved.mirror.rootMessageId, `【VS Code 追问】\n${saved.mirror.text}`, 'text', true, saved.mirror.uuid);
+      const latest = JSON.parse(readFileSync(file, 'utf8'));
+      atomicWriteFileSync(file, JSON.stringify({ ...latest, mirrored: true }), { mode: 0o600 }); mirrors.delete(file);
+    } catch (error) { logger.debug(`[codex-sync] question mirror will retry: ${String(error)}`); }
+    finally { mirroring.delete(file); }
+  };
+  if (existsSync(receiptDir)) for (const name of readdirSync(receiptDir)) {
+    if (!name.endsWith('.json')) continue;
+    const file = join(receiptDir, name);
+    try { const saved = JSON.parse(readFileSync(file, 'utf8')); if (saved.mirror && !saved.mirrored && saved.status === 'accepted') mirrors.add(file); } catch { /* isolated receipt */ }
+  }
+  const mirrorTimer = setInterval(() => { for (const file of mirrors) void flushMirror(file); }, 5000); mirrorTimer.unref();
   route('GET', '/api/codex-sync/threads', (_req, res) => {
     json(res, 200, { threads: codexSyncThreads(appId).map(({ path, ownerOpenId, ...thread }) => thread) });
   });
@@ -68,18 +89,17 @@ export function registerCodexSyncApi(appId: string, route: Route,
     const operation = previous.catch(() => {}).then(async () => {
       const thread = codexSyncThreads(appId).find(t => t.key === params.key);
       if (!thread) return json(res, 404, { error: 'thread_not_found' });
-      const dir = join(config.session.dataDir, 'codex-sync-receipts'); mkdirSync(dir, { recursive: true, mode: 0o700 });
+      const dir = receiptDir; mkdirSync(dir, { recursive: true, mode: 0o700 });
       const file = join(dir, createHash('sha256').update(`${appId}:${params.key}:${input.requestId}`).digest('hex') + '.json');
       const fingerprint = createHash('sha256').update(input.text).digest('hex');
       if (existsSync(file)) {
         const saved = JSON.parse(readFileSync(file, 'utf8'));
         return json(res, saved.fingerprint === fingerprint && saved.status === 'accepted' ? 200 : 409, { ok: saved.fingerprint === fingerprint && saved.status === 'accepted', status: saved.status, duplicate: true });
       }
-      const save = (status: string) => atomicWriteFileSync(file, JSON.stringify({ status, fingerprint }), { mode: 0o600 });
+      const uuid = createHash('sha256').update(`${appId}:${params.key}:${input.requestId}`).digest('hex').slice(0, 32);
+      const save = (status: string) => atomicWriteFileSync(file, JSON.stringify({ status, fingerprint, mirror: { rootMessageId: thread.rootMessageId, text: input.text, uuid }, mirrored: false }), { mode: 0o600 });
       // An uncertain delivery stays 'started', never automatically replayed.
       save('started');
-      const uuid = createHash('sha256').update(`${appId}:${input.requestId}`).digest('hex').slice(0, 32);
-      await replyMessage(appId, thread.rootMessageId, `【VS Code 追问】\n${input.text}`, 'text', true, uuid);
       if (thread.kind === 'native') {
         if (!await externalCodexBridge?.receive(thread.rootMessageId, appId, thread.ownerOpenId!, `ide-${input.requestId}`, input.text)) throw new Error('bridge_unavailable');
       } else {
@@ -97,7 +117,10 @@ export function registerCodexSyncApi(appId: string, route: Route,
         rememberLastCliInput(ds, input.text, wrapped);
         await sendSessionInput(ds, { type: 'message', content: wrapped });
       }
-      save('accepted'); json(res, 200, { ok: true, status: 'accepted' });
+      // Lark latency must never delay the model or the IDE acknowledgement.
+      // Persist its mirror separately; retry with the same provider UUID.
+      save('accepted'); mirrors.add(file); void flushMirror(file);
+      json(res, 200, { ok: true, status: 'accepted' });
     });
     queues.set(params.key, operation);
     try { await operation; } catch (e) { json(res, 409, { error: e instanceof Error ? e.message : String(e), status: 'uncertain' }); }

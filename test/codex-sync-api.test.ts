@@ -58,3 +58,9 @@ it('serializes simultaneous inputs from two windows and exposes incremental read
  expect(order).toEqual(['wrapped:one','wrapped:two']);
  const r=await call('GET /api/codex-sync/:key/events');expect(r.value.events[0].text).toBe('same thread');
 });
+it('acknowledges execution without waiting for a slow Lark mirror',async()=>{
+ let finish!:()=>void;ctx.reply.mockImplementation(()=>new Promise<void>(resolve=>{finish=resolve;}));
+ const result=await call('POST /api/codex-sync/:key/input',{text:'q',requestId:'request-slow'});
+ expect(result.status).toBe(200);expect(ctx.send).toHaveBeenCalledTimes(1);expect(ctx.reply).toHaveBeenCalledTimes(1);
+ finish();await Promise.resolve();
+});

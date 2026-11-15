@@ -8,7 +8,7 @@ const changed = new vscode.EventEmitter();
 const api = async (port, url, body) => {
   const response = await fetch(`http://127.0.0.1:${port}${url}`, {
     method: body ? 'POST' : 'GET', headers: { 'Content-Type': 'application/json' },
-    ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(20000),
+    ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(body ? 45000 : 10000),
   });
   const result = await response.json();
   if (!response.ok) throw Error(result.error || result.status || `HTTP ${response.status}`);
@@ -121,6 +121,13 @@ exports.activate = context => {
       item.command = { command:'botmuxSync.open', title:'打开会话', arguments:[row] }; item.iconPath = new vscode.ThemeIcon('comment-discussion'); return item;
     } };
   context.subscriptions.push(changed, vscode.window.registerTreeDataProvider('botmuxSync.threads', provider),
-    vscode.commands.registerCommand('botmuxSync.refresh', refresh), vscode.commands.registerCommand('botmuxSync.open', open));
+    vscode.commands.registerCommand('botmuxSync.refresh', refresh), vscode.commands.registerCommand('botmuxSync.open', async row => {
+      if (!row) {
+        await refresh();
+        const selected = await vscode.window.showQuickPick(rows.map(row => ({ label:row.title, description:row.bot, detail:row.cwd, row })), { placeHolder:'选择原会话查看过程或继续追问' });
+        row = selected?.row;
+      }
+      open(row);
+    }));
   refresh(); const timer = setInterval(refresh, 3000); context.subscriptions.push({dispose:()=>{clearInterval(timer);for(const s of panels.values())s.panel.dispose();}});
 };
