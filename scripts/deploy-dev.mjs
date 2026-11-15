@@ -110,7 +110,7 @@ function main() {
     'test/traex-admission-bounds.test.ts', 'test/traex-executor-fallback.test.ts',
     'test/traex-fallback-runner.test.ts', 'test/session-executor.test.ts',
     'test/session-model-intent.test.ts', 'test/session-model-input.test.ts',
-    'test/session-model-intent-runner.test.ts', 'test/session-model.test.ts',
+    'test/session-model-intent-runner.test.ts', 'test/session-model.test.ts', 'test/session-model-card.test.ts',
     'test/session-model-turn-switch.test.ts',
     'test/codex-app-thread-title.test.ts', 'test/cli-adapters.test.ts',
     'test/agent-team-store.test.ts', 'test/agent-team-capacity-reconcile.test.ts', 'test/agent-team-human-output.test.ts',

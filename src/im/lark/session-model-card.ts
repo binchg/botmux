@@ -8,9 +8,10 @@ import { readCodexSessionStatistics, codexStatisticsText } from '../../services/
 
 const text = (content: string) => ({ tag: 'div', text: { tag: 'lark_md', content } });
 const safe = (value?: string) => value?.replace(/[^\w.:-]/g, '') || '未知';
+const statisticsSnapshots = new Map<string, string[]>();
 
 /** Actual runtime and requested settings remain distinct until the runner acknowledges them. */
-export function sessionModelCardElements(sessionId: string, cliId?: string, locale?: Locale): any[] {
+export function sessionModelCardElements(sessionId: string, cliId?: string, locale?: Locale, snapshotKey?: string): any[] {
   if (cliId !== 'codex-app') return [];
   const en = locale === 'en';
   try {
@@ -23,10 +24,19 @@ export function sessionModelCardElements(sessionId: string, cliId?: string, loca
     const pending = state.desired && state.desired.revision !== state.runtime?.revision
       ? ` → ${compact(state.desired)}${en ? ' next' : ' 待生效'}` : '';
     const rows = [{ tag: 'div', text: { tag: 'plain_text', content: `📁 ${workingDir} · ${en ? 'Botmux session' : '本话题会话'} ${sessionId.slice(0, 8)} · ${status}${pending}` } }];
-    const resolved = resolveSessionTranscriptPath({ cliId: current?.executor === 'traex' ? 'traex' : 'codex', sessionId,
-      cliSessionId: state.runtime?.threadId ?? session?.cliSessionId, cwd: session?.workingDir });
-    const stats = resolved ? readCodexSessionStatistics(resolved.path, Date.now(), state.runnerAlive && state.runtime?.phase === 'running') : undefined;
-    rows.push({ tag: 'div', text: { tag: 'plain_text', content: codexStatisticsText(stats, session?.createdAt, Date.now(), en) } });
+    const key = snapshotKey ? `${config.session.dataDir}:${sessionId}:${locale ?? 'zh'}:${snapshotKey}` : undefined;
+    let lines = key ? statisticsSnapshots.get(key) : undefined;
+    if (!lines) {
+      const resolved = resolveSessionTranscriptPath({ cliId: current?.executor === 'traex' ? 'traex' : 'codex', sessionId,
+        cliSessionId: state.runtime?.threadId ?? session?.cliSessionId, cwd: session?.workingDir });
+      const stats = resolved ? readCodexSessionStatistics(resolved.path, Date.now(), state.runnerAlive && state.runtime?.phase === 'running') : undefined;
+      lines = codexStatisticsText(stats, session?.createdAt, Date.now(), en).split('\n');
+      if (key) {
+        if (statisticsSnapshots.size >= 128) statisticsSnapshots.delete(statisticsSnapshots.keys().next().value!);
+        statisticsSnapshots.set(key, lines);
+      }
+    }
+    for (const content of lines) rows.push({ tag: 'div', text: { tag: 'plain_text', content } });
     return rows;
   } catch { return [text(en ? 'Model status unavailable' : '模型状态暂不可用')]; }
 }

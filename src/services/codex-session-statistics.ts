@@ -99,7 +99,11 @@ export function codexStatisticsText(stats: CodexSessionStatistics | undefined, c
   const created = createdAt ? Date.parse(createdAt) : stats?.createdAtMs;
   const age = created !== undefined && Number.isFinite(created) ? formatStatisticsDuration(now - created) : '—';
   const number = (n?: number) => n === undefined ? '—' : n.toLocaleString('en-US');
-  if (en) return `Created ${age} ago · Running ${stats ? formatStatisticsDuration(stats.runningMs) : '—'}\nTokens in ${number(stats?.inputTokens)} / out ${number(stats?.outputTokens)} (cached input ${number(stats?.cachedTokens)}) · Tools ${number(stats?.tools)}`;
-  const partial = stats && (stats.incomplete || (created !== undefined && stats.createdAtMs !== undefined && stats.createdAtMs - created > 60_000));
-  return `⏱ 创建至今 ${age} · 累计运行 ${stats ? formatStatisticsDuration(stats.runningMs) : '—'}${partial ? '（可用记录）' : ''}\n📊 Token 输入 ${number(stats?.inputTokens)} / 输出 ${number(stats?.outputTokens)} · 缓存命中 ${number(stats?.cachedTokens)}（含于输入） · 工具 ${number(stats?.tools)}次`;
+  // Cached tokens are already included in input; never add them a second time.
+  const total = stats?.inputTokens !== undefined && stats?.outputTokens !== undefined
+    ? ((stats.inputTokens + stats.outputTokens) / 100_000_000).toFixed(2) : undefined;
+  const rate = stats?.inputTokens && stats.cachedTokens !== undefined
+    ? `${(Math.min(1, stats.cachedTokens / stats.inputTokens) * 100).toFixed(1)}%` : stats?.inputTokens === 0 && stats.cachedTokens === 0 ? '0.0%' : '—';
+  if (en) return `Created ${age} ago · Running ${stats ? formatStatisticsDuration(stats.runningMs) : '—'}\nUsage ${total === undefined ? '—' : `${total} × 100M tokens`} · Cache ${rate} · Tools ${number(stats?.tools)}`;
+  return `⏱ 创建至今 ${age} · 累计运行 ${stats ? formatStatisticsDuration(stats.runningMs) : '—'}\n📊 消耗 ${total === undefined ? '—' : `${total}亿`} · 缓存率 ${rate} · 工具 ${number(stats?.tools)}次`;
 }

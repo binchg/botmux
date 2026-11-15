@@ -708,7 +708,7 @@ export function buildStreamingCard(
 
   const elements: any[] = [];
 
-  elements.push(...sessionModelCardElements(sessionId, cliId, locale));
+  elements.push(...sessionModelCardElements(sessionId, cliId, locale, cardNonce || rootId));
 
   // ── Output body (shared with the private snapshot card) ──────────────────
   pushStreamBody(elements, { status, usageLimit, displayMode, imageKey, cliName, locale });

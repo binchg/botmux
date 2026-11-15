@@ -37,14 +37,21 @@ it('does not invent days of runtime for a dead/aborted worker; handles split lin
   expect(readCodexSessionStatistics(path)?.runningMs).toBe(0);
 });
 
-it('counts unique tools and keeps absent usage unknown, with honest partial coverage', () => {
+it('counts unique tools and keeps absent usage unknown in the compact footer', () => {
   const path=fixture(), start=1_800_000_000_000;
   const tool=event('response_item',{type:'function_call',call_id:'tool-a',name:'exec_command'});
   writeFileSync(path,event('session_meta',{id:'a'},start)+tool+tool);
   const stats=readCodexSessionStatistics(path);
   expect(stats).toMatchObject({tools:1,inputTokens:undefined});
-  expect(codexStatisticsText(stats,new Date(start-86400000).toISOString(),start+2000)).toContain('可用记录');
-  expect(codexStatisticsText(undefined)).toContain('输入 —');
+  expect(codexStatisticsText(stats,new Date(start-86400000).toISOString(),start+2000)).toContain('消耗 — · 缓存率 — · 工具 1次');
+  expect(codexStatisticsText(undefined)).toContain('消耗 —');
+});
+
+it('formats total tokens in hundred-millions and computes cache rate without counting cache twice',()=>{
+  const text=codexStatisticsText({runningMs:791000,turns:1,tools:65,inputTokens:4690959,outputTokens:18298,cachedTokens:4581248,incomplete:false},undefined,0);
+  expect(text.split('\n')).toHaveLength(2);
+  expect(text).toContain('消耗 0.05亿 · 缓存率 97.7% · 工具 65次');
+  expect(text).not.toMatch(/Token 输入|输出|含于输入|可用记录/);
 });
 
 it('serves shared incremental public events without reasoning, developer prompts, arguments or duplicate final copies', () => {

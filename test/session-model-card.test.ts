@@ -6,17 +6,19 @@ import { config } from '../src/config.js';
 import { writeSessionModel, writeSessionModelRuntime, readSessionModel } from '../src/services/session-model-store.js';
 import { sessionModelCardElements, buildSessionModelCard, sessionModelButton } from '../src/im/lark/session-model-card.js';
 import { handleSessionModelAction } from '../src/im/lark/session-model-card-action.js';
+import * as transcriptResolver from '../src/services/transcript-resolver.js';
+import * as statistics from '../src/services/codex-session-statistics.js';
 
 vi.mock('../src/services/codex-app-threads.js', () => ({ listCodexAppModels: vi.fn(async () => [
   { model: 'test-a', defaultReasoningEffort: 'medium', supportedReasoningEfforts: [{ reasoningEffort: 'medium' }, { reasoningEffort: 'high' }], serviceTiers: [{ id: 'priority' }] },
   { model: 'test-b', defaultReasoningEffort: 'low', supportedReasoningEfforts: [{ reasoningEffort: 'low' }] },
 ]) }));
-vi.mock('../src/i18n/index.js', () => ({ localeForBot: () => 'zh' }));
+vi.mock('../src/i18n/index.js', async importOriginal => ({ ...await importOriginal<typeof import('../src/i18n/index.js')>(), localeForBot: () => 'zh' }));
 vi.mock('../src/services/session-store.js', () => ({ getSession: vi.fn(() => ({ workingDir: '/home/ubuntu/my/project' })) }));
 const dirs: string[] = [];
 const original = config.session.dataDir;
 const temp = () => { const d = mkdtempSync(join(tmpdir(), 'model-card-')); dirs.push(d); config.session.dataDir = d; return d; };
-afterEach(() => { config.session.dataDir = original; dirs.splice(0).forEach(d => rmSync(d, { recursive: true, force: true })); });
+afterEach(() => { vi.restoreAllMocks(); config.session.dataDir = original; dirs.splice(0).forEach(d => rmSync(d, { recursive: true, force: true })); });
 const selection = { model: 'test-a', effort: 'medium', serviceTier: 'default' };
 const context = (option: string, field = 'effort', id = 'session-a'): any => ({ actionType: 'session_model_set',
   value: { field }, action: { option }, rootId: 'root',
@@ -33,8 +35,21 @@ describe('per-session model control card', () => {
     expect(rows).toContain('test-a M F×');
     expect(rows).toContain('→ test-a H F√ 待生效');
     expect(rows).toContain('📁 /home/ubuntu/my/project');
-    expect(sessionModelCardElements('a', 'codex-app')).toHaveLength(1);
+    expect(sessionModelCardElements('a', 'codex-app')).toHaveLength(3);
     expect(sessionModelButton('a', { root_id: 'root' }, 'claude-code')).toEqual([]);
+  });
+  it('reads statistics once per card and keeps exactly three lines across content updates',()=>{
+    temp();
+    const resolve=vi.spyOn(transcriptResolver,'resolveSessionTranscriptPath').mockReturnValue({path:'/test-rollout',kind:'codex'});
+    const read=vi.spyOn(statistics,'readCodexSessionStatistics').mockReturnValue({runningMs:1000,turns:1,tools:65,inputTokens:10000000,outputTokens:0,cachedTokens:8000000,incomplete:false});
+    const first=sessionModelCardElements('snapshot','codex-app','zh','card-one');
+    read.mockReturnValue({runningMs:9000,turns:2,tools:70,inputTokens:20000000,outputTokens:0,cachedTokens:10000000,incomplete:false});
+    expect(sessionModelCardElements('snapshot','codex-app','zh','card-one')).toEqual(first);
+    expect(first).toHaveLength(3);
+    expect(first.map(r=>r.text.content).every(s=>!s.includes('\n'))).toBe(true);
+    expect(read).toHaveBeenCalledTimes(1);expect(resolve).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(sessionModelCardElements('snapshot','codex-app','zh','card-two'))).toContain('工具 70次');
+    expect(read).toHaveBeenCalledTimes(2);
   });
   it('labels a previous receipt without an offline warning or pretending it is current', () => {
     const d = temp();

@@ -358,16 +358,6 @@ export function cardUsageLimit(ds: DaemonSession): CliUsageLimitState | undefine
   return ds.lastScreenStatus === 'limited' ? ds.usageLimit : undefined;
 }
 
-/** Refresh the existing card only; never create a topic/card or wake a worker. */
-export function refreshSessionStatisticsCard(ds: DaemonSession): void {
-  if (ds.session.cliId !== 'codex-app' || !ds.streamCardId || ds.streamCardId === CARD_POSTING_SENTINEL || streamingCardDisabled(ds)) return;
-  const cardJson = buildStreamingCard(ds.session.sessionId, sessionAnchorId(ds), buildTerminalUrl(ds),
-    ds.currentTurnTitle || ds.session.title, ds.lastScreenContent ?? '', ds.lastScreenStatus ?? 'idle',
-    'codex-app', ds.displayMode ?? 'hidden', ds.streamCardNonce, ds.currentImageKey, !!ds.adoptedFrom,
-    false, localeForBot(ds.larkAppId), cardUsageLimit(ds), writableTerminalLinkFor(ds));
-  scheduleCardPatch(ds, cardJson);
-}
-
 function scheduleUsageLimitCardPatch(ds: DaemonSession): void {
   if (ds.lastScreenStatus !== 'limited') return;
   const port = ds.workerPort ?? ds.session.webPort;
