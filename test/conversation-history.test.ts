@@ -146,15 +146,15 @@ describe('conversation history', () => {
     expect(user?.content).toBe('继续测试');
   });
 
-  it('保存超过仪表盘预览上限的正文，保持旧蓝绿样式并转义可执行内容', () => {
+  it('保存超过仪表盘预览上限的正文，使用Codex灰阶样式并转义可执行内容', () => {
     const dir = storage();
     const content = '正文'.repeat(3000) + '<script>alert(1)</script> ![追踪](https://example.com/track)';
     recordConversationHistory(session, { kind: 'user', content, at: now }, dir);
     const history = ensureConversationHistory(session, dir, now);
     expect(history.messages[0].content.length).toBe(content.length);
     const page = renderConversationHistory(history, history.messages);
-    expect(page.html).toContain('--blue-bg:#eaf1ff');
-    expect(page.html).toContain('--green-bg:#eef8f2');
+    expect(page.html).toContain('--bg:#fff');
+    expect(page.html).toContain('--bg:#212121');
     expect(page.html).not.toContain('<script>alert(1)</script>');
     expect(page.html).not.toContain('<img');
     expect(page.html).toContain('有效期至');

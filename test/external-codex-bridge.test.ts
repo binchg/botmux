@@ -102,3 +102,14 @@ it('reports an uncertain owner failure once, retaining the original input withou
  const deps={reply:async(_:unknown,text:string)=>{notices.push(text)},turn:async(_:unknown,_text:string,checkpoint:()=>void)=>{calls++;checkpoint();throw Error('timeout')},error:()=>{}};
  try{const bridge=new ExternalCodexBridge([f.binding],f.stateFile,deps);await bridge.receive('root','app','owner','m','question');await expect(bridge.tick()).rejects.toThrow('timeout');await bridge.tick();await bridge.tick();expect(calls).toBe(1);expect(notices.filter(t=>t.includes('确认结果前不会重复提交'))).toHaveLength(1)}finally{f.cleanup()}
 });
+
+it('blocks a withdrawn output root once and resumes its queued public output on an explicit output-only target',async()=>{
+ const f=fixture();let attempts=0;const targets:string[]=[];
+ try{
+  const deps={reply:async(b:any)=>{attempts++;targets.push(b.outputRootMessageId??b.rootMessageId);if(!b.outputRootMessageId){const e=new Error('withdrawn');e.name='MessageWithdrawnError';throw e}},turn:async()=>{},error:()=>{}};
+  const bridge=new ExternalCodexBridge([f.binding],f.stateFile,deps);appendFileSync(f.rolloutPath,event({type:'task_complete',turn_id:'new',last_agent_message:'actual public result'}));
+  await expect(bridge.tick()).rejects.toThrow('withdrawn');await bridge.tick();expect(attempts).toBe(1);
+  const restored=new ExternalCodexBridge([{...f.binding,outputRootMessageId:'visible-topic'}],f.stateFile,deps);await restored.tick();expect(targets).toEqual(['root','visible-topic']);
+  expect(await restored.receive('visible-topic','app','owner','m','do not route input')).toBe(false);expect(JSON.parse(readFileSync(f.stateFile,'utf8')).fork.outbox).toEqual([]);
+ }finally{f.cleanup()}
+});

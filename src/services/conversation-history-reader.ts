@@ -39,7 +39,7 @@ export function parseHistoryRecord(record: any, sourceKind: string): HistoryMess
   const content = visibleHistoryText(text, kind);
   const at = Date.parse(record.timestamp);
   if (!content || !Number.isFinite(at)) return;
-  return { id: String(record.uuid ?? `${at}:${kind}`), kind, content, at };
+  return { id: String(record.uuid ?? record.payload?.id ?? `${at}:${kind}`), kind, content, at };
 }
 
 /** 每次重验关联关系、私密保护和文件身份，使页面缓存不会越过来源变化。 */
@@ -67,11 +67,16 @@ export async function readHistoryBundle(history: ConversationHistory, dataDir = 
   snapshot = historySources(history, dataDir)) {
   const old: HistoryMessage[] = [];
   let bytes = 0;
+  const seenRecords = new Set<string>();
   for (const source of snapshot.sources) {
     const messages = await readCachedHistoryTranscript(source.path, source.kind, parseHistoryRecord);
     bytes += messages.reduce((sum, item) => sum + Buffer.byteLength(item.content), 0);
     if (bytes > 8 * 1024 * 1024) throw new Error('conversation_history_too_large');
-    old.push(...messages);
+    for (const message of messages) {
+      const identity = `${message.kind}:${message.at}:${message.content}`;
+      if (seenRecords.has(identity)) continue;
+      seenRecords.add(identity); old.push(message);
+    }
   }
   // 两路只按正文出现次数去重，保留用户重复追问及尚未写入 transcript 的新消息。
   const remaining = new Map<string, number>();

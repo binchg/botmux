@@ -2,6 +2,7 @@
 import { createHash } from 'node:crypto';
 import { historySources, readHistoryBundle } from './conversation-history-reader.js';
 import { renderConversationHistory } from './conversation-history-page.js';
+import { historyWindow } from './conversation-history-window.js';
 import type { ConversationHistory } from './conversation-history-store.js';
 
 interface PageState {
@@ -9,6 +10,7 @@ interface PageState {
   error?: boolean;
   retryAt?: number;
   pending: boolean;
+  bundle?: Awaited<ReturnType<typeof readHistoryBundle>>;
 }
 const pages = new Map<string, PageState>();
 let queue = Promise.resolve();
@@ -29,14 +31,18 @@ export function cachedHistoryPage(history: ConversationHistory, dataDir: string)
     await new Promise<void>(resolve => setImmediate(resolve));
     try {
       const bundle = await readHistoryBundle(history, dataDir, snapshot);
-      state.page = renderConversationHistory(history, bundle.messages, bundle);
+      state.bundle = bundle;
+      const window = historyWindow(bundle.messages);
+      state.page = renderConversationHistory(history, window.messages, bundle, false, window);
     } catch { state.error = true; state.retryAt = Date.now() + 5000; }
     finally { state.pending = false; }
-    let bytes = [...pages.values()].reduce((sum, item) => sum + Buffer.byteLength(item.page?.html ?? ''), 0);
+    const size = (item: PageState) => Buffer.byteLength(item.page?.html ?? '')
+      + (item.bundle?.messages.reduce((sum, message) => sum + Buffer.byteLength(message.content), 0) ?? 0);
+    let bytes = [...pages.values()].reduce((sum, item) => sum + size(item), 0);
     for (const [entryKey, entry] of pages) {
       if (pages.size <= 8 && bytes <= 32 * 1024 * 1024) break;
       if (entry.pending) continue;
-      bytes -= Buffer.byteLength(entry.page?.html ?? ''); pages.delete(entryKey);
+      bytes -= size(entry); pages.delete(entryKey);
     }
     // 错误短暂保留供页面显示，退避结束后再读，避免每次轮询反复扫描坏文件。
   });

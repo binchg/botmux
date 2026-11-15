@@ -14,6 +14,8 @@ export interface ExternalCodexBinding {
   larkAppId: string;
   ownerOpenId: string;
   rootMessageId: string;
+  /** Output-only mirror target; never changes the thread used for inbound questions. */
+  outputRootMessageId?: string;
   firstUserMessage?: string;
   currentUserMessage?: string;
 }
@@ -36,6 +38,7 @@ export interface ExternalCodexCursor {
   eventKeys?: string[];
   frontierAnchor?: string;
   inode?: number;
+  deliveryBlockedRoot?: string;
 }
 export function consumeExternalCodex(state: ExternalCodexCursor, text: string): void {
   const lines = (state.carry + text).split('\n');
@@ -212,7 +215,9 @@ export class ExternalCodexBridge {
             this.save();
           }
         }
-        while (state.outbox.length) {
+        const outputRoot = b.outputRootMessageId ?? b.rootMessageId;
+        if (state.deliveryBlockedRoot && state.deliveryBlockedRoot !== outputRoot) delete state.deliveryBlockedRoot;
+        while (state.outbox.length && state.deliveryBlockedRoot !== outputRoot) {
           const item = state.outbox[0];
           // An upgrade may restore tool notifications queued by an older build.
           // Keep tool events for local inspection/statistics, never post them to IM.
@@ -221,8 +226,13 @@ export class ExternalCodexBridge {
             this.save();
             continue;
           }
-          const uuid = createHash('sha256').update(`${b.threadId}:${item.id}`).digest('hex').slice(0, 32);
-          await this.deps.reply({ ...b, currentUserMessage: item.question ?? state.currentUserMessage ?? b.firstUserMessage }, item.text, uuid, item.kind);
+          const uuid = createHash('sha256').update(`${b.threadId}:${outputRoot}:${item.id}`).digest('hex').slice(0, 32);
+          try {
+            await this.deps.reply({ ...b, currentUserMessage: item.question ?? state.currentUserMessage ?? b.firstUserMessage }, item.text, uuid, item.kind);
+          } catch (error) {
+            if ((error as Error)?.name === 'MessageWithdrawnError') { state.deliveryBlockedRoot = outputRoot; this.save(); }
+            throw error;
+          }
           (state.completed ??= []).push(item.id);
           state.outbox.shift();
           this.save();

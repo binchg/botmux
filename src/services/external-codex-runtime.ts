@@ -32,8 +32,8 @@ export function startExternalCodexBridge(selfAppId: string): void {
         if (!b.firstUserMessage) throw new Error('Automatic topic requires the original user message');
         return sendMessage(b.larkAppId, b.chatId, b.firstUserMessage, 'text', uuid);
       },
-      reply: async (b, text, uuid, kind) => replyMessage(b.larkAppId, b.rootMessageId,
-        buildExternalCodexForwardCard(b, text, kind, nativeConversationHistoryButtons(b, kind === 'user')), 'interactive', true, uuid),
+      reply: async (b, text, uuid, kind) => replyMessage(b.larkAppId, b.outputRootMessageId ?? b.rootMessageId,
+        buildExternalCodexForwardCard(b, text, kind, nativeConversationHistoryButtons({ ...b, rootMessageId: b.outputRootMessageId ?? b.rootMessageId }, kind === 'user')), 'interactive', true, uuid),
       turn: (b, text, checkpoint, clientUserMessageId) => runExternalCodexTurn(cfg.codexBin, b.codexHome, b, text, checkpoint, clientUserMessageId),
       excluded: () => collectBotmuxSessionIdentities() ?? new Set(),
       error: e => logger.error(`[codex-auto] ${String(e)}`),
@@ -51,8 +51,8 @@ export function startExternalCodexBridge(selfAppId: string): void {
   const statePath = join(homedir(), '.local/state/botmux/external-codex.json');
   mkdirSync(dirname(statePath), { recursive: true, mode: 0o700 });
   externalCodexBridge = new ExternalCodexBridge(cfg.bindings, statePath, {
-    reply: async (b, text, uuid, kind) => replyMessage(b.larkAppId, b.rootMessageId,
-        buildExternalCodexForwardCard(b, text, kind, nativeConversationHistoryButtons(b, kind === 'user')), 'interactive', true, uuid),
+    reply: async (b, text, uuid, kind) => replyMessage(b.larkAppId, b.outputRootMessageId ?? b.rootMessageId,
+        buildExternalCodexForwardCard(b, text, kind, nativeConversationHistoryButtons({ ...b, rootMessageId: b.outputRootMessageId ?? b.rootMessageId }, kind === 'user')), 'interactive', true, uuid),
     turn: (b, text, checkpoint, clientUserMessageId) => runExternalCodexTurn(cfg.codexBin, cfg.codexHome, b, text, checkpoint, clientUserMessageId),
     error: e => logger.error(`[external-codex] ${String(e)}`),
   });

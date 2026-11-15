@@ -1,4 +1,5 @@
 /** 七天有效的单会话历史页面；公开路由仅接受随机 token，不接受会话 ID 或文件路径。 */
+import { historyWindow } from './conversation-history-window.js';
 import { historyNetworkAllowed } from './conversation-history-network.js';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { config } from '../config.js';
@@ -55,13 +56,23 @@ export async function handleConversationHistoryRequest(
   }
   if (req.method === 'HEAD') { finish(200, '', expiry); return true; }
   try {
+    const cursors = Object.fromEntries(['before', 'after', 'around'].flatMap(key => url.searchParams.has(key) ? [[key, url.searchParams.get(key)!]] : []));
+    if (Object.keys(cursors).length > 1 || Object.values(cursors).some(value => !/^[A-Za-z0-9_-]{22}$/.test(value))) { finish(400, '无效的分页位置。'); return true; }
     const state = cachedHistoryPage(history, opts.dataDir ?? config.session.dataDir);
     if (url.searchParams.has('preload')) { finish(state.error ? 503 : state.page ? 200 : 202, '', expiry); return true; }
-    if (url.searchParams.has('complete') && !state.page) {
+    if ((url.searchParams.has('complete') || Object.keys(cursors).length) && !state.page) {
       finish(state.error ? 503 : 202, state.error ? '暂时无法读取完整历史。' : '', { ...expiry, 'retry-after': '1' }); return true;
     }
-    if (state.page && url.searchParams.get('revision') === state.page.revision) { finish(204, '', expiry); return true; }
-    const page = state.page ?? renderConversationHistory(history, history.messages.slice(-40), undefined, true);
+    let page = state.page;
+    if (state.bundle && Object.keys(cursors).length) {
+      let window;
+      try { window = historyWindow(state.bundle.messages, cursors); }
+      catch { finish(409, '记录位置已变化，请重新定位最新记录。', expiry); return true; }
+      if (!window.messages.length) { finish(204, '', expiry); return true; }
+      page = renderConversationHistory(history, window.messages, state.bundle, false, window);
+    }
+    if (page && url.searchParams.get('revision') === page.revision) { finish(204, '', expiry); return true; }
+    if (!page) { const window = historyWindow(history.messages); page = renderConversationHistory(history, window.messages, undefined, true, window); }
     finish(200, page.html, { ...expiry, 'x-botmux-history-cache': state.page ? 'hit' : 'loading',
       'content-security-policy': `default-src 'none'; connect-src 'self'; style-src 'unsafe-inline'; script-src 'nonce-${page.nonce}'; base-uri 'none'; frame-ancestors 'none'` });
   } catch { finish(503, '暂时无法读取完整对话历史，请稍后重试。'); }

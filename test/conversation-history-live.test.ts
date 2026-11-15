@@ -39,10 +39,10 @@ it('shared public input filter excludes injected page/system context and unwraps
 it('full chronological page includes each public message once, times, MathML and continuous refresh',()=>{
   const dir=storage(),h=ensureNativeConversationHistory(binding,false,dir);
   const msgs=[{id:'u',kind:'user' as const,content:'唯一追问',at:1000},{id:'p',kind:'assistant_progress' as const,content:'唯一进展',at:2000},{id:'f',kind:'assistant_final' as const,content:'唯一结果 $\\sum_{i=1}^n x_i$ `code $x$`',at:3000}];
-  const p=renderConversationHistory(h,msgs),body=p.html.split('<article>')[1].split('</article>')[0];
+  const p=renderConversationHistory(h,msgs),body=p.html.match(/<article[^>]*>([\s\S]*?)<\/article>/)![1];
   for(const text of ['唯一追问','唯一进展','唯一结果'])expect(body.split(text)).toHaveLength(2);
   expect(body).not.toContain('<details');expect(body).toContain('最终回复');expect(body).toContain('原始追问');expect(body).toContain('<math');expect(body).toContain('<code>code $x$</code>');
-  expect(p.html).toContain('setTimeout(load,delay)');expect(p.html).toContain('北京时间');expect(p.revision).toBe(renderConversationHistory(h,msgs).revision);
+  expect(p.html).toContain('setTimeout(()=>load(retry),delay)');expect(p.html).toContain('北京时间');expect(p.revision).toBe(renderConversationHistory(h,msgs).revision);
 });
 it('unchanged live page returns 204 while expired grants remain denied without renewal',async()=>{
   const dir=storage(),now=Date.now(),h=ensureConversationHistory({sessionId:'live-test',title:'test'} as Session,dir,now);
