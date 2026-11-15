@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import type { Args, ActiveTurn, JsonObject } from './services/app-runner-types.js';
 import { AppServerClient } from './services/app-runner-client.js';
+import { resumeStoredAppThread } from './services/app-runner-thread-resume.js';
 import { prefixCodexAppThreadTitle } from './services/codex-app-thread-title.js';
 import { asError, parseArgs, b64Json, writeLine, displayUserContent, prompt, appDeveloperInstructions, userTextInput } from './services/app-runner-protocol.js';
 import { handleAppServerRequest, handleAppNotification } from './services/app-runner-events.js';
@@ -251,8 +252,7 @@ async function ensureThread(model = defaultThreadModel): Promise<string> {
 
   if (threadId) {
     try {
-      const resumed = await client.request('thread/resume', {
-        threadId,
+      const resumed = await resumeStoredAppThread((method, params) => client.request(method, params), threadId, {
         cwd: args.cwd,
         model,
         modelProvider: defaultThreadModelProvider,
@@ -280,9 +280,9 @@ async function ensureThread(model = defaultThreadModel): Promise<string> {
       }
       return resumedThreadId;
     } catch (err: any) {
-      writeLine(`[codex-app] resume failed, starting a fresh thread: ${err?.message ?? err}`);
-      threadId = undefined;
-      threadReady = false;
+      // A database, ownership, provider, or transient error must never silently
+      // discard the user's history. Keep the ID so a later input can retry.
+      throw err;
     }
   }
 
@@ -442,12 +442,24 @@ async function main(): Promise<void> {
   }
   const hookTrustIssue = await currentHookTrustIssue();
   if (hookTrustIssue) writeLine(`[codex-app] ${hookTrustIssue}`);
-  await ensureThread(readSessionModelRuntime(config.session.dataDir, args.sessionId)?.selection?.model ?? defaultThreadModel);
-  persistExecutor();
-  writeSessionModelRuntime(config.session.dataDir, { sessionId: args.sessionId, pid: process.pid, threadId, phase: 'ready',
+  let startupError: unknown;
+  try {
+    await ensureThread(readSessionModelRuntime(config.session.dataDir, args.sessionId)?.selection?.model ?? defaultThreadModel);
+    persistExecutor();
+  } catch (error) {
+    // Stay alive: exiting here lets worker crash recovery eventually start a
+    // fresh CLI. Subsequent user input reports the failure and retries resume.
+    startupError = error;
+    writeLine(`[codex-app] ${asError(error).message}`);
+  }
+  writeSessionModelRuntime(config.session.dataDir, { sessionId: args.sessionId, pid: process.pid, threadId, phase: startupError ? 'failed' : 'ready',
     selection: defaultThreadModel && defaultThreadEffort ? { executor: activeExecutor, hookTrust: activeHookTrust, model: defaultThreadModel,
       effort: defaultThreadEffort, serviceTier: defaultServiceTier } : undefined });
-  if (args.threadId) {
+  if (startupError) {
+    writeLine(args.locale === 'zh'
+      ? '原会话暂时无法恢复，已保留原绑定；修复后可重试，未创建替代会话。'
+      : 'Stored conversation unavailable; original binding preserved. Retry after repair.');
+  } else if (args.threadId) {
     writeLine(args.locale === 'zh'
       ? 'Codex App 已恢复原会话；终端仅显示恢复后的新输出。'
       : 'Codex App resumed the existing conversation; this terminal shows new output after recovery.');
