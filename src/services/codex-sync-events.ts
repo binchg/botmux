@@ -11,6 +11,14 @@ export function publicCodexToolEvent(row: any): string | undefined {
 }
 
 export interface CodexSyncEvent { id: string; kind: 'user' | 'progress' | 'tool' | 'final' | 'status'; text: string; at?: string }
+function userText(text: string): string | undefined {
+  // These are host-injected context records stored with role=user, not a
+  // human question. In particular, selected Pages must never be mirrored.
+  if (/^\s*(?:# AGENTS\.md instructions|<(?:environment_context|permissions instructions|collaboration_mode|external_codex_apps_[\w]+|user_instructions|system_reminder)(?:\s|>))/.test(text)) return;
+  const match = /<user_message>\s*([\s\S]*?)\s*<\/user_message>/.exec(text);
+  if (!match && /^\s*<botmux_reminder>/.test(text)) return;
+  return match?.[1] ?? text;
+}
 export function publicCodexEvent(row: any, id: string): CodexSyncEvent | undefined {
   const tool = publicCodexToolEvent(row);
   if (tool) return { id, kind: 'tool', text: tool, at: row.timestamp };
@@ -18,9 +26,8 @@ export function publicCodexEvent(row: any, id: string): CodexSyncEvent | undefin
   if (row?.type === 'response_item' && p.type === 'message') {
     const text = (Array.isArray(p.content) ? p.content : []).filter((c: any) => ['input_text', 'output_text'].includes(c.type)).map((c: any) => c.text ?? '').join('');
     if (p.role === 'user') {
-      if (/^\s*(?:# AGENTS\.md instructions|<environment_context>|<permissions instructions>|<collaboration_mode>)/.test(text)) return;
-      const match = /<user_message>\s*([\s\S]*?)\s*<\/user_message>/.exec(text);
-      if (text.trim()) return { id, kind: 'user', text: match?.[1] ?? text, at: row.timestamp };
+      const question = userText(text);
+      if (question?.trim()) return { id, kind: 'user', text: question, at: row.timestamp };
     }
     if (p.role === 'assistant' && p.phase === 'commentary' && text.trim()) return { id, kind: 'progress', text, at: row.timestamp };
     return;
@@ -28,8 +35,9 @@ export function publicCodexEvent(row: any, id: string): CodexSyncEvent | undefin
   if (row?.type !== 'event_msg') return;
   if (p.type === 'user_message' && typeof p.message === 'string') {
     // Botmux wrappers are transport metadata, not the user's question.
-    const match = /<user_message>\s*([\s\S]*?)\s*<\/user_message>/.exec(p.message);
-    return { id, kind: 'user', text: match?.[1] ?? p.message, at: row.timestamp };
+    const question = userText(p.message);
+    if (question?.trim()) return { id, kind: 'user', text: question, at: row.timestamp };
+    return;
   }
   if (p.type === 'agent_message' && p.phase === 'commentary') return { id, kind: 'progress', text: String(p.message ?? ''), at: row.timestamp };
   if (p.type === 'task_complete' && p.last_agent_message) return { id, kind: 'final', text: String(p.last_agent_message), at: row.timestamp };

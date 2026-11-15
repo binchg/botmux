@@ -67,6 +67,10 @@ it('serves shared incremental public events without reasoning, developer prompts
 
 it('does not expose other response_item messages',()=>{
   expect(publicCodexEvent({type:'response_item',payload:{type:'message',role:'developer',content:'secret'}},'0')).toBeUndefined();
+  for(const text of ['<external_codex_apps_open_page>{"page_id":null}</external_codex_apps_open_page>','<external_codex_apps_selected_page_part_1_of_1>private page snapshot</external_codex_apps_selected_page_part_1_of_1>','<environment_context>private context</environment_context>']){
+    expect(publicCodexEvent({type:'response_item',payload:{type:'message',role:'user',content:[{type:'input_text',text}]}},'0')).toBeUndefined();
+    expect(publicCodexEvent({type:'event_msg',payload:{type:'user_message',message:text}},'0')).toBeUndefined();
+  }
 });
 
 it('supports canonical-only messages, deduplicates event copies and detects a larger in-place rewrite',()=>{
