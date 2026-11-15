@@ -1,6 +1,6 @@
-import { existsSync, readFileSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, mkdirSync, openSync, readSync, closeSync, fstatSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, dirname } from 'node:path';
+import { join, dirname, basename } from 'node:path';
 import { spawn } from 'node:child_process';
 import { buildMarkdownCard, buildTitledMarkdownCard } from '../im/lark/md-card.js';
 import { nativeConversationHistoryButtons } from '../im/lark/conversation-history-button.js';
@@ -80,6 +80,13 @@ export function buildExternalCodexForwardCard(binding: ExternalCodexBinding, tex
 export function buildExternalCodexStatusCard(binding: ExternalCodexBinding): string {
   const stats = readCodexSessionStatistics(binding.rolloutPath, Date.now(), false);
   const lines = codexStatisticsText(stats, undefined, Date.now(), false).split('\n');
+  const model = readNativeModelStatus(binding.rolloutPath);
+  const cwd = binding.cwd.length > 36 ? `…/${basename(binding.cwd)}` : binding.cwd;
+  const compactLines = [
+    `📁 ${cwd} · ${model}`,
+    (lines[0] ?? '').replace(/^⏱ 创建至今 /, '⏱ 至今 ').replace('累计运行', '累计'),
+    (lines[1] ?? '').replace(/^📊 消耗 /, '📊 耗 ').replace('缓存率', '缓存').replace(/ · 工具.*$/, ''),
+  ];
   const historyButtons = nativeConversationHistoryButtons({ ...binding, rootMessageId: binding.outputRootMessageId ?? binding.rootMessageId });
   const terminalButtons = historyButtons.map(button => {
     const url = new URL(button.multi_url.url);
@@ -88,14 +95,42 @@ export function buildExternalCodexStatusCard(binding: ExternalCodexBinding): str
     return { ...button, type: 'primary', text: { tag: 'plain_text', content: '🖥️ 打开 Web 终端（只读）' },
       multi_url: { url: href, pc_url: href, android_url: href, ios_url: href } };
   });
-  return JSON.stringify({
-    schema: '2.0', config: { update_multi: true },
-    body: { direction: 'vertical', elements: [
-      { tag: 'div', text: { tag: 'plain_text', content: `📁 ${binding.cwd} · Codex` } },
-      ...lines.map(content => ({ tag: 'div', text: { tag: 'plain_text', content } })),
-      ...(historyButtons.length ? [{ tag: 'action', actions: [...terminalButtons, ...historyButtons] }] : []),
-    ] },
-  });
+  const card = JSON.parse(buildMarkdownCard(compactLines.join('\n\n'), undefined, ''));
+  card.body.elements.push(...terminalButtons, ...historyButtons);
+  return JSON.stringify(card);
+}
+
+/** Read only a bounded JSONL tail to show the native thread's actual model. */
+function readNativeModelStatus(path: string): string {
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, 'r');
+    const size = fstatSync(fd).size;
+    const length = Math.min(size, 4 * 1024 * 1024);
+    const buffer = Buffer.alloc(length);
+    readSync(fd, buffer, 0, length, size - length);
+    let model: string | undefined, effort: string | undefined, tier: string | undefined;
+    for (const line of buffer.toString('utf8').split('\n').reverse()) {
+      if (!line.includes('turn_context') && !line.includes('thread_settings_applied')) continue;
+      let row: any;
+      try { row = JSON.parse(line); } catch { continue; }
+      if (row.type === 'turn_context') {
+        model ??= row.payload?.model;
+        effort ??= row.payload?.effort;
+      } else if (row.payload?.type === 'thread_settings_applied') {
+        const settings = row.payload?.thread_settings;
+        model ??= settings?.model;
+        effort ??= settings?.reasoning_effort;
+        tier ??= settings?.service_tier;
+      }
+      if (model && effort && tier) break;
+    }
+    if (!model) return 'Codex';
+    const shortModel = String(model).replace(/^gpt-/, '');
+    const shortEffort = effort ? ` ${String(effort).replace('medium', 'M').replace('ultra', 'U').replace('xhigh', 'XH').replace('high', 'H').replace('low', 'L')}` : '';
+    return `${shortModel}${shortEffort}${tier ? ` F${tier === 'priority' ? '√' : '×'}` : ''}`;
+  } catch { return 'Codex'; }
+  finally { if (fd !== undefined) closeSync(fd); }
 }
 
 export async function forkExternalCodexThread(binary: string, b: AutoCodexBinding): Promise<{ threadId: string; rolloutPath: string }> {

@@ -7,13 +7,18 @@ import { runExternalCodexTurn, buildExternalCodexForwardCard, buildExternalCodex
 it('renders the three native-session lines and two read-only links immediately', () => {
   const dir = mkdtempSync(join(tmpdir(), 'external-codex-status-'));
   const rolloutPath = join(dir, 'rollout.jsonl');
-  writeFileSync(rolloutPath, JSON.stringify({ type: 'session_meta', timestamp: new Date().toISOString(), payload: { id: 'native-status' } }) + '\n');
+  writeFileSync(rolloutPath, [
+    { type: 'session_meta', timestamp: new Date().toISOString(), payload: { id: 'native-status' } },
+    { type: 'event_msg', payload: { type: 'thread_settings_applied', thread_settings: { model: 'gpt-6-astra', reasoning_effort: 'ultra', service_tier: 'default' } } },
+    { type: 'turn_context', payload: { model: 'gpt-6-astra', effort: 'ultra' } },
+  ].map(row => JSON.stringify(row)).join('\n') + '\n');
   vi.stubEnv('SESSION_DATA_DIR', dir);
   vi.stubEnv('BOTMUX_HISTORY_BASE_URL', 'http://100.64.0.1:7891');
   try {
     const card = JSON.parse(buildExternalCodexStatusCard({ threadId: 'native-status', rolloutPath, cwd: '/lxy', chatId: 'chat', larkAppId: 'app', ownerOpenId: 'owner', rootMessageId: 'root' }));
-    expect(card.body.elements.slice(0, 3).map((element: any) => element.text.content)).toHaveLength(3);
-    const actions = card.body.elements[3].actions;
+    expect(card.body.elements[0].tag).toBe('markdown');
+    expect(card.body.elements[0].content).toContain('6-astra U F×');
+    const actions = card.body.elements.slice(1);
     expect(actions.map((action: any) => action.text.content)).toEqual(['🖥️ 打开 Web 终端（只读）', '🔗 对话历史']);
     expect(actions[0].multi_url.url).toContain('view=terminal');
     expect(actions[1].multi_url.url).not.toContain('view=terminal');
