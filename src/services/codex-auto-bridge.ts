@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, openSync, r
 import { join, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
-import { ExternalCodexBridge, type ExternalCodexBinding } from './external-codex-bridge.js';
+import { ExternalCodexBridge, type ExternalCodexBinding, type ExternalCodexOutputKind } from './external-codex-bridge.js';
 
 export interface AutoCodexBinding extends ExternalCodexBinding {
   codexHome: string;
@@ -39,7 +39,7 @@ export class CodexAutoBridge {
   private timer?: NodeJS.Timeout;
   constructor(private cfg: AutoCodexConfig, private stateFile: string, private deps: {
     topic: (b: Omit<AutoCodexBinding, 'rootMessageId'>, uuid: string) => Promise<string>;
-    reply: (b: AutoCodexBinding, text: string, uuid: string) => Promise<unknown>;
+    reply: (b: AutoCodexBinding, text: string, uuid: string, kind?: ExternalCodexOutputKind) => Promise<unknown>;
     turn: (b: AutoCodexBinding, text: string, checkpoint: () => void) => Promise<void>;
     fork?: (b: AutoCodexBinding) => Promise<{ threadId: string; rolloutPath: string }>;
     excluded: () => Set<string>;
@@ -72,7 +72,7 @@ export class CodexAutoBridge {
   private key(home: string, id: string): string { return createHash('sha256').update(`${home}:${id}`).digest('hex'); }
   private observe(key: string, b: AutoCodexBinding, offset?: number): ExternalCodexBridge {
     const observer = new ExternalCodexBridge([b], join(dirname(this.stateFile), `${key}.json`), {
-      reply: async (_, text, uuid) => { if (!this.isManaged(b)) await this.deps.reply(b, text, uuid); },
+      reply: async (_, text, uuid, kind) => { if (!this.isManaged(b)) await this.deps.reply(b, text, uuid, kind); },
       turn: async (_, text, checkpoint) => { if (!this.isManaged(b)) await this.deps.turn(b, text, checkpoint); }, error: this.deps.error,
     }, offset === undefined ? undefined : { [b.threadId]: offset }, this.registry.startedAt);
     this.observers.set(key, observer);
@@ -80,6 +80,10 @@ export class CodexAutoBridge {
   }
   owns(root: string, app: string): boolean {
     return Object.values(this.registry.bindings).some(b => b.rootMessageId === root && b.larkAppId === app && !this.isManaged(b));
+  }
+  isBusy(root: string, app: string): boolean {
+    for (const observer of this.observers.values()) if (observer.owns(root, app)) return observer.isBusy(root, app);
+    return false;
   }
   async receive(root: string, app: string, sender: string, messageId: string, text: string): Promise<boolean> {
     const found = Object.entries(this.registry.bindings).find(([, b]) => b.rootMessageId === root && b.larkAppId === app);

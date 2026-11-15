@@ -3,6 +3,8 @@ import { sessionModelStatus, type ModelSelection } from '../../services/session-
 import type { AvailableSessionModel } from '../../services/session-model-selection.js';
 import type { Locale } from '../../i18n/index.js';
 import { getSession } from '../../services/session-store.js';
+import { resolveSessionTranscriptPath } from '../../services/transcript-resolver.js';
+import { readCodexSessionStatistics, codexStatisticsText } from '../../services/codex-session-statistics.js';
 
 const text = (content: string) => ({ tag: 'div', text: { tag: 'lark_md', content } });
 const safe = (value?: string) => value?.replace(/[^\w.:-]/g, '') || '未知';
@@ -14,12 +16,17 @@ export function sessionModelCardElements(sessionId: string, cliId?: string, loca
   try {
     const state = sessionModelStatus(config.session.dataDir, sessionId);
     const current = state.runtime?.selection;
-    const workingDir = getSession(sessionId)?.workingDir || (en ? 'Unknown directory' : '目录未知');
+    const session = getSession(sessionId);
+    const workingDir = session?.workingDir || (en ? 'Unknown directory' : '目录未知');
     const compact = (v: ModelSelection) => `${safe(v.model).replace(/^gpt-/, '')} ${safe(v.effort).replace('medium', 'M').replace('xhigh', 'XH').replace('high', 'H').replace('low', 'L')} F${v.serviceTier === 'priority' ? '√' : v.serviceTier === 'default' ? '×' : '?'}`;
     const status = current ? `${state.runnerAlive ? '' : (en ? 'last ' : '上次 ')}${compact(current)}` : (en ? 'awaiting receipt' : '待回执');
     const pending = state.desired && state.desired.revision !== state.runtime?.revision
       ? ` → ${compact(state.desired)}${en ? ' next' : ' 待生效'}` : '';
     const rows = [{ tag: 'div', text: { tag: 'plain_text', content: `📁 ${workingDir} · ${en ? 'Botmux session' : '本话题会话'} ${sessionId.slice(0, 8)} · ${status}${pending}` } }];
+    const resolved = resolveSessionTranscriptPath({ cliId: current?.executor === 'traex' ? 'traex' : 'codex', sessionId,
+      cliSessionId: state.runtime?.threadId ?? session?.cliSessionId, cwd: session?.workingDir });
+    const stats = resolved ? readCodexSessionStatistics(resolved.path, Date.now(), state.runnerAlive && state.runtime?.phase === 'running') : undefined;
+    rows.push({ tag: 'div', text: { tag: 'plain_text', content: codexStatisticsText(stats, session?.createdAt, Date.now(), en) } });
     return rows;
   } catch { return [text(en ? 'Model status unavailable' : '模型状态暂不可用')]; }
 }

@@ -18,6 +18,7 @@ import * as observedBotsStore from '../services/observed-bots-store.js';
 import { getDeploymentIdentity } from '../services/deployment-identity.js';
 import { registerSessionModelApi } from './session-model-api.js';
 import { registerSessionWorkingDirApi } from './session-working-dir-api.js';
+import { registerCodexSyncApi } from './codex-sync-api.js';
 import { sendSessionInput } from './session-working-dir-runtime.js';
 import { issueTerminalEntry } from '../services/terminal-access.js';
 import { getTerminalProxyPort } from './terminal-url.js';
@@ -240,7 +241,7 @@ export function setBotName(name: string): void { setRowsBotName(name); }
 // The daemon's own larkAppId, primed at startup. Required for the groups
 // endpoints below which proxy calls into groups-store on this bot's behalf.
 let cachedLarkAppId = '';
-export function setLarkAppId(id: string): void { cachedLarkAppId = id; registerSessionModelApi(id); registerSessionWorkingDirApi(id); }
+export function setLarkAppId(id: string): void { cachedLarkAppId = id; registerSessionModelApi(id); registerSessionWorkingDirApi(id); registerCodexSyncApi(id, ipcRoute, jsonRes, readJsonBody); }
 
 ipcRoute('GET', '/api/sessions', (_req, res) => {
   // Active first (live state), closed appended (historical)

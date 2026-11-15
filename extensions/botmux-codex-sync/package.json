@@ -1,0 +1,22 @@
+{
+  "name": "botmux-codex-sync",
+  "displayName": "Botmux Codex 会话同步",
+  "description": "在 Remote SSH 的 VS Code 中发现、跟随和追问 Botmux 与原生 Codex 会话。",
+  "publisher": "botmux-local",
+  "version": "0.1.0",
+  "engines": { "vscode": "^1.90.0" },
+  "main": "./extension.cjs",
+  "extensionKind": ["workspace"],
+  "activationEvents": ["onStartupFinished"],
+  "contributes": {
+    "commands": [
+      { "command": "botmuxSync.refresh", "title": "Botmux: 刷新会话", "icon": "$(refresh)" },
+      { "command": "botmuxSync.open", "title": "Botmux: 打开会话" }
+    ],
+    "views": { "explorer": [{ "id": "botmuxSync.threads", "name": "Botmux 会话", "icon": "$(comment-discussion)" }] },
+    "menus": { "view/title": [{ "command": "botmuxSync.refresh", "when": "view == botmuxSync.threads", "group": "navigation" }] },
+    "configuration": { "title": "Botmux 会话同步", "properties": {
+      "botmuxSync.dataDir": { "type": "string", "default": "/home/ubuntu/my/botmux/data", "description": "5090 canonical Botmux data 目录；Remote SSH 下在远端读取。" }
+    } }
+  }
+}

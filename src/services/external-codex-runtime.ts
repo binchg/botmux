@@ -6,11 +6,12 @@ import { buildMarkdownCard } from '../im/lark/md-card.js';
 import { formatMathForLark } from './outbound-math.js';
 import { replyMessage, sendMessage } from '../im/lark/client.js';
 import { logger } from '../utils/logger.js';
-import { ExternalCodexBridge, type ExternalCodexBinding } from './external-codex-bridge.js';
+import { ExternalCodexBridge, type ExternalCodexBinding, type ExternalCodexOutputKind } from './external-codex-bridge.js';
 import { CodexAutoBridge, type AutoCodexBinding } from './codex-auto-bridge.js';
 import { CodexAppServerProbe } from './codex-app-threads.js';
 import { collectBotmuxSessionIdentities } from './session-store.js';
 import { submitToCodexOwner } from './codex-owner-ipc.js';
+import { readCodexSessionStatistics, codexStatisticsText } from './codex-session-statistics.js';
 
 export let externalCodexBridge: ExternalCodexBridge | CodexAutoBridge | undefined;
 
@@ -31,8 +32,8 @@ export function startExternalCodexBridge(selfAppId: string): void {
         if (!b.firstUserMessage) throw new Error('Automatic topic requires the original user message');
         return sendMessage(b.larkAppId, b.chatId, b.firstUserMessage, 'text', uuid);
       },
-      reply: async (b, text, uuid) => replyMessage(b.larkAppId, b.rootMessageId,
-        buildExternalCodexForwardCard(b, text), 'interactive', true, uuid),
+      reply: async (b, text, uuid, kind) => replyMessage(b.larkAppId, b.rootMessageId,
+        buildExternalCodexForwardCard(b, text, kind), 'interactive', true, uuid),
       turn: (b, text, checkpoint) => runExternalCodexTurn(cfg.codexBin, b.codexHome, b, text, checkpoint),
       excluded: () => collectBotmuxSessionIdentities() ?? new Set(),
       error: e => logger.error(`[codex-auto] ${String(e)}`),
@@ -50,8 +51,8 @@ export function startExternalCodexBridge(selfAppId: string): void {
   const statePath = join(homedir(), '.local/state/botmux/external-codex.json');
   mkdirSync(dirname(statePath), { recursive: true, mode: 0o700 });
   externalCodexBridge = new ExternalCodexBridge(cfg.bindings, statePath, {
-    reply: async (b, text, uuid) => replyMessage(b.larkAppId, b.rootMessageId,
-        buildExternalCodexForwardCard(b, text), 'interactive', true, uuid),
+    reply: async (b, text, uuid, kind) => replyMessage(b.larkAppId, b.rootMessageId,
+        buildExternalCodexForwardCard(b, text, kind), 'interactive', true, uuid),
     turn: (b, text, checkpoint) => runExternalCodexTurn(cfg.codexBin, cfg.codexHome, b, text, checkpoint),
     error: e => logger.error(`[external-codex] ${String(e)}`),
   });
@@ -60,9 +61,12 @@ export function startExternalCodexBridge(selfAppId: string): void {
 }
 
 /** Source provenance is card metadata; the mirrored assistant body is unchanged. */
-export function buildExternalCodexForwardCard(binding: ExternalCodexBinding, text: string): string {
+export function buildExternalCodexForwardCard(binding: ExternalCodexBinding, text: string, kind?: ExternalCodexOutputKind): string {
   const card = JSON.parse(buildMarkdownCard(formatMathForLark(text)));
-  card.header = { template: 'blue', title: { tag: 'plain_text', content: `原会话转发 · ${binding.threadId.slice(0, 8)}` } };
+  const label = kind === 'user' ? '追问原文' : kind === 'progress' ? '执行进展' : kind === 'tool' ? '工具执行' : '原会话转发';
+  card.header = { template: 'blue', title: { tag: 'plain_text', content: `${label} · ${binding.threadId.slice(0, 8)}` } };
+  const stats = readCodexSessionStatistics(binding.rolloutPath, Date.now(), externalCodexBridge?.isBusy(binding.rootMessageId, binding.larkAppId));
+  if (stats && card.body?.elements) card.body.elements.push({ tag: 'markdown', content: codexStatisticsText(stats) });
   return JSON.stringify(card);
 }
 

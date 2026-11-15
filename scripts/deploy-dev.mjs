@@ -101,6 +101,7 @@ function main() {
 
   run('corepack', ['pnpm', 'exec', 'vitest', 'run', '--project', 'unit',
     'test/codex-auto-bridge.test.ts', 'test/external-codex-bridge.test.ts', 'test/external-codex-runtime.test.ts',
+    'test/external-codex-incremental.test.ts', 'test/codex-sync-statistics.test.ts', 'test/codex-sync-api.test.ts',
     'test/dev-deploy-version.test.ts', 'test/install-info.test.ts',
     'test/restart-report.test.ts', 'test/codex-app-progress.test.ts',
     'test/persistent-app-runner-reload.test.ts', 'test/session-lifecycle-hooks.test.ts',

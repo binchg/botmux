@@ -69,6 +69,7 @@ import {
   writableTerminalLinkFor,
   resetCodexAppProgressForwarder,
   beginCodexAppProgressTurn,
+  refreshSessionStatisticsCard,
 } from './core/worker-pool.js';
 import { sendSessionInput } from './core/session-working-dir-runtime.js';
 import {
@@ -4154,6 +4155,19 @@ export async function startDaemon(botIndex?: number): Promise<void> {
   }, 60_000);
   idleWorkerSweepTimer.unref?.();
 
+  let statisticsTick = 0;
+  const statisticsCardTimer = setInterval(() => {
+    statisticsTick++;
+    for (const ds of activeSessions.values()) {
+      if (ds.larkAppId !== cfg.larkAppId) continue;
+      // While active: 15s. At rest: 60s. Reuse the serialized PATCH queue.
+      if (statisticsTick % 4 !== 0 && ds.lastScreenStatus !== 'working' && ds.lastScreenStatus !== 'analyzing') continue;
+      try { refreshSessionStatisticsCard(ds); }
+      catch (error) { logger.debug(`[statistics] ${String(error)}`); }
+    }
+  }, 15_000);
+  statisticsCardTimer.unref();
+
   // Periodic sandbox reconciler: the daemon's SIGKILL straggler-reaper (and any
   // worker SIGKILL) bypasses worker-side killCli(), so the overlay mounts +
   // upper/work dirs of a killed-but-still-active sandboxed session would leak for
@@ -4234,6 +4248,7 @@ export async function startDaemon(botIndex?: number): Promise<void> {
     workflowRuns.clear();
     clearInterval(descriptorHeartbeat);
     clearInterval(idleWorkerSweepTimer);
+    clearInterval(statisticsCardTimer);
     if (memoryDiagnostics) clearInterval(memoryDiagnostics);
     removeDaemonDescriptor(cfg.larkAppId);
     ipcHandle.close().catch(() => { /* swallow */ });
@@ -4304,6 +4319,7 @@ export async function startDaemon(botIndex?: number): Promise<void> {
   process.on('exit', () => {
     clearInterval(descriptorHeartbeat);
     clearInterval(idleWorkerSweepTimer);
+    clearInterval(statisticsCardTimer);
     if (memoryDiagnostics) clearInterval(memoryDiagnostics);
     removeDaemonDescriptor(cfg.larkAppId);
     // Plain-exit path (uncaught fatal, manual process.exit) bypasses the
