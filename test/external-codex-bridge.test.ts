@@ -5,6 +5,30 @@ import { join } from 'node:path';
 import { ExternalCodexBridge, consumeExternalCodex, type ExternalCodexCursor } from '../src/services/external-codex-bridge.js';
 
 const event = (payload: unknown) => JSON.stringify({ type: 'event_msg', payload }) + '\n';
+
+it('resumes long public output at the failed card after restart, using the same retry UUID', async () => {
+  const f = fixture();
+  const deliveries: Array<{ text: string; uuid: string }> = [];
+  let fail = true;
+  const deps = { reply: async (_: unknown, text: string, uuid: string) => {
+    deliveries.push({ text, uuid });
+    if (deliveries.length === 2 && fail) throw new Error('offline');
+  }, turn: async () => { throw new Error('must not submit input'); }, error: () => {} };
+  try {
+    const bridge = new ExternalCodexBridge([f.binding], f.stateFile, deps);
+    const text = '真实公开长回复。'.repeat(1200);
+    appendFileSync(f.rolloutPath, event({ type: 'task_complete', turn_id: 'long', last_agent_message: text }));
+    await expect(bridge.tick()).rejects.toThrow('offline');
+    fail = false;
+    const restored = new ExternalCodexBridge([f.binding], f.stateFile, deps);
+    await restored.tick();
+    expect(deliveries[1]).toEqual(deliveries[2]);
+    expect([deliveries[0], ...deliveries.slice(2)].map(d => d.text).join('')).toBe(text);
+    const count = deliveries.length;
+    await restored.tick();
+    expect(deliveries).toHaveLength(count);
+  } finally { f.cleanup(); }
+});
 function fixture() {
   const dir = mkdtempSync(join(tmpdir(), 'external-codex-'));
   const rolloutPath = join(dir, 'rollout.jsonl');

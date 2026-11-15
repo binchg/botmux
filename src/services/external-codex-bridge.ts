@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { publicCodexEvent, codexSyncEventKey } from './codex-sync-events.js';
 import { jsonlFrontierAnchor } from './jsonl-cursor.js';
+import { splitMobileReply } from './mobile-reply.js';
 
 export type ExternalCodexOutputKind = 'user' | 'progress' | 'tool' | 'final';
 
@@ -23,7 +24,7 @@ export interface ExternalCodexCursor {
   offset: number;
   carry: string;
   busy: boolean;
-  outbox: Array<{ id: string; text: string; kind?: ExternalCodexOutputKind; question?: string }>;
+  outbox: Array<{ id: string; text: string; kind?: ExternalCodexOutputKind; question?: string; nextPart?: number }>;
   received: string[];
   completed?: string[];
   notBefore?: number;
@@ -226,9 +227,16 @@ export class ExternalCodexBridge {
             this.save();
             continue;
           }
-          const uuid = createHash('sha256').update(`${b.threadId}:${outputRoot}:${item.id}`).digest('hex').slice(0, 32);
+          const parts = item.kind === 'user' ? [item.text] : splitMobileReply(item.text);
           try {
-            await this.deps.reply({ ...b, currentUserMessage: item.question ?? state.currentUserMessage ?? b.firstUserMessage }, item.text, uuid, item.kind);
+            for (let part = item.nextPart ?? 0; part < parts.length; part++) {
+              // Keep the original first-card UUID, including retries after an upgrade.
+              const id = part === 0 ? item.id : `${item.id}:mobile-part:${part}`;
+              const uuid = createHash('sha256').update(`${b.threadId}:${outputRoot}:${id}`).digest('hex').slice(0, 32);
+              await this.deps.reply({ ...b, currentUserMessage: item.question ?? state.currentUserMessage ?? b.firstUserMessage }, parts[part], uuid, item.kind);
+              item.nextPart = part + 1;
+              this.save();
+            }
           } catch (error) {
             if ((error as Error)?.name === 'MessageWithdrawnError') { state.deliveryBlockedRoot = outputRoot; this.save(); }
             throw error;
