@@ -1,5 +1,5 @@
 import { beforeEach, afterEach, it, expect, vi } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -25,7 +25,7 @@ beforeEach(()=>{
  writeFileSync(join(ctx.dir,'rollout.jsonl'),JSON.stringify({type:'event_msg',payload:{type:'user_message',message:'same thread'}})+'\n');
  routes={};registerCodexSyncApi('app',(method,path,handler)=>{routes[method+' '+path]=handler;},(res:any,status,value)=>{res.status=status;res.value=value;},async(req:any)=>req.body);
 });
-afterEach(()=>rmSync(ctx.dir,{recursive:true,force:true}));
+afterEach(()=>{vi.useRealTimers();rmSync(ctx.dir,{recursive:true,force:true});});
 async function call(route:string,body?:unknown,key='same-session'){const res:any={};await routes[route]({url:'/api/codex-sync/x/events',body},res,{key});return res;}
 it('lists only this bot and rejects cross-bot keys before writes',async()=>{
  ctx.sessions.push({...ctx.sessions[0],sessionId:'other',larkAppId:'other-bot'});
@@ -63,4 +63,12 @@ it('acknowledges execution without waiting for a slow Lark mirror',async()=>{
  const result=await call('POST /api/codex-sync/:key/input',{text:'q',requestId:'request-slow'});
  expect(result.status).toBe(200);expect(ctx.send).toHaveBeenCalledTimes(1);expect(ctx.reply).toHaveBeenCalledTimes(1);
  finish();await Promise.resolve();
+});
+it('retries only its own persisted mirrors when multiple bot daemons share the data directory',async()=>{
+ const dir=join(ctx.dir,'codex-sync-receipts');mkdirSync(dir);
+ for(const appId of ['app','other-bot'])writeFileSync(join(dir,appId+'.json'),JSON.stringify({appId,status:'accepted',mirrored:false,mirror:{rootMessageId:appId+'-root',text:'question',uuid:appId+'-uuid'}}));
+ vi.useFakeTimers();
+ registerCodexSyncApi('app',()=>{},()=>{},async()=>({}));
+ await vi.advanceTimersByTimeAsync(5001);
+ expect(ctx.reply).toHaveBeenCalledTimes(1);expect(ctx.reply.mock.calls[0][0]).toBe('app');expect(ctx.reply.mock.calls[0][1]).toBe('app-root');
 });

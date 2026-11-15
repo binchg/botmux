@@ -51,7 +51,7 @@ export function registerCodexSyncApi(appId: string, route: Route,
     mirroring.add(file);
     try {
       const saved = JSON.parse(readFileSync(file, 'utf8'));
-      if (!saved.mirror || saved.mirrored || saved.status !== 'accepted') { mirrors.delete(file); return; }
+      if (saved.appId !== appId || !saved.mirror || saved.mirrored || saved.status !== 'accepted') { mirrors.delete(file); return; }
       await replyMessage(appId, saved.mirror.rootMessageId, `【VS Code 追问】\n${saved.mirror.text}`, 'text', true, saved.mirror.uuid);
       const latest = JSON.parse(readFileSync(file, 'utf8'));
       atomicWriteFileSync(file, JSON.stringify({ ...latest, mirrored: true }), { mode: 0o600 }); mirrors.delete(file);
@@ -61,7 +61,7 @@ export function registerCodexSyncApi(appId: string, route: Route,
   if (existsSync(receiptDir)) for (const name of readdirSync(receiptDir)) {
     if (!name.endsWith('.json')) continue;
     const file = join(receiptDir, name);
-    try { const saved = JSON.parse(readFileSync(file, 'utf8')); if (saved.mirror && !saved.mirrored && saved.status === 'accepted') mirrors.add(file); } catch { /* isolated receipt */ }
+    try { const saved = JSON.parse(readFileSync(file, 'utf8')); if (saved.appId === appId && saved.mirror && !saved.mirrored && saved.status === 'accepted') mirrors.add(file); } catch { /* isolated receipt */ }
   }
   const mirrorTimer = setInterval(() => { for (const file of mirrors) void flushMirror(file); }, 5000); mirrorTimer.unref();
   route('GET', '/api/codex-sync/threads', (_req, res) => {
@@ -97,7 +97,7 @@ export function registerCodexSyncApi(appId: string, route: Route,
         return json(res, saved.fingerprint === fingerprint && saved.status === 'accepted' ? 200 : 409, { ok: saved.fingerprint === fingerprint && saved.status === 'accepted', status: saved.status, duplicate: true });
       }
       const uuid = createHash('sha256').update(`${appId}:${params.key}:${input.requestId}`).digest('hex').slice(0, 32);
-      const save = (status: string) => atomicWriteFileSync(file, JSON.stringify({ status, fingerprint, mirror: { rootMessageId: thread.rootMessageId, text: input.text, uuid }, mirrored: false }), { mode: 0o600 });
+      const save = (status: string) => atomicWriteFileSync(file, JSON.stringify({ status, fingerprint, appId, mirror: { rootMessageId: thread.rootMessageId, text: input.text, uuid }, mirrored: false }), { mode: 0o600 });
       // An uncertain delivery stays 'started', never automatically replayed.
       save('started');
       if (thread.kind === 'native') {
