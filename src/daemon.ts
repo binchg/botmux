@@ -69,6 +69,7 @@ import {
   writableTerminalLinkFor,
   resetCodexAppProgressForwarder,
   beginCodexAppProgressTurn,
+  postFreshStreamingCard,
 } from './core/worker-pool.js';
 import { sendSessionInput } from './core/session-working-dir-runtime.js';
 import {
@@ -3538,6 +3539,9 @@ async function handleThreadReply(data: any, ctx: RoutingContext): Promise<void> 
     beginNewTurn(ds, parsed.content);
     rememberLastCliInput(ds, promptContent, msgContent);
     await noteTurnReceived(ds, parsed.messageId, parsed.content, await getThreadSender(), parsed.messageId);
+    if (process.env.BOTMUX_BOT_INDEX === '1' && dsBotCfgForMsg.cliId === 'codex-app') {
+      await postFreshStreamingCard(ds, sessionReply);
+    }
     await sendSessionInput(ds, { type: 'message', content: msgContent, turnId: parsed.messageId });
   } else {
     // Worker not running — re-fork with resume. This is a NEW turn, so drop
