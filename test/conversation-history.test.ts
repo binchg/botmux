@@ -29,7 +29,7 @@ function storage(): string {
 /** 使用最小 HTTP 对象验证状态码、正文和响应头。 */
 async function request(dataDir: string, path: string, at: number, method = 'GET') {
   const result = { status: 0, body: '', headers: {} as Record<string, string> };
-  const req = { method, socket: { remoteAddress: '127.0.0.1' } } as IncomingMessage;
+  const req = { method, headers: { host: 'localhost' }, socket: { remoteAddress: '127.0.0.1', localAddress: '127.0.0.1' } } as IncomingMessage;
   const res = { writeHead(status: number, headers: Record<string, string>) {
     result.status = status; result.headers = headers;
   }, end(body?: string) { result.body = body ?? ''; } } as unknown as ServerResponse;

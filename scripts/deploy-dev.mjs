@@ -104,6 +104,8 @@ function main() {
     'test/codex-owner-ipc.test.ts', 'test/external-codex-incremental.test.ts', 'test/codex-sync-statistics.test.ts', 'test/codex-sync-api.test.ts',
     'test/dev-deploy-version.test.ts', 'test/install-info.test.ts',
     'test/restart-report.test.ts', 'test/codex-app-progress.test.ts',
+    'test/conversation-history.test.ts', 'test/conversation-history-cache.test.ts',
+    'test/conversation-history-lineage.test.ts', 'test/conversation-history-turns.test.ts', 'test/conversation-history-live.test.ts',
     'test/persistent-app-runner-reload.test.ts', 'test/session-lifecycle-hooks.test.ts',
     'test/codex-app-hook-health.test.ts', 'test/codex-app-runner.test.ts',
     'test/traex-adaptive-model.test.ts', 'test/traex-process-scope.test.ts', 'test/traex-app-launch.test.ts',

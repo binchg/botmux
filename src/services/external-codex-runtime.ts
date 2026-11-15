@@ -3,6 +3,7 @@ import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { spawn } from 'node:child_process';
 import { buildMarkdownCard, buildTitledMarkdownCard } from '../im/lark/md-card.js';
+import { nativeConversationHistoryButtons } from '../im/lark/conversation-history-button.js';
 import { formatMathForLark } from './outbound-math.js';
 import { replyMessage, sendMessage } from '../im/lark/client.js';
 import { logger } from '../utils/logger.js';
@@ -32,7 +33,7 @@ export function startExternalCodexBridge(selfAppId: string): void {
         return sendMessage(b.larkAppId, b.chatId, b.firstUserMessage, 'text', uuid);
       },
       reply: async (b, text, uuid, kind) => replyMessage(b.larkAppId, b.rootMessageId,
-        buildExternalCodexForwardCard(b, text, kind), 'interactive', true, uuid),
+        buildExternalCodexForwardCard(b, text, kind, nativeConversationHistoryButtons(b, kind === 'user')), 'interactive', true, uuid),
       turn: (b, text, checkpoint) => runExternalCodexTurn(cfg.codexBin, b.codexHome, b, text, checkpoint),
       excluded: () => collectBotmuxSessionIdentities() ?? new Set(),
       error: e => logger.error(`[codex-auto] ${String(e)}`),
@@ -51,7 +52,7 @@ export function startExternalCodexBridge(selfAppId: string): void {
   mkdirSync(dirname(statePath), { recursive: true, mode: 0o700 });
   externalCodexBridge = new ExternalCodexBridge(cfg.bindings, statePath, {
     reply: async (b, text, uuid, kind) => replyMessage(b.larkAppId, b.rootMessageId,
-        buildExternalCodexForwardCard(b, text, kind), 'interactive', true, uuid),
+        buildExternalCodexForwardCard(b, text, kind, nativeConversationHistoryButtons(b, kind === 'user')), 'interactive', true, uuid),
     turn: (b, text, checkpoint) => runExternalCodexTurn(cfg.codexBin, cfg.codexHome, b, text, checkpoint),
     error: e => logger.error(`[external-codex] ${String(e)}`),
   });
@@ -60,12 +61,14 @@ export function startExternalCodexBridge(selfAppId: string): void {
 }
 
 /** Mirror public content without repeating bridge metadata or statistics. */
-export function buildExternalCodexForwardCard(binding: ExternalCodexBinding, text: string, kind?: ExternalCodexOutputKind): string {
+export function buildExternalCodexForwardCard(binding: ExternalCodexBinding, text: string, kind?: ExternalCodexOutputKind, historyButtons: any[] = []): string {
   const md = formatMathForLark(text);
   const question = binding.currentUserMessage?.trim() || binding.firstUserMessage?.trim();
   // The question itself already occupies the whole user card; never quote it twice.
-  if (kind === 'user' || !question) return buildMarkdownCard(md, undefined, '');
-  return buildTitledMarkdownCard({ title: question, md, brand: '', template: kind === 'progress' ? 'turquoise' : 'green' });
+  const card = JSON.parse(kind === 'user' || !question ? buildMarkdownCard(md, undefined, '')
+    : buildTitledMarkdownCard({ title: question, md, brand: '', template: kind === 'progress' ? 'turquoise' : 'green' }));
+  if (historyButtons.length) card.body.elements.push(...historyButtons);
+  return JSON.stringify(card);
 }
 
 export async function forkExternalCodexThread(binary: string, b: AutoCodexBinding): Promise<{ threadId: string; rolloutPath: string }> {

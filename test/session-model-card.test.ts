@@ -35,6 +35,8 @@ describe('per-session model control card', () => {
     expect(rows).toContain('test-a M F×');
     expect(rows).toContain('→ test-a H F√ 待生效');
     expect(rows).toContain('📁 /home/ubuntu/my/project');
+    expect(rows).not.toContain('本话题会话');
+    expect(rows).not.toContain('Botmux session');
     expect(sessionModelCardElements('a', 'codex-app')).toHaveLength(3);
     expect(sessionModelButton('a', { root_id: 'root' }, 'claude-code')).toEqual([]);
   });

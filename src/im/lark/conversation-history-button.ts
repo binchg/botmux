@@ -2,7 +2,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { ensureConversationHistory } from '../../services/conversation-history-store.js';
+import { ensureConversationHistory, ensureNativeConversationHistory, type ConversationHistory } from '../../services/conversation-history-store.js';
 import { getSession } from '../../services/session-store.js';
 import { buildDashboardUrl } from '../../core/dashboard-url.js';
 import type { Locale } from '../../i18n/index.js';
@@ -13,6 +13,7 @@ import { preloadConversationHistory } from '../../services/conversation-history-
 
 /** 实际面板端口只用于回环预加载和未配置域名时的兼容入口。 */
 function dashboardPort(): string | number {
+  if (process.env.BOTMUX_HISTORY_PORT) return Number(process.env.BOTMUX_HISTORY_PORT);
   let port: string | number = config.dashboard.port;
   try {
     const actual = readFileSync(join(homedir(), '.botmux', '.dashboard-port'), 'utf8').trim();
@@ -32,6 +33,10 @@ function historyOrigin(): string {
     if (!url.pathname.endsWith('/')) url.pathname += '/';
     return url.toString();
   }
+  if (process.env.BOTMUX_HISTORY_HOST) {
+    const host = process.env.BOTMUX_HISTORY_HOST;
+    return `http://${host.includes(':') ? `[${host}]` : host}:${dashboardPort()}/`;
+  }
   return buildDashboardUrl({ host: config.dashboard.externalHost, port: dashboardPort() });
 }
 
@@ -42,13 +47,23 @@ export function conversationHistoryButtons(sessionId: string, locale?: Locale): 
   if (terminalAccessEnabled(config.session.dataDir, sessionId)) return [];
   try {
     const grant = ensureConversationHistory(session);
-    const url = new URL(`conversation/${grant.token}`, historyOrigin()).toString();
-    if (grant.expiresAt > Date.now()) preloadConversationHistory(grant.token, dashboardPort());
-    return [{ tag: 'button', type: 'default',
-      text: { tag: 'plain_text', content: locale === 'en' ? '🔗 Conversation history' : '🔗 对话历史' },
-      multi_url: { url, pc_url: url, android_url: url, ios_url: url } }];
+    return historyGrantButtons(grant, locale);
   } catch {
     logger.warn('Conversation history link could not be prepared');
     return [];
   }
+}
+
+/** Same stable direct URL for native mirrors and normal Botmux cards. */
+export function historyGrantButtons(grant: ConversationHistory, locale?: Locale): any[] {
+  const url = new URL(`conversation/${grant.token}`, historyOrigin()).toString();
+  if (grant.expiresAt > Date.now()) preloadConversationHistory(grant.token, dashboardPort());
+  return [{ tag: 'button', type: 'default',
+    text: { tag: 'plain_text', content: locale === 'en' ? '🔗 Conversation history' : '🔗 对话历史' },
+    multi_url: { url, pc_url: url, android_url: url, ios_url: url } }];
+}
+
+export function nativeConversationHistoryButtons(binding: Parameters<typeof ensureNativeConversationHistory>[0], userInput = false): any[] {
+  try { return historyGrantButtons(ensureNativeConversationHistory(binding, userInput)); }
+  catch { logger.warn('Native conversation history link could not be prepared'); return []; }
 }

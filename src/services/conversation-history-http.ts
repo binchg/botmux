@@ -1,4 +1,5 @@
 /** 七天有效的单会话历史页面；公开路由仅接受随机 token，不接受会话 ID 或文件路径。 */
+import { historyNetworkAllowed } from './conversation-history-network.js';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { config } from '../config.js';
 import { HISTORY_TTL_DAYS, readConversationHistory } from './conversation-history-store.js';
@@ -25,12 +26,13 @@ export async function handleConversationHistoryRequest(
   if (url.pathname !== '/conversation' && !url.pathname.startsWith('/conversation/')) return false;
   const now = opts.now ?? Date.now();
   const headers = { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store',
-    'referrer-policy': 'no-referrer', 'x-content-type-options': 'nosniff',
+    'referrer-policy': 'no-referrer', 'x-robots-tag': 'noindex, nofollow, noarchive', 'x-content-type-options': 'nosniff',
     'content-security-policy': "default-src 'none'; frame-ancestors 'none'; base-uri 'none'" };
   const finish = (status: number, body: string, extra: Record<string, string> = {}) => {
     res.writeHead(status, { ...headers, ...extra });
     res.end(req.method === 'HEAD' ? undefined : body);
   };
+  if (!historyNetworkAllowed(req)) { finish(403, '仅允许通过 Tailscale 内网直接访问。'); return true; }
   if (req.method !== 'GET' && req.method !== 'HEAD') {
     finish(405, 'Method not allowed', { allow: 'GET, HEAD' }); return true;
   }
@@ -58,6 +60,7 @@ export async function handleConversationHistoryRequest(
     if (url.searchParams.has('complete') && !state.page) {
       finish(state.error ? 503 : 202, state.error ? '暂时无法读取完整历史。' : '', { ...expiry, 'retry-after': '1' }); return true;
     }
+    if (state.page && url.searchParams.get('revision') === state.page.revision) { finish(204, '', expiry); return true; }
     const page = state.page ?? renderConversationHistory(history, history.messages.slice(-40), undefined, true);
     finish(200, page.html, { ...expiry, 'x-botmux-history-cache': state.page ? 'hit' : 'loading',
       'content-security-policy': `default-src 'none'; connect-src 'self'; style-src 'unsafe-inline'; script-src 'nonce-${page.nonce}'; base-uri 'none'; frame-ancestors 'none'` });

@@ -5,7 +5,9 @@ export function renderHistoryTurns(
   messages: HistoryMessage[],
   render: (message: HistoryMessage) => string,
   escape: (text: string) => string,
+  expanded = false,
 ): string {
+  if (expanded) return messages.map(render).join('\n');
   const output: string[] = [];
   let pending: HistoryMessage[] = [];
   const flush = () => {

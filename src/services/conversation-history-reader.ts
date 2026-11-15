@@ -1,4 +1,6 @@
 /** 为已有会话补读用户输入和最终回复；不读取工具输出、推理或开发者上下文。 */
+import { join } from 'node:path';
+import { findCodexRolloutBySessionId } from './codex-transcript.js';
 import { statSync } from 'node:fs';
 import { config } from '../config.js';
 import { historyLineage } from './conversation-history-lineage.js';
@@ -42,12 +44,15 @@ export function parseHistoryRecord(record: any, sourceKind: string): HistoryMess
 
 /** 每次重验关联关系、私密保护和文件身份，使页面缓存不会越过来源变化。 */
 export function historySources(history: ConversationHistory, dataDir: string) {
-  const sessions = historyLineage(history, dataDir);
+  const sessions = history.nativeSource ? [{ nativePath: history.nativeSource.path }] : historyLineage(history, dataDir);
   const sources = new Map<string, { path: string; kind: string; signature: string }>();
   let unavailableSources = 0;
   for (const session of sessions) {
-    const cliId = session.cliId === 'codex-app' ? 'codex' : session.cliId;
-    const source = resolveSessionTranscriptPath({ ...session, cliId, cwd: session.workingDir, fresh: true });
+    const homePath = !('nativePath' in session) && ['codex', 'codex-app'].includes(session.cliId ?? '')
+      && session.cliSessionId && history.source.codexHome
+      ? findCodexRolloutBySessionId(session.cliSessionId, join(history.source.codexHome, 'sessions')) : undefined;
+    const source = homePath ? { path: homePath, kind: 'codex' } : 'nativePath' in session ? { path: session.nativePath, kind: 'codex' }
+      : resolveSessionTranscriptPath({ ...session, cliId: session.cliId === 'codex-app' ? 'codex' : session.cliId, cwd: session.workingDir, fresh: true });
     if (!source || !['codex', 'claude', 'traex'].includes(source.kind)) { unavailableSources++; continue; }
     try {
       const stat = statSync(source.path);

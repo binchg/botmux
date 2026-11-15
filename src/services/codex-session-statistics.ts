@@ -92,7 +92,7 @@ export function readCodexSessionStatistics(path: string, now = Date.now(), runni
 export function formatStatisticsDuration(ms: number): string {
   const seconds = Math.max(0, Math.floor(ms / 1000));
   const days = Math.floor(seconds / 86400), hours = Math.floor(seconds / 3600) % 24, minutes = Math.floor(seconds / 60) % 60;
-  return [days ? `${days}天` : '', hours ? `${hours}时` : '', minutes ? `${minutes}分` : '', `${seconds % 60}秒`].filter(Boolean).join('');
+  return [days ? `${days}天` : '', hours ? `${hours}时` : '', minutes ? `${minutes}分` : ''].filter(Boolean).join('') || '不足1分钟';
 }
 
 export function codexStatisticsText(stats: CodexSessionStatistics | undefined, createdAt?: string, now = Date.now(), en = false): string {

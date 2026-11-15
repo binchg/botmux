@@ -2,6 +2,7 @@
 import { mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomBytes, createHash } from 'node:crypto';
+import { publicCodexUserText } from './codex-sync-events.js';
 import { config } from '../config.js';
 import type { Session } from '../types.js';
 import { scrubSecrets } from './insight/scrub.js';
@@ -28,16 +29,16 @@ export interface ConversationHistory {
   title: string;
   expiresAt: number;
   ttlMs?: number;
-  source: Pick<Session, 'cliId' | 'cliSessionId' | 'workingDir'>;
+  source: Pick<Session, 'cliId' | 'cliSessionId' | 'workingDir'> & { codexHome?: string };
   messages: HistoryMessage[];
+  /** Only issued internally from an explicitly bound native thread, never a URL argument. */
+  nativeSource?: { path: string; larkAppId: string; rootMessageId: string };
 }
 
 /** 只保留用户正文，剔除桥接信封、启动上下文和内部引用元数据。 */
 export function visibleHistoryText(text: string, kind: HistoryMessage['kind']): string {
   if (kind === 'user') {
-    const wrapped = [...text.matchAll(/<user_message>\s*([\s\S]*?)\s*<\/user_message>/g)];
-    if (wrapped.length) text = wrapped.map(item => item[1]).join('\n\n');
-    else if (/^(?:# AGENTS\.md instructions|<environment_context>|<permissions instructions>|<botmux_reminder>)/.test(text.trim())) return '';
+    text = publicCodexUserText(text) ?? '';
   }
   return scrubSecrets(text.replace(/<oai-mem-citation>[\s\S]*?<\/oai-mem-citation>/g, '').trim());
 }
@@ -75,7 +76,9 @@ export function ensureConversationHistory(session: Session, dataDir = config.ses
   let old: ConversationHistory | undefined;
   try { old = readConversationHistory(JSON.parse(readFileSync(index, 'utf8')).token, dataDir); } catch {}
   if (old && old.sessionId !== session.sessionId) throw new Error('history_session_mismatch');
-  const source = { cliId: session.cliId, cliSessionId: session.cliSessionId, workingDir: session.workingDir };
+  const source = { cliId: session.cliId, cliSessionId: session.cliSessionId, workingDir: session.workingDir,
+    ...(['codex', 'codex-app'].includes(session.cliId ?? '') && (process.env.CODEX_HOME || old?.source.codexHome)
+      ? { codexHome: process.env.CODEX_HOME || old?.source.codexHome } : {}) };
   const value: ConversationHistory = old ?? {
     version: 1, token: randomBytes(32).toString('base64url'), sessionId: session.sessionId,
     title: session.title, expiresAt: now + HISTORY_TTL_MS, ttlMs: HISTORY_TTL_MS, source, messages: [],
@@ -106,4 +109,22 @@ export function recordConversationHistory(
   value.messages.push({ id, kind, content, at: input.at });
   if (input.kind === 'user') value.expiresAt = Math.max(value.expiresAt, input.at + HISTORY_TTL_MS);
   save(join(dataDir, 'conversation-history', `${value.token}.json`), value);
+}
+
+/** Grant for a native topic; identity includes bot, topic and thread to isolate mirrors. */
+export function ensureNativeConversationHistory(binding: {
+  threadId: string; rolloutPath: string; cwd: string; larkAppId: string; rootMessageId: string;
+  firstUserMessage?: string; currentUserMessage?: string;
+}, userInput = false, dataDir = config.session.dataDir, now = Date.now()): ConversationHistory {
+  const sessionId = 'native-' + createHash('sha256').update(`${binding.larkAppId}:${binding.rootMessageId}:${binding.threadId}`).digest('hex').slice(0, 32);
+  const session = { sessionId, cliId: 'codex', cliSessionId: binding.threadId, workingDir: binding.cwd,
+    title: binding.firstUserMessage || binding.currentUserMessage || '对话历史' } as Session;
+  const history = ensureConversationHistory(session, dataDir, now);
+  const nativeSource = { path: binding.rolloutPath, larkAppId: binding.larkAppId, rootMessageId: binding.rootMessageId };
+  if (JSON.stringify(history.nativeSource) !== JSON.stringify(nativeSource) || userInput) {
+    history.nativeSource = nativeSource;
+    if (userInput) history.expiresAt = Math.max(history.expiresAt, now + HISTORY_TTL_MS);
+    save(join(dataDir, 'conversation-history', `${history.token}.json`), history);
+  }
+  return history;
 }

@@ -27,7 +27,7 @@ function row(text: string, type = 'message') {
 /** 通过真实路由检查状态及首屏，不启动监听端口。 */
 async function request(dir: string, token: string, now = Date.now(), query = '') {
   const result = { status: 0, body: '', headers: {} as Record<string, string> };
-  const req = { method: 'GET', socket: { remoteAddress: dir } } as IncomingMessage;
+  const req = { method: 'GET', headers: { host: 'localhost' }, socket: { remoteAddress: '127.0.0.1', localAddress: '127.0.0.1' } } as IncomingMessage;
   const res = { writeHead(status: number, headers: Record<string, string>) { result.status = status; result.headers = headers; },
     end(body: string) { result.body = body; } } as unknown as ServerResponse;
   await handleConversationHistoryRequest(req, res, new URL(`http://localhost/conversation/${token}${query}`), { dataDir: dir, now });

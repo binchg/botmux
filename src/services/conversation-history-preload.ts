@@ -9,7 +9,7 @@ export function preloadConversationHistory(token: string, port: string | number)
   if (now - (attempts.get(token) ?? 0) < 60_000) return;
   if (attempts.size >= 128) attempts.delete(attempts.keys().next().value!);
   attempts.set(token, now);
-  const request = get({ hostname: '127.0.0.1', port, path: `/conversation/${token}?preload=1`,
+  const request = get({ hostname: process.env.BOTMUX_HISTORY_HOST || '127.0.0.1', port, path: `/conversation/${token}?preload=1`,
     signal: AbortSignal.timeout(3000) }, response => response.resume());
   request.on('error', () => {});
 }

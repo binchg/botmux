@@ -23,7 +23,7 @@ export function sessionModelCardElements(sessionId: string, cliId?: string, loca
     const status = current ? `${state.runnerAlive ? '' : (en ? 'last ' : '上次 ')}${compact(current)}` : (en ? 'awaiting receipt' : '待回执');
     const pending = state.desired && state.desired.revision !== state.runtime?.revision
       ? ` → ${compact(state.desired)}${en ? ' next' : ' 待生效'}` : '';
-    const rows = [{ tag: 'div', text: { tag: 'plain_text', content: `📁 ${workingDir} · ${en ? 'Botmux session' : '本话题会话'} ${sessionId.slice(0, 8)} · ${status}${pending}` } }];
+    const rows = [{ tag: 'div', text: { tag: 'plain_text', content: `📁 ${workingDir} · ${status}${pending}` } }];
     const key = snapshotKey ? `${config.session.dataDir}:${sessionId}:${locale ?? 'zh'}:${snapshotKey}` : undefined;
     let lines = key ? statisticsSnapshots.get(key) : undefined;
     if (!lines) {
