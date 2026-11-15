@@ -16,6 +16,16 @@ export interface JsonlScanOptions {
 const TAIL_PROBE_BYTES = 64 * 1024;
 const JSONL_SCAN_CHUNK_BYTES = 64 * 1024;
 
+/** Detect in-place history rewrites even when the inode and file size grow. */
+export function jsonlFrontierAnchor(path: string, offset: number): string {
+  const fd = openSync(path, 'r');
+  try {
+    const length = Math.min(64, Math.max(0, offset)), data = Buffer.alloc(length);
+    const read = readSync(fd, data, 0, length, Math.max(0, offset - length));
+    return data.subarray(0, read).toString('base64');
+  } finally { closeSync(fd); }
+}
+
 /**
  * Scan an append-only JSONL file from `fromOffset` using bounded-memory chunked
  * reads. Calls `onLine` for each COMPLETE line, and returns the durable byte

@@ -2,7 +2,8 @@ import { readFileSync, statSync, openSync, readSync, closeSync, existsSync } fro
 import { createHash } from 'node:crypto';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { selectCodexAppProgressChunk } from './codex-app-progress.js';
-import { publicCodexToolEvent } from './codex-sync-events.js';
+import { publicCodexEvent, codexSyncEventKey } from './codex-sync-events.js';
+import { jsonlFrontierAnchor } from './jsonl-cursor.js';
 
 export type ExternalCodexOutputKind = 'user' | 'progress' | 'tool' | 'final';
 
@@ -31,60 +32,56 @@ export interface ExternalCodexCursor {
   progressCarry?: string;
   /** Inputs already visible in Lark must not echo back from the rollout. */
   echoInputs?: string[];
+  eventKeys?: string[];
+  frontierAnchor?: string;
+  inode?: number;
 }
 export function consumeExternalCodex(state: ExternalCodexCursor, text: string): void {
   const lines = (state.carry + text).split('\n');
   state.carry = lines.pop()!;
+  const seen = new Set(state.eventKeys ?? []);
   for (const line of lines) {
     if (!line.trim()) continue;
     let row: any;
-    try { row = JSON.parse(line); }
-    catch { continue; } // Legacy byte frontiers can open in a partial record. Never edit the original log.
+    try { row = JSON.parse(line); } catch { continue; }
     const p = row.payload ?? {};
-    // History isn't forwarded, but its lifecycle is needed when attaching in
-    // the middle of a live turn (including a daemon restart).
     if (row.type === 'event_msg' && p.type === 'task_started') {
-      state.busy = true; state.turnId = p.turn_id ?? p.root_turn_id;
+      state.busy = true; state.turnId = p.turn_id ?? p.root_turn_id; state.progressCarry = '';
     }
-    if (row.type === 'event_msg' && (p.type === 'task_complete' || p.type === 'turn_aborted')) state.busy = false;
-    if (state.notBefore && typeof row.timestamp === 'string' && Date.parse(row.timestamp) < state.notBefore) continue;
-    const enqueue = (kind: ExternalCodexOutputKind, text: string) => {
-      const sequence = state.eventSequence = (state.eventSequence ?? 0) + 1;
-      state.outbox.push({ id: `${state.turnId ?? 'event'}:${kind}:${sequence}`, text, kind });
+    const ended = row.type === 'event_msg' && (p.type === 'task_complete' || p.type === 'turn_aborted');
+    if (ended) state.busy = false;
+    const event = publicCodexEvent(row, '');
+    if (!event) continue;
+    const key = codexSyncEventKey(row, event, state.turnId);
+    const duplicate = seen.has(key);
+    if (!duplicate) { seen.add(key); (state.eventKeys ??= []).push(key); }
+    const historical = state.notBefore && typeof row.timestamp === 'string' && Date.parse(row.timestamp) < state.notBefore;
+    if (duplicate || historical) continue;
+    let part = 0;
+    const enqueue = (kind: ExternalCodexOutputKind, text: string, id = `${key}:${part++}`) => {
+      if (!state.completed?.includes(id) && !state.outbox.some(o => o.id === id)) state.outbox.push({ id, text, kind });
     };
-    const tool = publicCodexToolEvent(row);
-    if (tool) enqueue('tool', tool);
-    if (row.type !== 'event_msg') continue;
-    if (p.type === 'task_started') {
-      state.busy = true;
-      state.turnId = p.turn_id ?? p.root_turn_id;
-      state.progressCarry = '';
-    }
-    if (p.type === 'user_message' && typeof p.message === 'string') {
-      const echo = state.echoInputs?.indexOf(p.message.trim()) ?? -1;
+    if (event.kind === 'tool') enqueue('tool', event.text);
+    if (event.kind === 'user') {
+      const echo = state.echoInputs?.indexOf(event.text.trim()) ?? -1;
       if (echo >= 0) state.echoInputs!.splice(echo, 1);
-      else enqueue('user', p.message);
+      else enqueue('user', event.text);
     }
-    if (p.type === 'agent_message' && p.phase === 'commentary' && typeof p.message === 'string') {
-      state.progressCarry = (state.progressCarry ?? '') + p.message;
-      // Exactly the same sentence/chunk selector used by native Botmux cards.
+    if (event.kind === 'progress') {
+      state.progressCarry = (state.progressCarry ?? '') + event.text;
       let chunk;
       while ((chunk = selectCodexAppProgressChunk(state.progressCarry, 240, false))) {
         enqueue('progress', chunk.content);
         state.progressCarry = state.progressCarry.slice(chunk.consumedChars);
       }
     }
-    if (p.type === 'task_complete' || p.type === 'turn_aborted') state.busy = false;
-    if (p.type === 'task_complete' || p.type === 'turn_aborted') {
+    if (ended) {
       if (state.progressCarry?.trim()) enqueue('progress', state.progressCarry.trim());
       state.progressCarry = '';
     }
-    // Completion is authoritative; response_item/item_completed contain copies.
-    if (p.type === 'task_complete' && p.last_agent_message) {
+    if (event.kind === 'final') {
       const id = p.turn_id ?? p.root_turn_id;
-      if (typeof id === 'string' && !state.completed?.includes(id) && !state.outbox.some(x => x.id === id)) {
-        state.outbox.push({ id, text: String(p.last_agent_message), kind: 'final' });
-      }
+      if (typeof id === 'string') enqueue('final', event.text, id);
     }
   }
 }
@@ -120,6 +117,18 @@ export class ExternalCodexBridge {
         // Leave an incomplete final line for the next tick.
         state.offset = Buffer.byteLength(existing.slice(0, existing.lastIndexOf('\n') + 1));
       }
+      if (!state.eventKeys) {
+        // Upgrade legacy cursors by seeding dedup from the already-read prefix.
+        // No historical output is posted, and no source record is rewritten.
+        const prefix = Buffer.from(existing).subarray(0, state.offset).toString('utf8');
+        const seed: ExternalCodexCursor = { offset: 0, carry: '', busy: false, outbox: [], received: [] };
+        consumeExternalCodex(seed, prefix);
+        state.eventKeys = seed.eventKeys ?? [];
+        state.turnId ??= seed.turnId;
+      }
+      const st = statSync(b.rolloutPath);
+      state.frontierAnchor ??= jsonlFrontierAnchor(b.rolloutPath, state.offset);
+      state.inode ??= st.ino;
       this.states.set(b.threadId, state);
     }
     this.save();
@@ -159,8 +168,12 @@ export class ExternalCodexBridge {
     try {
       for (const b of this.bindings) {
         const state = this.states.get(b.threadId)!;
-        const size = statSync(b.rolloutPath).size;
-        if (size < state.offset) throw new Error('External Codex rollout truncated; refusing replay');
+        const st = statSync(b.rolloutPath), size = st.size;
+        if (size < state.offset || state.inode !== st.ino || jsonlFrontierAnchor(b.rolloutPath, state.offset) !== state.frontierAnchor) {
+          // Codex rewrites canonical history on resume. Rebuild lifecycle from
+          // the log; stable event keys keep previously delivered output silent.
+          state.offset = 0; state.carry = ''; state.busy = false; state.turnId = undefined; state.progressCarry = '';
+        }
         if (size > state.offset) {
           const fd = openSync(b.rolloutPath, 'r');
           const data = Buffer.alloc(size - state.offset);
@@ -171,6 +184,7 @@ export class ExternalCodexBridge {
           if (lastNewline >= 0) {
             consumeExternalCodex(state, data.subarray(0, lastNewline + 1).toString('utf8'));
             state.offset += lastNewline + 1;
+            state.frontierAnchor = jsonlFrontierAnchor(b.rolloutPath, state.offset); state.inode = st.ino;
             this.save();
           }
         }

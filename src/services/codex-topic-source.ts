@@ -1,4 +1,5 @@
 import { openSync, readSync, closeSync } from 'node:fs';
+import { publicCodexEvent } from './codex-sync-events.js';
 
 export interface CodexTopicSource {
   meta?: Record<string, any>;
@@ -25,8 +26,9 @@ export function readCodexTopicSource(path: string): CodexTopicSource {
         let row: any;
         try { row = JSON.parse(line); } catch { continue; }
         if (!result.meta && row.type === 'session_meta') result.meta = row.payload;
-        if (row.type === 'event_msg' && row.payload?.type === 'user_message' && typeof row.payload.message === 'string' && row.payload.message.trim()) {
-          result.firstUserMessage = row.payload.message;
+        const event = publicCodexEvent(row, '');
+        if (event?.kind === 'user' && event.text.trim()) {
+          result.firstUserMessage = event.text;
           result.firstUserOffset = lineOffset;
           return result;
         }

@@ -1,5 +1,5 @@
 import { statSync } from 'node:fs';
-import { scanJsonlFromOffset } from './jsonl-cursor.js';
+import { scanJsonlFromOffset, jsonlFrontierAnchor } from './jsonl-cursor.js';
 import { normalizeCodexAppTimestampMs } from './codex-app-activity.js';
 
 interface Turn { start?: number; end?: number; duration?: number }
@@ -8,6 +8,7 @@ interface Aggregate {
   turns: Map<string, Turn>; active?: string; tools: Set<string>;
   input?: number; output?: number; cached?: number;
   totalRuntime: number; completed: number; unfinished: number;
+  anchor?: string;
 }
 export interface CodexSessionStatistics {
   createdAtMs?: number; runningMs: number; turns: number; tools: number;
@@ -65,7 +66,8 @@ export function readCodexSessionStatistics(path: string, now = Date.now(), runni
   try {
     const s = statSync(path);
     let a = files.get(path);
-    if (!a || a.inode !== s.ino || s.size < a.size) {
+    const changed = a && (s.size !== a.size || s.mtimeMs !== a.mtime);
+    if (!a || a.inode !== s.ino || s.size < a.size || (changed && a.anchor !== undefined && jsonlFrontierAnchor(path, a.offset) !== a.anchor)) {
       a = { offset: 0, size: -1, mtime: -1, inode: s.ino, turns: new Map(), tools: new Set(), totalRuntime: 0, completed: 0, unfinished: 0 };
       if (files.size >= 128) files.delete(files.keys().next().value!);
       files.set(path, a);
@@ -77,6 +79,7 @@ export function readCodexSessionStatistics(path: string, now = Date.now(), runni
       } });
       if (!scan) return;
       a.offset = scan.newOffset; a.size = s.size; a.mtime = s.mtimeMs;
+      a.anchor = jsonlFrontierAnchor(path, a.offset);
     }
     const active = a.active ? a.turns.get(a.active) : undefined;
     const live = running && active?.duration === undefined && active?.start !== undefined;

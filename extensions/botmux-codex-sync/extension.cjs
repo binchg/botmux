@@ -66,6 +66,7 @@ function html(webview) {
     }
     if(m.type==='sent'){pending=false;waiting=true;document.getElementById('send').disabled=false;document.getElementById('input').value='';document.getElementById('status').textContent='已提交，等待原会话执行…';}
     if(m.type==='error'){pending=false;document.getElementById('send').disabled=false;document.getElementById('status').textContent=m.text;}
+    if(m.type==='connection'){document.getElementById('status').textContent=m.text;}
   });vscode.postMessage({type:'ready'});
   </script></body></html>`;
 }
@@ -87,13 +88,14 @@ function open(row) {
     state.polling = true;
     try {
       let result = await api(state.row.port, `/api/codex-sync/${encodeURIComponent(row.key)}/events?cursor=${state.cursor}`);
-      const switched = state.source !== undefined && result.source !== state.source;
+      const identity = `${result.source}:${result.epoch}`;
+      const switched = state.source !== undefined && identity !== state.source;
       if (switched) result = await api(state.row.port, `/api/codex-sync/${encodeURIComponent(row.key)}/events?cursor=0`);
-      state.cursor = result.cursor; state.source = result.source;
+      state.cursor = result.cursor; state.source = `${result.source}:${result.epoch}`;
       await panel.webview.postMessage({ type:'events', title:`${state.row.bot} · ${state.row.title}`, status:`5090 · ${state.row.cwd || '/'} · 已连接 · ${result.waiting?'等待首次执行':'自动增量同步'}${result.truncated?' · 过程显示最近记录，累计统计包含全部可用记录':''}`,
         events: result.events, reset: state.first || switched || result.reset, statistics: statistics(result.statistics, result.createdAt) });
       state.first = false;
-    } catch (e) { panel.webview.postMessage({ type:'error', text:`连接中断，自动重连：${e.message}` }); }
+    } catch (e) { panel.webview.postMessage({ type:'connection', text:`连接中断，自动重连：${e.message}` }); }
     finally { state.polling = false; }
   }
   panel.webview.onDidReceiveMessage(async m => {

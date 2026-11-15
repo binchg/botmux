@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 /** Public execution summaries only. Never export reasoning or full shell/tool arguments. */
 export function publicCodexToolEvent(row: any): string | undefined {
   if (row?.type !== 'response_item') return;
@@ -13,8 +14,18 @@ export interface CodexSyncEvent { id: string; kind: 'user' | 'progress' | 'tool'
 export function publicCodexEvent(row: any, id: string): CodexSyncEvent | undefined {
   const tool = publicCodexToolEvent(row);
   if (tool) return { id, kind: 'tool', text: tool, at: row.timestamp };
-  if (row?.type !== 'event_msg') return;
   const p = row.payload ?? {};
+  if (row?.type === 'response_item' && p.type === 'message') {
+    const text = (Array.isArray(p.content) ? p.content : []).filter((c: any) => ['input_text', 'output_text'].includes(c.type)).map((c: any) => c.text ?? '').join('');
+    if (p.role === 'user') {
+      if (/^\s*(?:# AGENTS\.md instructions|<environment_context>|<permissions instructions>|<collaboration_mode>)/.test(text)) return;
+      const match = /<user_message>\s*([\s\S]*?)\s*<\/user_message>/.exec(text);
+      if (text.trim()) return { id, kind: 'user', text: match?.[1] ?? text, at: row.timestamp };
+    }
+    if (p.role === 'assistant' && p.phase === 'commentary' && text.trim()) return { id, kind: 'progress', text, at: row.timestamp };
+    return;
+  }
+  if (row?.type !== 'event_msg') return;
   if (p.type === 'user_message' && typeof p.message === 'string') {
     // Botmux wrappers are transport metadata, not the user's question.
     const match = /<user_message>\s*([\s\S]*?)\s*<\/user_message>/.exec(p.message);
@@ -24,4 +35,11 @@ export function publicCodexEvent(row: any, id: string): CodexSyncEvent | undefin
   if (p.type === 'task_complete' && p.last_agent_message) return { id, kind: 'final', text: String(p.last_agent_message), at: row.timestamp };
   if (p.type === 'task_started') return { id, kind: 'status', text: '执行中', at: row.timestamp };
   if (p.type === 'task_complete' || p.type === 'turn_aborted') return { id, kind: 'status', text: p.type === 'turn_aborted' ? '已中断' : '本轮完成', at: row.timestamp };
+}
+
+/** Stable across event_msg/response_item copies and Codex history rewrites. */
+export function codexSyncEventKey(row: any, event: CodexSyncEvent, turnId?: string): string {
+  const p = row.payload ?? {};
+  const key = event.kind === 'tool' ? `${p.type}:${p.call_id ?? p.id ?? event.text}` : `${event.kind}:${event.text.trim()}`;
+  return `${turnId ?? ''}:${createHash('sha256').update(key).digest('hex').slice(0, 24)}`;
 }

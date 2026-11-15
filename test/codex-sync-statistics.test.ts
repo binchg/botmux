@@ -68,3 +68,20 @@ it('serves shared incremental public events without reasoning, developer prompts
 it('does not expose other response_item messages',()=>{
   expect(publicCodexEvent({type:'response_item',payload:{type:'message',role:'developer',content:'secret'}},'0')).toBeUndefined();
 });
+
+it('supports canonical-only messages, deduplicates event copies and detects a larger in-place rewrite',()=>{
+  const path=fixture(),start=1_800_000_000_000;
+  const user=event('response_item',{type:'message',role:'user',content:[{type:'input_text',text:'actual question'}]},start);
+  const progress=event('response_item',{type:'message',role:'assistant',phase:'commentary',content:[{type:'output_text',text:'Working.\n'}]},start+1);
+  const startEvent=event('event_msg',{type:'task_started',turn_id:'t'},start);
+  writeFileSync(path,startEvent+user+event('event_msg',{type:'user_message',message:'actual question'},start)+progress+event('event_msg',{type:'agent_message',phase:'commentary',message:'Working.'},start+1));
+  const first=readCodexSyncEvents(path);expect(first.events.map(e=>e.kind)).toEqual(['status','user','progress']);
+  const stats=readCodexSessionStatistics(path,start+100,true);expect(stats?.runningMs).toBe(100);
+  // Same inode, larger file, rewritten bytes before the old cursor.
+  writeFileSync(path,event('session_meta',{id:'thread',padding:'x'.repeat(1500)},start)+startEvent+user+progress+
+    event('event_msg',{type:'task_complete',turn_id:'t',duration_ms:300,last_agent_message:'Done'},start+300));
+  const rewritten=readCodexSyncEvents(path,first.cursor);
+  expect(rewritten.epoch).not.toBe(first.epoch);
+  expect(rewritten.events.some(e=>e.kind==='final')).toBe(true);
+  expect(readCodexSessionStatistics(path,start+1000,false)).toMatchObject({runningMs:300,turns:1});
+});
