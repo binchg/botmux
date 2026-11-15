@@ -1,27 +1,28 @@
 import { it, expect } from 'vitest';
-import { mkdtempSync,writeFileSync,appendFileSync,rmSync } from 'node:fs';
+import { mkdtempSync,writeFileSync,appendFileSync,readFileSync,rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ExternalCodexBridge,consumeExternalCodex,type ExternalCodexCursor } from '../src/services/external-codex-bridge.js';
 const event=(payload:unknown)=>JSON.stringify({type:'event_msg',payload})+'\n';
-it('mirrors exact questions, sentence increments and tool activity, with no inbound echo or final duplication',()=>{
+it('mirrors exact questions, whole public updates and final results without tool notification spam',()=>{
   const s:ExternalCodexCursor={offset:0,carry:'',busy:false,outbox:[],received:[],echoInputs:['飞书原文']};
   consumeExternalCodex(s,event({type:'task_started',turn_id:'t'})+event({type:'user_message',message:'飞书原文'})+
     event({type:'user_message',message:'  IDE追问\n第二行  '})+
     event({type:'agent_message',phase:'commentary',message:'先读代码。再跑检查。'})+
     JSON.stringify({type:'response_item',payload:{type:'function_call',name:'exec_command',arguments:'password=secret'}})+'\n'+
     event({type:'agent_message',phase:'final_answer',message:'完成'})+event({type:'task_complete',turn_id:'t',last_agent_message:'完成'}));
-  expect(s.outbox.map(o=>o.kind)).toEqual(['user','progress','progress','tool','final']);
+  expect(s.outbox.map(o=>o.kind)).toEqual(['user','progress','final']);
   expect(s.outbox[0].text).toBe('  IDE追问\n第二行  ');
+  expect(s.outbox[1].text).toBe('先读代码。再跑检查。');
   expect(JSON.stringify(s.outbox)).not.toContain('secret');
 });
-it('keeps partial progress across persisted cursors without replaying earlier sentences',()=>{
+it('sends each public commentary record once across persisted cursors',()=>{
   const s:ExternalCodexCursor={offset:0,carry:'',busy:false,outbox:[],received:[]};
   consumeExternalCodex(s,event({type:'agent_message',phase:'commentary',message:'完整一句。剩余'}));
-  expect(s.outbox.map(o=>o.text)).toEqual(['完整一句。']);s.outbox=[];
+  expect(s.outbox.map(o=>o.text)).toEqual(['完整一句。剩余']);s.outbox=[];
   const restored=JSON.parse(JSON.stringify(s));
   consumeExternalCodex(restored,event({type:'agent_message',phase:'commentary',message:'部分。'}));
-  expect(restored.outbox.map((o:any)=>o.text)).toEqual(['剩余部分。']);
+  expect(restored.outbox.map((o:any)=>o.text)).toEqual(['部分。']);
 });
 it('recovers legacy mid-record byte cursors without rewriting logs or blocking other new events',()=>{
   const s:ExternalCodexCursor={offset:0,carry:'',busy:false,outbox:[],received:[]};
@@ -68,4 +69,30 @@ it('forwards progress while a headless submitted turn is still running and seria
     await bridge.tick();expect(deliveries).toEqual(['任务仍在运行。']);expect(calls).toBe(1);
     finish();await pending;
   }finally{rmSync(dir,{recursive:true,force:true});}
+});
+
+it('discards restored tool notifications but preserves queued progress/final and delivery dedup', async()=>{
+  const dir=mkdtempSync(join(tmpdir(),'external-no-tool-')),path=join(dir,'rollout.jsonl'),stateFile=join(dir,'state.json');
+  const meta=JSON.stringify({type:'session_meta',payload:{id:'t'}})+'\n';
+  writeFileSync(path,meta);
+  const binding={threadId:'t',rolloutPath:path,cwd:dir,chatId:'chat',larkAppId:'app',rootMessageId:'root',ownerOpenId:'owner'};
+  writeFileSync(stateFile,JSON.stringify({t:{offset:Buffer.byteLength(meta),carry:'',busy:false,received:[],outbox:[
+    {id:'old-start',kind:'tool',text:'⚙️ exec · 开始执行'},
+    {id:'progress',kind:'progress',text:'检查完成。下一步部署。'},
+    {id:'old-output',kind:'tool',text:'✓ 工具执行已返回'},
+    {id:'final',kind:'final',text:'完成'},
+  ]}}));
+  const delivered:string[]=[];const deps={reply:async(_b:unknown,text:string)=>{delivered.push(text);},error:()=>{},turn:async()=>{}};
+  try {
+    const bridge=new ExternalCodexBridge([binding],stateFile,deps);
+    const tools=Array.from({length:20},(_,i)=>
+      JSON.stringify({type:'response_item',payload:{type:'function_call',name:'exec',call_id:String(i)}})+'\n'+
+      JSON.stringify({type:'response_item',payload:{type:'function_call_output',call_id:String(i),output:'private'}})+'\n').join('');
+    appendFileSync(path,tools);
+    await bridge.tick();
+    expect(delivered).toEqual(['检查完成。下一步部署。','完成']);
+    expect(JSON.parse(readFileSync(stateFile,'utf8')).t.outbox).toEqual([]);
+    await new ExternalCodexBridge([binding],stateFile,deps).tick();
+    expect(delivered).toHaveLength(2);
+  } finally {rmSync(dir,{recursive:true,force:true});}
 });

@@ -1,7 +1,6 @@
 import { readFileSync, statSync, openSync, readSync, closeSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
-import { selectCodexAppProgressChunk } from './codex-app-progress.js';
 import { publicCodexEvent, codexSyncEventKey } from './codex-sync-events.js';
 import { jsonlFrontierAnchor } from './jsonl-cursor.js';
 
@@ -61,19 +60,17 @@ export function consumeExternalCodex(state: ExternalCodexCursor, text: string): 
     const enqueue = (kind: ExternalCodexOutputKind, text: string, id = `${key}:${part++}`) => {
       if (!state.completed?.includes(id) && !state.outbox.some(o => o.id === id)) state.outbox.push({ id, text, kind });
     };
-    if (event.kind === 'tool') enqueue('tool', event.text);
     if (event.kind === 'user') {
       const echo = state.echoInputs?.indexOf(event.text.trim()) ?? -1;
       if (echo >= 0) state.echoInputs!.splice(echo, 1);
       else enqueue('user', event.text);
     }
     if (event.kind === 'progress') {
-      state.progressCarry = (state.progressCarry ?? '') + event.text;
-      let chunk;
-      while ((chunk = selectCodexAppProgressChunk(state.progressCarry, 240, false))) {
-        enqueue('progress', chunk.content);
-        state.progressCarry = state.progressCarry.slice(chunk.consumedChars);
-      }
+      // A commentary record is one public update, matching normal Botmux replies.
+      // Preserve a legacy partial update once when upgrading persisted cursors.
+      const progress = (state.progressCarry ?? '') + event.text;
+      state.progressCarry = '';
+      if (progress.trim()) enqueue('progress', progress);
     }
     if (ended) {
       if (state.progressCarry?.trim()) enqueue('progress', state.progressCarry.trim());
@@ -190,6 +187,13 @@ export class ExternalCodexBridge {
         }
         while (state.outbox.length) {
           const item = state.outbox[0];
+          // An upgrade may restore tool notifications queued by an older build.
+          // Keep tool events for local inspection/statistics, never post them to IM.
+          if (item.kind === 'tool') {
+            state.outbox.shift();
+            this.save();
+            continue;
+          }
           const uuid = createHash('sha256').update(`${b.threadId}:${item.id}`).digest('hex').slice(0, 32);
           await this.deps.reply(b, item.text, uuid, item.kind);
           (state.completed ??= []).push(item.id);
