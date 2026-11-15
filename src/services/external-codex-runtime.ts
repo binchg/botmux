@@ -33,7 +33,7 @@ export function startExternalCodexBridge(selfAppId: string): void {
         return sendMessage(b.larkAppId, b.chatId, b.firstUserMessage, 'text', uuid);
       },
       reply: async (b, text, uuid, kind) => replyMessage(b.larkAppId, b.outputRootMessageId ?? b.rootMessageId,
-        buildExternalCodexForwardCard(b, text, kind, nativeConversationHistoryButtons({ ...b, rootMessageId: b.outputRootMessageId ?? b.rootMessageId }, kind === 'user')), 'interactive', true, uuid),
+        buildExternalCodexForwardCard(b, text, kind, nativeConversationHistoryButtons({ ...b, rootMessageId: b.outputRootMessageId ?? b.rootMessageId }, kind === 'user' ? uuid : false)), 'interactive', true, uuid),
       turn: (b, text, checkpoint, clientUserMessageId) => runExternalCodexTurn(cfg.codexBin, b.codexHome, b, text, checkpoint, clientUserMessageId),
       excluded: () => collectBotmuxSessionIdentities() ?? new Set(),
       error: e => logger.error(`[codex-auto] ${String(e)}`),
@@ -52,7 +52,7 @@ export function startExternalCodexBridge(selfAppId: string): void {
   mkdirSync(dirname(statePath), { recursive: true, mode: 0o700 });
   externalCodexBridge = new ExternalCodexBridge(cfg.bindings, statePath, {
     reply: async (b, text, uuid, kind) => replyMessage(b.larkAppId, b.outputRootMessageId ?? b.rootMessageId,
-        buildExternalCodexForwardCard(b, text, kind, nativeConversationHistoryButtons({ ...b, rootMessageId: b.outputRootMessageId ?? b.rootMessageId }, kind === 'user')), 'interactive', true, uuid),
+        buildExternalCodexForwardCard(b, text, kind, nativeConversationHistoryButtons({ ...b, rootMessageId: b.outputRootMessageId ?? b.rootMessageId }, kind === 'user' ? uuid : false)), 'interactive', true, uuid),
     turn: (b, text, checkpoint, clientUserMessageId) => runExternalCodexTurn(cfg.codexBin, cfg.codexHome, b, text, checkpoint, clientUserMessageId),
     error: e => logger.error(`[external-codex] ${String(e)}`),
   });

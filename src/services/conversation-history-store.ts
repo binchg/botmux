@@ -32,6 +32,7 @@ export interface ConversationHistory {
   source: Pick<Session, 'cliId' | 'cliSessionId' | 'workingDir'> & { codexHome?: string };
   messages: HistoryMessage[];
   /** Only issued internally from an explicitly bound native thread, never a URL argument. */
+  nativeInputIds?: string[];
   nativeSource?: { path: string; larkAppId: string; rootMessageId: string };
 }
 
@@ -115,15 +116,19 @@ export function recordConversationHistory(
 export function ensureNativeConversationHistory(binding: {
   threadId: string; rolloutPath: string; cwd: string; larkAppId: string; rootMessageId: string;
   firstUserMessage?: string; currentUserMessage?: string;
-}, userInput = false, dataDir = config.session.dataDir, now = Date.now()): ConversationHistory {
+}, userInput: boolean | string = false, dataDir = config.session.dataDir, now = Date.now()): ConversationHistory {
   const sessionId = 'native-' + createHash('sha256').update(`${binding.larkAppId}:${binding.rootMessageId}:${binding.threadId}`).digest('hex').slice(0, 32);
   const session = { sessionId, cliId: 'codex', cliSessionId: binding.threadId, workingDir: binding.cwd,
     title: binding.firstUserMessage || binding.currentUserMessage || '对话历史' } as Session;
   const history = ensureConversationHistory(session, dataDir, now);
   const nativeSource = { path: binding.rolloutPath, larkAppId: binding.larkAppId, rootMessageId: binding.rootMessageId };
-  if (JSON.stringify(history.nativeSource) !== JSON.stringify(nativeSource) || userInput) {
+  const freshInput = typeof userInput === 'string' ? !history.nativeInputIds?.includes(userInput) : userInput;
+  if (JSON.stringify(history.nativeSource) !== JSON.stringify(nativeSource) || freshInput) {
     history.nativeSource = nativeSource;
-    if (userInput) history.expiresAt = Math.max(history.expiresAt, now + HISTORY_TTL_MS);
+    if (freshInput) {
+      history.expiresAt = Math.max(history.expiresAt, now + HISTORY_TTL_MS);
+      if (typeof userInput === 'string') history.nativeInputIds = [...(history.nativeInputIds ?? []), userInput].slice(-256);
+    }
     save(join(dataDir, 'conversation-history', `${history.token}.json`), history);
   }
   return history;

@@ -70,3 +70,10 @@ it('history network gate accepts direct Tailnet only and rejects public/LAN/forw
   const dir=storage(),now=Date.now(),h=ensureConversationHistory({sessionId:'network-test',title:'private'} as Session,dir,now);let status=0;
   await handleConversationHistoryRequest(req('8.8.8.8','100.64.0.1','100.64.0.1:7891'),{writeHead:(s:number)=>{status=s},end:()=>{}} as unknown as ServerResponse,new URL(`http://100.64.0.1:7891/conversation/${h.token}`),{dataDir:dir,now});expect(status).toBe(403);
 });
+
+it('retrying the same native input card does not extend the seven-day grant',()=>{
+ const dir=storage(),now=Date.now();ensureNativeConversationHistory(binding,false,dir,now);
+ const first=ensureNativeConversationHistory(binding,'input-one',dir,now+1000);
+ expect(ensureNativeConversationHistory(binding,'input-one',dir,now+5000).expiresAt).toBe(first.expiresAt);
+ expect(ensureNativeConversationHistory(binding,'input-two',dir,now+6000).expiresAt).toBe(first.expiresAt+5000);
+});

@@ -63,7 +63,7 @@ export function historyGrantButtons(grant: ConversationHistory, locale?: Locale)
     multi_url: { url, pc_url: url, android_url: url, ios_url: url } }];
 }
 
-export function nativeConversationHistoryButtons(binding: Parameters<typeof ensureNativeConversationHistory>[0], userInput = false): any[] {
+export function nativeConversationHistoryButtons(binding: Parameters<typeof ensureNativeConversationHistory>[0], userInput: boolean | string = false): any[] {
   try { return historyGrantButtons(ensureNativeConversationHistory(binding, userInput)); }
   catch { logger.warn('Native conversation history link could not be prepared'); return []; }
 }
