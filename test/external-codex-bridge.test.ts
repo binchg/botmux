@@ -6,6 +6,19 @@ import { ExternalCodexBridge, consumeExternalCodex, type ExternalCodexCursor } f
 
 const event = (payload: unknown) => JSON.stringify({ type: 'event_msg', payload }) + '\n';
 
+it('posts one immediate status card for an accepted native follow-up', async () => {
+  const f = fixture();
+  const received: string[] = [];
+  const deps = { reply: async () => {}, received: async (_: unknown, messageId: string) => { received.push(messageId); }, turn: async () => {}, error: () => {} };
+  try {
+    const bridge = new ExternalCodexBridge([f.binding], f.stateFile, deps);
+    await bridge.receive('root', 'app', 'stranger', 'unauthorized', 'ignored');
+    await bridge.receive('root', 'app', 'owner', 'message-1', '检查');
+    await bridge.receive('root', 'app', 'owner', 'message-1', '检查');
+    expect(received).toEqual(['message-1']);
+  } finally { f.cleanup(); }
+});
+
 it('resumes long public output at the failed card after restart, using the same retry UUID', async () => {
   const f = fixture();
   const deliveries: Array<{ text: string; uuid: string }> = [];

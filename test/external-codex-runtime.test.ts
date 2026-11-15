@@ -1,8 +1,24 @@
-import { it, expect } from 'vitest';
+import { it, expect, vi } from 'vitest';
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runExternalCodexTurn, buildExternalCodexForwardCard } from '../src/services/external-codex-runtime.js';
+import { runExternalCodexTurn, buildExternalCodexForwardCard, buildExternalCodexStatusCard } from '../src/services/external-codex-runtime.js';
+
+it('renders the three native-session lines and two read-only links immediately', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'external-codex-status-'));
+  const rolloutPath = join(dir, 'rollout.jsonl');
+  writeFileSync(rolloutPath, JSON.stringify({ type: 'session_meta', timestamp: new Date().toISOString(), payload: { id: 'native-status' } }) + '\n');
+  vi.stubEnv('SESSION_DATA_DIR', dir);
+  vi.stubEnv('BOTMUX_HISTORY_BASE_URL', 'http://100.64.0.1:7891');
+  try {
+    const card = JSON.parse(buildExternalCodexStatusCard({ threadId: 'native-status', rolloutPath, cwd: '/lxy', chatId: 'chat', larkAppId: 'app', ownerOpenId: 'owner', rootMessageId: 'root' }));
+    expect(card.body.elements.slice(0, 3).map((element: any) => element.text.content)).toHaveLength(3);
+    const actions = card.body.elements[3].actions;
+    expect(actions.map((action: any) => action.text.content)).toEqual(['🖥️ 打开 Web 终端（只读）', '🔗 对话历史']);
+    expect(actions[0].multi_url.url).toContain('view=terminal');
+    expect(actions[1].multi_url.url).not.toContain('view=terminal');
+  } finally { vi.unstubAllEnvs(); rmSync(dir, { recursive: true, force: true }); }
+});
 
 it('submits a Lark follow-up to the exact fork in the default library and waits for completion', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'external-codex-rpc-'));

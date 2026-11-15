@@ -105,6 +105,7 @@ export class ExternalCodexBridge {
   private states = new Map<string, ExternalCodexCursor>();
   constructor(private bindings: ExternalCodexBinding[], private stateFile: string, private deps: {
     reply: (binding: ExternalCodexBinding, text: string, uuid: string, kind?: ExternalCodexOutputKind) => Promise<unknown>;
+    received?: (binding: ExternalCodexBinding, messageId: string, text: string) => Promise<unknown>;
     turn: (binding: ExternalCodexBinding, text: string, checkpoint: (submitted?: boolean) => void, clientUserMessageId?: string) => Promise<void>;
     error: (error: unknown) => void;
   }, initialOffsets?: Record<string, number>, notBefore?: number) {
@@ -182,6 +183,10 @@ export class ExternalCodexBridge {
     if (state.pending) (state.queued ??= []).push({ messageId, text });
     else state.pending = { messageId, text, status: 'queued' };
     this.save();
+    if (this.deps.received) {
+      try { await this.deps.received(b, messageId, text); }
+      catch (error) { this.deps.error(error); }
+    }
     return true;
   }
   start(): void {

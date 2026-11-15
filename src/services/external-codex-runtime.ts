@@ -12,6 +12,7 @@ import { CodexAutoBridge, type AutoCodexBinding } from './codex-auto-bridge.js';
 import { CodexAppServerProbe } from './codex-app-threads.js';
 import { collectBotmuxSessionIdentities } from './session-store.js';
 import { submitToCodexOwner } from './codex-owner-ipc.js';
+import { readCodexSessionStatistics, codexStatisticsText } from './codex-session-statistics.js';
 
 export let externalCodexBridge: ExternalCodexBridge | CodexAutoBridge | undefined;
 
@@ -34,6 +35,8 @@ export function startExternalCodexBridge(selfAppId: string): void {
       },
       reply: async (b, text, uuid, kind) => replyMessage(b.larkAppId, b.outputRootMessageId ?? b.rootMessageId,
         buildExternalCodexForwardCard(b, text, kind, nativeConversationHistoryButtons({ ...b, rootMessageId: b.outputRootMessageId ?? b.rootMessageId }, kind === 'user' ? uuid : false)), 'interactive', true, uuid),
+      received: (b, messageId) => replyMessage(b.larkAppId, b.outputRootMessageId ?? b.rootMessageId,
+        buildExternalCodexStatusCard(b), 'interactive', true, `codex-status:${messageId}`),
       turn: (b, text, checkpoint, clientUserMessageId) => runExternalCodexTurn(cfg.codexBin, b.codexHome, b, text, checkpoint, clientUserMessageId),
       excluded: () => collectBotmuxSessionIdentities() ?? new Set(),
       error: e => logger.error(`[codex-auto] ${String(e)}`),
@@ -53,6 +56,8 @@ export function startExternalCodexBridge(selfAppId: string): void {
   externalCodexBridge = new ExternalCodexBridge(cfg.bindings, statePath, {
     reply: async (b, text, uuid, kind) => replyMessage(b.larkAppId, b.outputRootMessageId ?? b.rootMessageId,
         buildExternalCodexForwardCard(b, text, kind, nativeConversationHistoryButtons({ ...b, rootMessageId: b.outputRootMessageId ?? b.rootMessageId }, kind === 'user' ? uuid : false)), 'interactive', true, uuid),
+    received: (b, messageId) => replyMessage(b.larkAppId, b.outputRootMessageId ?? b.rootMessageId,
+      buildExternalCodexStatusCard(b), 'interactive', true, `codex-status:${messageId}`),
     turn: (b, text, checkpoint, clientUserMessageId) => runExternalCodexTurn(cfg.codexBin, cfg.codexHome, b, text, checkpoint, clientUserMessageId),
     error: e => logger.error(`[external-codex] ${String(e)}`),
   });
@@ -69,6 +74,28 @@ export function buildExternalCodexForwardCard(binding: ExternalCodexBinding, tex
     : buildTitledMarkdownCard({ title: question, md, brand: '', template: kind === 'progress' ? 'turquoise' : 'green' }));
   if (historyButtons.length) card.body.elements.push(...historyButtons);
   return JSON.stringify(card);
+}
+
+/** Immediate, small acknowledgement for a follow-up to a native Codex thread. */
+export function buildExternalCodexStatusCard(binding: ExternalCodexBinding): string {
+  const stats = readCodexSessionStatistics(binding.rolloutPath, Date.now(), false);
+  const lines = codexStatisticsText(stats, undefined, Date.now(), false).split('\n');
+  const historyButtons = nativeConversationHistoryButtons({ ...binding, rootMessageId: binding.outputRootMessageId ?? binding.rootMessageId });
+  const terminalButtons = historyButtons.map(button => {
+    const url = new URL(button.multi_url.url);
+    url.searchParams.set('view', 'terminal');
+    const href = url.toString();
+    return { ...button, type: 'primary', text: { tag: 'plain_text', content: '🖥️ 打开 Web 终端（只读）' },
+      multi_url: { url: href, pc_url: href, android_url: href, ios_url: href } };
+  });
+  return JSON.stringify({
+    schema: '2.0', config: { update_multi: true },
+    body: { direction: 'vertical', elements: [
+      { tag: 'div', text: { tag: 'plain_text', content: `📁 ${binding.cwd} · Codex` } },
+      ...lines.map(content => ({ tag: 'div', text: { tag: 'plain_text', content } })),
+      ...(historyButtons.length ? [{ tag: 'action', actions: [...terminalButtons, ...historyButtons] }] : []),
+    ] },
+  });
 }
 
 export async function forkExternalCodexThread(binary: string, b: AutoCodexBinding): Promise<{ threadId: string; rolloutPath: string }> {
