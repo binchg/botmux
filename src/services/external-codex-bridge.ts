@@ -93,7 +93,7 @@ export class ExternalCodexBridge {
   private states = new Map<string, ExternalCodexCursor>();
   constructor(private bindings: ExternalCodexBinding[], private stateFile: string, private deps: {
     reply: (binding: ExternalCodexBinding, text: string, uuid: string, kind?: ExternalCodexOutputKind) => Promise<unknown>;
-    turn: (binding: ExternalCodexBinding, text: string, checkpoint: () => void) => Promise<void>;
+    turn: (binding: ExternalCodexBinding, text: string, checkpoint: (submitted?: boolean) => void) => Promise<void>;
     error: (error: unknown) => void;
   }, initialOffsets?: Record<string, number>, notBefore?: number) {
     const saved = existsSync(stateFile) ? JSON.parse(readFileSync(stateFile, 'utf8')) : {};
@@ -207,8 +207,8 @@ export class ExternalCodexBridge {
           this.submitting.add(b.threadId);
           dispatches.push(async () => {
             try {
-              await this.deps.turn(b, pending.text, () => {
-                pending.status = 'started';
+              await this.deps.turn(b, pending.text, (submitted = true) => {
+                pending.status = submitted ? 'started' : 'queued';
                 this.save();
               });
               if (state.pending === pending) state.pending = undefined;

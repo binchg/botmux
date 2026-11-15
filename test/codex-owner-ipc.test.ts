@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { submitToCodexOwner } from '../src/services/codex-owner-ipc.js';
 
-async function fixture(owner = true, submissionError = false) {
+async function fixture(owner = true, submissionError: boolean | string = false) {
   const home = mkdtempSync(join(tmpdir(), 'codex-owner-'));
   mkdirSync(join(home, 'ipc'));
   const path = join(home, 'ipc', 'ipc.sock');
@@ -20,7 +20,7 @@ async function fixture(owner = true, submissionError = false) {
         buffer = buffer.subarray(length + 4);
         requests.push(request);
         const error = request.method === 'thread-owner-discovery' && !owner ? 'no-client-found'
-          : request.method === 'thread-follower-start-turn' && submissionError ? 'request-timeout' : undefined;
+          : request.method === 'thread-follower-start-turn' && submissionError ? (typeof submissionError === 'string' ? submissionError : 'request-timeout') : undefined;
         const body = Buffer.from(JSON.stringify({ type: 'response', requestId: request.requestId,
           resultType: error ? 'error' : 'success', error, handledByClientId: 'ide-owner', result: { text: '中文' } }));
         const header = Buffer.alloc(4); header.writeUInt32LE(body.length);
@@ -67,5 +67,13 @@ it('retains the started boundary when owner submission has an uncertain outcome'
   try {
     await expect(submitToCodexOwner(f.home, 'fork', 'test', () => { checkpoints++; })).rejects.toThrow('request-timeout');
     expect(checkpoints).toBe(1); expect(f.requests).toHaveLength(3);
+  } finally { await f.cleanup(); }
+});
+
+it('falls back after a definitive owner-disconnected rejection, rolling back only that known non-submission', async () => {
+  const f = await fixture(true, 'no-client-found'); const boundaries: boolean[] = [];
+  try {
+    expect(await submitToCodexOwner(f.home, 'thread', 'question', (submitted = true) => { boundaries.push(submitted); })).toBe(false);
+    expect(boundaries).toEqual([true, false]); expect(f.requests).toHaveLength(3);
   } finally { await f.cleanup(); }
 });

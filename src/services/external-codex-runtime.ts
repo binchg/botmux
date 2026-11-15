@@ -83,7 +83,7 @@ export async function forkExternalCodexThread(binary: string, b: AutoCodexBindin
   } finally { client.close(); }
 }
 
-export async function runExternalCodexTurn(binary: string, codexHome: string, b: ExternalCodexBinding, text: string, checkpoint: () => void): Promise<void> {
+export async function runExternalCodexTurn(binary: string, codexHome: string, b: ExternalCodexBinding, text: string, checkpoint: (submitted?: boolean) => void): Promise<void> {
   if (await submitToCodexOwner(codexHome, b.threadId, text, checkpoint)) return;
   const child = spawn(binary, ['app-server', '--listen', 'stdio://'], {
     cwd: b.cwd, env: { ...process.env, HOME: homedir(), CODEX_HOME: codexHome }, stdio: ['pipe', 'pipe', 'pipe'],

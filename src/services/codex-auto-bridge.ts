@@ -40,7 +40,7 @@ export class CodexAutoBridge {
   constructor(private cfg: AutoCodexConfig, private stateFile: string, private deps: {
     topic: (b: Omit<AutoCodexBinding, 'rootMessageId'>, uuid: string) => Promise<string>;
     reply: (b: AutoCodexBinding, text: string, uuid: string, kind?: ExternalCodexOutputKind) => Promise<unknown>;
-    turn: (b: AutoCodexBinding, text: string, checkpoint: () => void) => Promise<void>;
+    turn: (b: AutoCodexBinding, text: string, checkpoint: (submitted?: boolean) => void) => Promise<void>;
     fork?: (b: AutoCodexBinding) => Promise<{ threadId: string; rolloutPath: string }>;
     excluded: () => Set<string>;
     error: (error: unknown) => void;

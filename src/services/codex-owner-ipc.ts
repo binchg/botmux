@@ -4,7 +4,7 @@ import { existsSync, lstatSync } from 'node:fs';
 import { join } from 'node:path';
 
 /** Submit through the IDE that already owns the thread; never steal its writer. */
-export async function submitToCodexOwner(home: string, threadId: string, text: string, checkpoint: () => void): Promise<boolean> {
+export async function submitToCodexOwner(home: string, threadId: string, text: string, checkpoint: (submitted?: boolean) => void): Promise<boolean> {
   const path = join(home, 'ipc', 'ipc.sock');
   if (!existsSync(path)) return false;
   const stat = lstatSync(path);
@@ -28,6 +28,12 @@ export async function submitToCodexOwner(home: string, threadId: string, text: s
         context: { inheritThreadSettings: true, useAppServerPermissionDefault: true, useAppServerServiceTierDefault: true },
       },
     }, 2, owner.handledByClientId);
+    if (result.resultType === 'error' && result.error === 'no-client-found') {
+      // The router explicitly rejected delivery after the IDE disconnected.
+      // This is a known non-submission, unlike a timeout/unknown result.
+      checkpoint(false);
+      return false;
+    }
     if (result.resultType !== 'success') throw new Error(`Codex owner submission: ${result.error}`);
     return true;
   } finally { client.close(); }
