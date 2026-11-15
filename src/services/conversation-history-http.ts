@@ -7,6 +7,7 @@ import { HISTORY_TTL_DAYS, readConversationHistory } from './conversation-histor
 import { cachedHistoryPage } from './conversation-history-page-cache.js';
 import { renderConversationHistory } from './conversation-history-page.js';
 import { terminalAccessEnabled } from './terminal-access.js';
+import { readHistoryImage } from './conversation-history-images.js';
 
 const requests = new Map<string, { start: number; count: number }>();
 
@@ -40,7 +41,9 @@ export async function handleConversationHistoryRequest(
   if (url.pathname === '/conversation') {
     finish(200, `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Botmux 对话历史</title><h1>Botmux 对话历史</h1><p>请从飞书会话卡片的「对话历史」按钮打开对应记录。链接有效期为 ${HISTORY_TTL_DAYS} 天，新追问后续期。</p></html>`); return true;
   }
-  const token = url.pathname.slice('/conversation/'.length);
+  const route = /^\/conversation\/([A-Za-z0-9_-]{43})(?:\/images\/([a-f0-9]{32}))?$/.exec(url.pathname);
+  if (!route) { finish(404, '未找到该对话历史链接。'); return true; }
+  const [, token, imageId] = route;
   if (!allowedRequest(`${req.socket.remoteAddress ?? 'unknown'}:${token}`, now)) {
     finish(429, '请求过于频繁，请稍后重试。', { 'retry-after': '60' }); return true;
   }
@@ -53,6 +56,16 @@ export async function handleConversationHistoryRequest(
   const expiry = { 'x-botmux-history-expires-at': new Date(history.expiresAt).toISOString() };
   if (history.expiresAt <= now) {
     finish(410, `<h1>链接已过期</h1><p>在原会话发送新的追问后，有效期将刷新为 ${HISTORY_TTL_DAYS} 天。</p>`, expiry); return true;
+  }
+  if (imageId) {
+    try {
+      const image = await readHistoryImage(history, opts.dataDir ?? config.session.dataDir, imageId);
+      if (!image) { finish(404, '未找到图片。', expiry); return true; }
+      res.writeHead(200, { ...headers, ...expiry, 'content-type': image.type,
+        'content-length': String(image.body.length), 'content-disposition': 'inline' });
+      res.end(req.method === 'HEAD' ? undefined : image.body);
+    } catch { finish(503, '暂时无法读取图片。', expiry); }
+    return true;
   }
   if (req.method === 'HEAD') { finish(200, '', expiry); return true; }
   try {
@@ -74,7 +87,7 @@ export async function handleConversationHistoryRequest(
     if (page && url.searchParams.get('revision') === page.revision) { finish(204, '', expiry); return true; }
     if (!page) { const window = historyWindow(history.messages); page = renderConversationHistory(history, window.messages, undefined, true, window); }
     finish(200, page.html, { ...expiry, 'x-botmux-history-cache': state.page ? 'hit' : 'loading',
-      'content-security-policy': `default-src 'none'; connect-src 'self'; style-src 'unsafe-inline'; script-src 'nonce-${page.nonce}'; base-uri 'none'; frame-ancestors 'none'` });
+      'content-security-policy': `default-src 'none'; img-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; script-src 'nonce-${page.nonce}'; base-uri 'none'; frame-ancestors 'none'` });
   } catch { finish(503, '暂时无法读取完整对话历史，请稍后重试。'); }
   return true;
 }

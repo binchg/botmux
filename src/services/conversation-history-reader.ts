@@ -7,6 +7,7 @@ import { historyLineage } from './conversation-history-lineage.js';
 import { resolveSessionTranscriptPath } from './transcript-resolver.js';
 import { visibleHistoryText, type ConversationHistory, type HistoryMessage } from './conversation-history-store.js';
 import { readCachedHistoryTranscript } from './conversation-history-transcript-cache.js';
+import { attachHistoryImages, historyImageSources } from './conversation-history-images.js';
 
 /** 提取文本块，明确拒绝 tool_result 等复合内容。 */
 function textBlocks(content: unknown): string {
@@ -59,7 +60,7 @@ export function historySources(history: ConversationHistory, dataDir: string) {
       sources.set(source.path, { ...source, signature: `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}` });
     } catch { unavailableSources++; }
   }
-  return { sources: [...sources.values()], unavailableSources };
+  return { sources: [...sources.values()], unavailableSources, imageSources: historyImageSources(history, dataDir) };
 }
 
 /** 复用历史文件的可见正文缓存，只有追加部分重新解析，保持原来的去重语义。 */
@@ -87,7 +88,7 @@ export async function readHistoryBundle(history: ConversationHistory, dataDir = 
     if (count) remaining.set(key(message), count - 1);
     else old.push(message);
   }
-  return { messages: old.sort((a, b) => a.at - b.at), sourceCount: snapshot.sources.length,
+  return { messages: await attachHistoryImages(history, dataDir, old.sort((a, b) => a.at - b.at), snapshot.imageSources), sourceCount: snapshot.sources.length,
     unavailableSources: snapshot.unavailableSources };
 }
 

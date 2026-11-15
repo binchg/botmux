@@ -20,7 +20,11 @@ export interface HistoryMessage {
   kind: 'user' | 'assistant_final' | 'assistant_progress';
   content: string;
   at: number;
+  /** Reconstructed only from the conversation's trusted incoming attachment queue. */
+  images?: HistoryImage[];
 }
+
+export interface HistoryImage { id: string; messageId: string; name: string; index: number }
 
 export interface ConversationHistory {
   version: 1;

@@ -1,5 +1,7 @@
 import type MarkdownIt from 'markdown-it';
 import { historyMath } from './conversation-history-math.js';
+import { renderLinearFlowchart } from './conversation-history-mermaid.js';
+import { renderHistoryLogic } from './conversation-history-logic.js';
 
 /** Local-only Markdown widgets, preserving code literally and escaping all tokens. */
 export function historyMarkdown(md: MarkdownIt): void {
@@ -7,6 +9,12 @@ export function historyMarkdown(md: MarkdownIt): void {
   md.renderer.rules.fence = (tokens, index) => {
     const token = tokens[index], language = token.info.trim().split(/\s/)[0] || 'text';
     const escape = md.utils.escapeHtml;
+    const logic = renderHistoryLogic(token.content, language, escape);
+    if (logic) return logic;
+    if (language.toLowerCase() === 'mermaid') {
+      const svg = renderLinearFlowchart(token.content, escape);
+      if (svg) return `<div class="diagram-block"><div class="code-head"><span>流程图</span><button type="button" data-expand-diagram aria-label="放大流程图">放大</button></div><div class="diagram-scroll">${svg}</div></div>`;
+    }
     let code = escape(token.content);
     if (language.toLowerCase() === 'json') {
       const pattern = /"(?:\\.|[^"\\])*"|\b(?:true|false|null|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\b/g;
