@@ -23,6 +23,16 @@ it('keeps partial progress across persisted cursors without replaying earlier se
   consumeExternalCodex(restored,event({type:'agent_message',phase:'commentary',message:'部分。'}));
   expect(restored.outbox.map((o:any)=>o.text)).toEqual(['剩余部分。']);
 });
+it('recovers legacy mid-record byte cursors without rewriting logs or blocking other new events',()=>{
+  const s:ExternalCodexCursor={offset:0,carry:'',busy:false,outbox:[],received:[]};
+  consumeExternalCodex(s,'"total_tokens":42}}\n'+event({type:'agent_message',phase:'commentary',message:'后续进展正常。'}));
+  expect(s.outbox.map(o=>o.text)).toEqual(['后续进展正常。']);
+});
+it('retains lifecycle from history without forwarding it when the daemon attaches mid-turn',()=>{
+  const s:ExternalCodexCursor={offset:0,carry:'',busy:false,outbox:[],received:[],notBefore:Date.now()};
+  consumeExternalCodex(s,JSON.stringify({timestamp:'2020-01-01T00:00:00Z',type:'event_msg',payload:{type:'task_started',turn_id:'still-running'}})+'\n');
+  expect(s.busy).toBe(true);expect(s.turnId).toBe('still-running');expect(s.outbox).toEqual([]);
+});
 it('forwards progress while a headless submitted turn is still running and serializes follow-ups',async()=>{
   const dir=mkdtempSync(join(tmpdir(),'external-live-progress-')),path=join(dir,'rollout.jsonl');
   writeFileSync(path,JSON.stringify({type:'session_meta',payload:{id:'t'}})+'\n');

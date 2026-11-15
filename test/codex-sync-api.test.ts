@@ -10,7 +10,7 @@ vi.mock('../src/services/session-store.js',()=>({listSessions:()=>ctx.sessions})
 vi.mock('../src/services/session-model-store.js',()=>({readSessionModelRuntime:()=>undefined,modelRuntimeAlive:()=>false}));
 vi.mock('../src/services/transcript-resolver.js',()=>({resolveSessionTranscriptPath:()=>({path:join(ctx.dir,'rollout.jsonl')})}));
 vi.mock('../src/services/external-codex-runtime.js',()=>({externalCodexBridge:{owns:()=>false}}));
-vi.mock('../src/bot-registry.js',()=>({getBot:()=>({config:{name:'Test Bot'}})}));
+vi.mock('../src/bot-registry.js',()=>({getBot:()=>({config:{name:'Test Bot'}}),effectiveBotDisplayName:()=> 'Test Bot'}));
 vi.mock('../src/im/lark/client.js',()=>({replyMessage:(...a:any[])=>ctx.reply(...a)}));
 vi.mock('../src/core/worker-pool.js',()=>({findActiveBySessionId:()=>ctx.live,getActiveSessionsRegistry:()=>new Map()}));
 vi.mock('../src/core/session-manager.js',()=>({reconcileActiveSessionRegistry:(...a:any[])=>ctx.reconcile(...a),buildFollowUpContent:(text:string)=>`wrapped:${text}`,rememberLastCliInput:vi.fn()}));

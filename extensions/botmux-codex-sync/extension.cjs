@@ -111,8 +111,9 @@ exports.activate = context => {
   const provider = { onDidChangeTreeData: changed.event,
     getChildren: element => element ? rows.filter(r => r.bot === element.bot) : [...new Set(rows.map(r=>r.bot))].map(bot => ({group:true,bot})),
     getTreeItem: row => {
-      if (row.group) return new vscode.TreeItem(row.bot, vscode.TreeItemCollapsibleState.Expanded);
+      if (row.group) { const item = new vscode.TreeItem(row.bot, vscode.TreeItemCollapsibleState.Expanded); item.id = `bot:${row.bot}`; return item; }
       const item = new vscode.TreeItem(row.title.replace(/\s+/g,' ').slice(0,100));
+      item.id = row.id;
       item.description = `${row.kind==='native'?'Codex 原生':'Botmux'} · ${row.threadId?.slice(0,8)||row.key.slice(0,8)}`;
       item.tooltip = `${row.bot}\n${row.cwd||'/'}\n${row.title}\n点击查看实时过程并追问`;
       item.command = { command:'botmuxSync.open', title:'打开会话', arguments:[row] }; item.iconPath = new vscode.ThemeIcon('comment-discussion'); return item;

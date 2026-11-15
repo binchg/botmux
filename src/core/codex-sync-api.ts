@@ -11,7 +11,7 @@ import { readCodexSyncEvents } from '../services/codex-sync-reader.js';
 import { readCodexSessionStatistics } from '../services/codex-session-statistics.js';
 import { externalCodexBridge } from '../services/external-codex-runtime.js';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
-import { getBot } from '../bot-registry.js';
+import { getBot, effectiveBotDisplayName } from '../bot-registry.js';
 import { replyMessage } from '../im/lark/client.js';
 import { findActiveBySessionId, getActiveSessionsRegistry } from './worker-pool.js';
 import { reconcileActiveSessionRegistry, buildFollowUpContent, rememberLastCliInput } from './session-manager.js';
@@ -21,7 +21,7 @@ import { markSessionActivity } from './session-activity.js';
 type Route = (method: string, path: string, handler: (req: IncomingMessage, res: ServerResponse, params: Record<string, string>) => void | Promise<void>) => void;
 type Thread = { key: string; title: string; bot: string; threadId?: string; cwd?: string; createdAt?: string; kind: 'bot' | 'native'; path?: string; rootMessageId: string; chatId: string; ownerOpenId?: string };
 export function codexSyncThreads(appId: string): Thread[] {
-  const bot = getBot(appId).config.name ?? appId;
+  const bot = effectiveBotDisplayName(getBot(appId));
   const threads: Thread[] = store.listSessions().filter(s => s.larkAppId === appId && s.status === 'active' && s.cliId === 'codex-app').map(s => {
     const runtime = readSessionModelRuntime(config.session.dataDir, s.sessionId);
     const threadId = runtime?.threadId ?? s.cliSessionId;

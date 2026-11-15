@@ -37,9 +37,17 @@ export function consumeExternalCodex(state: ExternalCodexCursor, text: string): 
   state.carry = lines.pop()!;
   for (const line of lines) {
     if (!line.trim()) continue;
-    const row = JSON.parse(line);
-    if (state.notBefore && typeof row.timestamp === 'string' && Date.parse(row.timestamp) < state.notBefore) continue;
+    let row: any;
+    try { row = JSON.parse(line); }
+    catch { continue; } // Legacy byte frontiers can open in a partial record. Never edit the original log.
     const p = row.payload ?? {};
+    // History isn't forwarded, but its lifecycle is needed when attaching in
+    // the middle of a live turn (including a daemon restart).
+    if (row.type === 'event_msg' && p.type === 'task_started') {
+      state.busy = true; state.turnId = p.turn_id ?? p.root_turn_id;
+    }
+    if (row.type === 'event_msg' && (p.type === 'task_complete' || p.type === 'turn_aborted')) state.busy = false;
+    if (state.notBefore && typeof row.timestamp === 'string' && Date.parse(row.timestamp) < state.notBefore) continue;
     const enqueue = (kind: ExternalCodexOutputKind, text: string) => {
       const sequence = state.eventSequence = (state.eventSequence ?? 0) + 1;
       state.outbox.push({ id: `${state.turnId ?? 'event'}:${kind}:${sequence}`, text, kind });
@@ -101,6 +109,10 @@ export class ExternalCodexBridge {
         offset: initialOffsets?.[b.threadId] ?? statSync(b.rolloutPath).size, carry: '', busy: false, outbox: [], received: [], notBefore,
         echoInputs: initialOffsets?.[b.threadId] !== undefined && b.firstUserMessage ? [b.firstUserMessage.trim()] : [],
       };
+      if (!saved[b.threadId] && initialOffsets?.[b.threadId] !== undefined) {
+        consumeExternalCodex(state, Buffer.from(existing).subarray(0, initialOffsets[b.threadId]).toString('utf8'));
+        state.outbox = []; state.carry = ''; state.progressCarry = '';
+      }
       if (!saved[b.threadId] && initialOffsets?.[b.threadId] === undefined) {
         consumeExternalCodex(state, existing);
         state.outbox = [];
