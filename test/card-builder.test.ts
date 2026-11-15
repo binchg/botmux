@@ -34,7 +34,9 @@ it('keeps Nene Codex App cards compact without local Codex or write-link actions
     const actions = JSON.stringify(card);
     expect(actions).not.toContain('open_local_terminal');
     expect(actions).not.toContain('get_write_link');
-    expect(actions).toContain('close');
+    expect(actions).not.toContain('close');
+    expect(actions).not.toContain('session_model_open');
+    expect(card.elements.filter((element: any) => element.tag === 'action').flatMap((element: any) => element.actions)).toHaveLength(1);
   }
 });
 

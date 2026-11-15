@@ -295,7 +295,7 @@ export function buildSessionCard(
       type: 'primary',
       multi_url: terminalMultiUrl(terminalUrl),
     },
-    ...sessionModelButton(sessionId, actionBase, cliId),
+    ...(!compactNeneCard ? sessionModelButton(sessionId, actionBase, cliId) : []),
     ...conversationHistoryButtons(sessionId, locale),
     ...(!compactNeneCard ? openLocalTerminalButtons(actionBase, cliName, locale) : []),
   ];
@@ -307,7 +307,7 @@ export function buildSessionCard(
       value: { action: 'get_write_link', ...actionBase },
     });
   }
-  if (showManageButtons && !adoptMode) {
+  if (showManageButtons && !adoptMode && !compactNeneCard) {
     actions.push({
       tag: 'button',
       text: { tag: 'plain_text', content: t('card.btn.restart_cli', { cliName }, locale) },
@@ -315,7 +315,9 @@ export function buildSessionCard(
       value: { action: 'restart', ...actionBase },
     });
   }
-  if (adoptMode) {
+  if (compactNeneCard) {
+    // Nene's small card is informational; the two links above are its only actions.
+  } else if (adoptMode) {
     actions.push({
       tag: 'button',
       text: { tag: 'plain_text', content: t('card.btn.disconnect', undefined, locale) },
@@ -715,7 +717,7 @@ export function buildStreamingCard(
   elements.push(...sessionModelCardElements(sessionId, cliId, locale, cardNonce || rootId));
 
   // ── Output body (shared with the private snapshot card) ──────────────────
-  pushStreamBody(elements, { status, usageLimit, displayMode, imageKey, cliName, locale });
+  if (!compactNeneCard) pushStreamBody(elements, { status, usageLimit, displayMode, imageKey, cliName, locale });
 
   // ── Main control row: display toggle, mode toggle, terminal, manage ─────
   const headerActions: any[] = [];
@@ -748,10 +750,10 @@ export function buildStreamingCard(
     type: 'primary',
     multi_url: terminalMultiUrl(terminalUrl),
   });
-  headerActions.push(...sessionModelButton(sessionId, actionBase, cliId));
+  if (!compactNeneCard) headerActions.push(...sessionModelButton(sessionId, actionBase, cliId));
   if (!compactNeneCard) headerActions.push(...openLocalTerminalButtons(actionBase, cliName, locale));
   headerActions.push(...conversationHistoryButtons(sessionId, locale));
-  if (status === 'limited' && usageLimit?.retryReady) {
+  if (!compactNeneCard && status === 'limited' && usageLimit?.retryReady) {
     headerActions.push({
       tag: 'button',
       text: { tag: 'plain_text', content: t('card.btn.retry_last_task', undefined, locale) },
@@ -765,7 +767,9 @@ export function buildStreamingCard(
     type: 'default',
     value: { action: 'get_write_link', ...actionBase },
   });
-  if (adoptMode) {
+  if (compactNeneCard) {
+    // Only Web terminal and conversation history are shown for Nene.
+  } else if (adoptMode) {
     if (showTakeover) {
       headerActions.push({
         tag: 'button',
@@ -794,7 +798,7 @@ export function buildStreamingCard(
   // When the bot enables `writableTerminalLinkInCard`, embed the token-bearing
   // link right in the card so anyone here can open a writable terminal without
   // the get-write-link → DM round-trip. The link is intentionally group-visible.
-  if (writableTerminalUrl) {
+  if (writableTerminalUrl && !compactNeneCard) {
     elements.push({
       tag: 'markdown',
       content: t('card.writable_terminal_link', { url: writableTerminalUrl }, locale),
