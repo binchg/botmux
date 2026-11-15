@@ -72,7 +72,7 @@ export class CodexAutoBridge {
   private key(home: string, id: string): string { return createHash('sha256').update(`${home}:${id}`).digest('hex'); }
   private observe(key: string, b: AutoCodexBinding, offset?: number): ExternalCodexBridge {
     const observer = new ExternalCodexBridge([b], join(dirname(this.stateFile), `${key}.json`), {
-      reply: async (_, text, uuid, kind) => { if (!this.isManaged(b)) await this.deps.reply(b, text, uuid, kind); },
+      reply: async (source, text, uuid, kind) => { if (!this.isManaged(b)) await this.deps.reply({ ...b, currentUserMessage: source.currentUserMessage }, text, uuid, kind); },
       turn: async (_, text, checkpoint) => { if (!this.isManaged(b)) await this.deps.turn(b, text, checkpoint); }, error: this.deps.error,
     }, offset === undefined ? undefined : { [b.threadId]: offset }, this.registry.startedAt);
     this.observers.set(key, observer);

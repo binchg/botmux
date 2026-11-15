@@ -2,7 +2,7 @@ import { existsSync, readFileSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { spawn } from 'node:child_process';
-import { buildMarkdownCard } from '../im/lark/md-card.js';
+import { buildMarkdownCard, buildTitledMarkdownCard } from '../im/lark/md-card.js';
 import { formatMathForLark } from './outbound-math.js';
 import { replyMessage, sendMessage } from '../im/lark/client.js';
 import { logger } from '../utils/logger.js';
@@ -11,7 +11,6 @@ import { CodexAutoBridge, type AutoCodexBinding } from './codex-auto-bridge.js';
 import { CodexAppServerProbe } from './codex-app-threads.js';
 import { collectBotmuxSessionIdentities } from './session-store.js';
 import { submitToCodexOwner } from './codex-owner-ipc.js';
-import { readCodexSessionStatistics, codexStatisticsText } from './codex-session-statistics.js';
 
 export let externalCodexBridge: ExternalCodexBridge | CodexAutoBridge | undefined;
 
@@ -60,14 +59,13 @@ export function startExternalCodexBridge(selfAppId: string): void {
   logger.info(`[external-codex] observing ${cfg.bindings.length} explicitly bound thread(s)`);
 }
 
-/** Source provenance is card metadata; the mirrored assistant body is unchanged. */
+/** Mirror public content without repeating bridge metadata or statistics. */
 export function buildExternalCodexForwardCard(binding: ExternalCodexBinding, text: string, kind?: ExternalCodexOutputKind): string {
-  const card = JSON.parse(buildMarkdownCard(formatMathForLark(text)));
-  const label = kind === 'user' ? '追问原文' : kind === 'progress' ? '执行进展' : kind === 'tool' ? '工具执行' : '原会话转发';
-  card.header = { template: 'blue', title: { tag: 'plain_text', content: `${label} · ${binding.threadId.slice(0, 8)}` } };
-  const stats = readCodexSessionStatistics(binding.rolloutPath, Date.now(), externalCodexBridge?.isBusy(binding.rootMessageId, binding.larkAppId));
-  if (stats && card.body?.elements) card.body.elements.push({ tag: 'markdown', content: codexStatisticsText(stats) });
-  return JSON.stringify(card);
+  const md = formatMathForLark(text);
+  const question = binding.currentUserMessage?.trim() || binding.firstUserMessage?.trim();
+  // The question itself already occupies the whole user card; never quote it twice.
+  if (kind === 'user' || !question) return buildMarkdownCard(md, undefined, '');
+  return buildTitledMarkdownCard({ title: question, md, brand: '', template: kind === 'progress' ? 'turquoise' : 'green' });
 }
 
 export async function forkExternalCodexThread(binary: string, b: AutoCodexBinding): Promise<{ threadId: string; rolloutPath: string }> {

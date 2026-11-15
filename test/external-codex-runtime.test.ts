@@ -33,11 +33,24 @@ rl.on('line', l => {
 });
 
 
-it('labels forwarding separately from execution and keeps the original assistant body', () => {
+it('titles replies with the current question and omits bridge metadata and statistics', () => {
   const text = 'VS Code 原始结果\n第二行保留';
-  const card = buildExternalCodexForwardCard({ threadId: 'main-session-123', rolloutPath: '', cwd: '/repo', chatId: 'chat', larkAppId: 'app', ownerOpenId: 'owner', rootMessageId: 'root' }, text);
+  const card = buildExternalCodexForwardCard({ threadId: 'main-session-123', rolloutPath: '', cwd: '/repo', chatId: 'chat', larkAppId: 'app', ownerOpenId: 'owner', rootMessageId: 'root', firstUserMessage: '旧问题', currentUserMessage: '第二次追问测试' }, text, 'final');
   const parsed = JSON.parse(card);
-  expect(parsed.header.title.content).toBe('原会话转发 · main-ses');
+  expect(parsed.header.title.content).toBe('第二次追问测试');
   expect(card).toContain('VS Code 原始结果'); expect(card).toContain('第二行保留');
-  expect(card).not.toContain('fork 分支');
+  for (const redundant of ['原会话转发', '追问原文', 'main-ses', 'botmux', 'Token', '累计运行', '/repo', '旧问题']) expect(card).not.toContain(redundant);
+  expect(parsed.body.elements.map((e: any) => e.tag)).toEqual(['markdown']);
+});
+
+it('shows a question once and uses its original text for progress titles', () => {
+  const binding = { threadId: 't', rolloutPath: '', cwd: '/repo', chatId: 'c', larkAppId: 'a', ownerOpenId: 'o', rootMessageId: 'r', currentUserMessage: '第二次追问测试' };
+  const user = JSON.parse(buildExternalCodexForwardCard(binding, binding.currentUserMessage, 'user'));
+  expect(user.header).toBeUndefined();
+  expect(user.body.elements).toHaveLength(1);
+  expect(user.body.elements[0].content).toContain('第二次追问测试');
+  const progress = JSON.parse(buildExternalCodexForwardCard(binding, '检查通过。', 'progress'));
+  expect(progress.header.title.content).toBe('第二次追问测试');
+  expect(progress.body.elements).toHaveLength(1);
+  expect(progress.body.elements[0].content).toContain('检查通过。');
 });

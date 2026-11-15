@@ -15,12 +15,13 @@ export interface ExternalCodexBinding {
   ownerOpenId: string;
   rootMessageId: string;
   firstUserMessage?: string;
+  currentUserMessage?: string;
 }
 export interface ExternalCodexCursor {
   offset: number;
   carry: string;
   busy: boolean;
-  outbox: Array<{ id: string; text: string; kind?: ExternalCodexOutputKind }>;
+  outbox: Array<{ id: string; text: string; kind?: ExternalCodexOutputKind; question?: string }>;
   received: string[];
   completed?: string[];
   notBefore?: number;
@@ -29,6 +30,7 @@ export interface ExternalCodexCursor {
   turnId?: string;
   eventSequence?: number;
   progressCarry?: string;
+  currentUserMessage?: string;
   /** Inputs already visible in Lark must not echo back from the rollout. */
   echoInputs?: string[];
   eventKeys?: string[];
@@ -58,9 +60,11 @@ export function consumeExternalCodex(state: ExternalCodexCursor, text: string): 
     if (duplicate || historical) continue;
     let part = 0;
     const enqueue = (kind: ExternalCodexOutputKind, text: string, id = `${key}:${part++}`) => {
-      if (!state.completed?.includes(id) && !state.outbox.some(o => o.id === id)) state.outbox.push({ id, text, kind });
+      if (!text.trim()) return;
+      if (!state.completed?.includes(id) && !state.outbox.some(o => o.id === id)) state.outbox.push({ id, text, kind, question: state.currentUserMessage });
     };
     if (event.kind === 'user') {
+      state.currentUserMessage = event.text;
       const echo = state.echoInputs?.indexOf(event.text.trim()) ?? -1;
       if (echo >= 0) state.echoInputs!.splice(echo, 1);
       else enqueue('user', event.text);
@@ -122,6 +126,17 @@ export class ExternalCodexBridge {
         consumeExternalCodex(seed, prefix);
         state.eventKeys = seed.eventKeys ?? [];
         state.turnId ??= seed.turnId;
+      }
+      // Existing cursors predate question titles. Recover only their latest
+      // visible user input; never replay old messages or submit model input.
+      if (!state.currentUserMessage) {
+        const prefix = Buffer.from(existing).subarray(0, state.offset).toString('utf8').split('\n');
+        for (let i = prefix.length - 1; i >= 0; i--) {
+          let row: any;
+          try { row = JSON.parse(prefix[i]); } catch { continue; }
+          const event = publicCodexEvent(row, '');
+          if (event?.kind === 'user') { state.currentUserMessage = event.text; break; }
+        }
       }
       const st = statSync(b.rolloutPath);
       state.frontierAnchor ??= jsonlFrontierAnchor(b.rolloutPath, state.offset);
@@ -189,13 +204,13 @@ export class ExternalCodexBridge {
           const item = state.outbox[0];
           // An upgrade may restore tool notifications queued by an older build.
           // Keep tool events for local inspection/statistics, never post them to IM.
-          if (item.kind === 'tool') {
+          if (item.kind === 'tool' || !item.text.trim()) {
             state.outbox.shift();
             this.save();
             continue;
           }
           const uuid = createHash('sha256').update(`${b.threadId}:${item.id}`).digest('hex').slice(0, 32);
-          await this.deps.reply(b, item.text, uuid, item.kind);
+          await this.deps.reply({ ...b, currentUserMessage: item.question ?? state.currentUserMessage ?? b.firstUserMessage }, item.text, uuid, item.kind);
           (state.completed ??= []).push(item.id);
           state.outbox.shift();
           this.save();

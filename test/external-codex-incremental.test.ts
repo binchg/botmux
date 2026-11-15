@@ -4,6 +4,18 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ExternalCodexBridge,consumeExternalCodex,type ExternalCodexCursor } from '../src/services/external-codex-bridge.js';
 const event=(payload:unknown)=>JSON.stringify({type:'event_msg',payload})+'\n';
+it('snapshots each turn question for queued replies and emits no empty progress',()=>{
+  const s:ExternalCodexCursor={offset:0,carry:'',busy:false,outbox:[],received:[],echoInputs:['飞书追问']};
+  consumeExternalCodex(s,event({type:'task_started',turn_id:'one'})+event({type:'user_message',message:'飞书追问'})+
+    event({type:'agent_message',phase:'commentary',message:'  \n '})+
+    event({type:'task_complete',turn_id:'one',last_agent_message:'答复一'})+
+    event({type:'task_started',turn_id:'two'})+event({type:'user_message',message:'第二次追问测试'})+
+    event({type:'task_complete',turn_id:'two',last_agent_message:'答复二'}));
+  expect(s.outbox.map(o=>[o.kind,o.text,o.question])).toEqual([
+    ['final','答复一','飞书追问'],['user','第二次追问测试','第二次追问测试'],['final','答复二','第二次追问测试'],
+  ]);
+  expect(JSON.parse(JSON.stringify(s)).currentUserMessage).toBe('第二次追问测试');
+});
 it('mirrors exact questions, whole public updates and final results without tool notification spam',()=>{
   const s:ExternalCodexCursor={offset:0,carry:'',busy:false,outbox:[],received:[],echoInputs:['飞书原文']};
   consumeExternalCodex(s,event({type:'task_started',turn_id:'t'})+event({type:'user_message',message:'飞书原文'})+
