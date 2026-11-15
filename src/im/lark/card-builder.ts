@@ -285,6 +285,7 @@ export function buildSessionCard(
   adoptMode?: boolean,
   locale?: Locale,
 ): string {
+  const compactNeneCard = process.env.BOTMUX_BOT_INDEX === '1' && cliId === 'codex-app';
   const cliName = getCliDisplayName(cliId ?? 'claude-code');
   const actionBase = { root_id: rootId, session_id: sessionId, cli_id: cliId ?? 'claude-code' };
   const actions: any[] = [
@@ -296,9 +297,9 @@ export function buildSessionCard(
     },
     ...sessionModelButton(sessionId, actionBase, cliId),
     ...conversationHistoryButtons(sessionId, locale),
-    ...openLocalTerminalButtons(actionBase, cliName, locale),
+    ...(!compactNeneCard ? openLocalTerminalButtons(actionBase, cliName, locale) : []),
   ];
-  if (!showManageButtons) {
+  if (!showManageButtons && !compactNeneCard) {
     actions.push({
       tag: 'button',
       text: { tag: 'plain_text', content: t('card.btn.get_write_link', undefined, locale) },
@@ -701,6 +702,9 @@ export function buildStreamingCard(
   usageLimit?: CliUsageLimitState,
   writableTerminalUrl?: string,
 ): string {
+  const compactNeneCard = process.env.BOTMUX_BOT_INDEX === '1' && cliId === 'codex-app';
+  if (compactNeneCard) displayMode = 'hidden';
+  const shortNeneTitle = Array.from(title.replace(/\s+/g, ' ').trim()).slice(0, 12).join('');
   const effectiveCliId = cliId ?? 'claude-code';
   const cliName = getCliDisplayName(effectiveCliId);
   const actionBase = { root_id: rootId, session_id: sessionId, cli_id: effectiveCliId, ...(cardNonce ? { card_nonce: cardNonce } : {}) };
@@ -716,7 +720,7 @@ export function buildStreamingCard(
   // ── Main control row: display toggle, mode toggle, terminal, manage ─────
   const headerActions: any[] = [];
 
-  headerActions.push({
+  if (!compactNeneCard) headerActions.push({
     tag: 'button',
     text: { tag: 'plain_text', content: t(displayMode === 'hidden' ? 'card.btn.show_output' : 'card.btn.hide_output', undefined, locale) },
     type: 'default' as const,
@@ -745,7 +749,7 @@ export function buildStreamingCard(
     multi_url: terminalMultiUrl(terminalUrl),
   });
   headerActions.push(...sessionModelButton(sessionId, actionBase, cliId));
-  headerActions.push(...openLocalTerminalButtons(actionBase, cliName, locale));
+  if (!compactNeneCard) headerActions.push(...openLocalTerminalButtons(actionBase, cliName, locale));
   headerActions.push(...conversationHistoryButtons(sessionId, locale));
   if (status === 'limited' && usageLimit?.retryReady) {
     headerActions.push({
@@ -755,7 +759,7 @@ export function buildStreamingCard(
       value: { action: 'retry_last_task', ...actionBase },
     });
   }
-  headerActions.push({
+  if (!compactNeneCard) headerActions.push({
     tag: 'button',
     text: { tag: 'plain_text', content: t('card.btn.get_write_link', undefined, locale) },
     type: 'default',
@@ -832,7 +836,7 @@ export function buildStreamingCard(
   const card = {
     config: { wide_screen_mode: true },
     header: {
-      title: { tag: 'plain_text', content: `🖥️ ${cliName} · ${escapeMd(title)} — ${streamStatusLabel(status, usageLimit, locale)}` },
+      title: { tag: 'plain_text', content: compactNeneCard ? `${shortNeneTitle}${Array.from(title.trim()).length > 12 ? '…' : ''}` : `🖥️ ${cliName} · ${escapeMd(title)} — ${streamStatusLabel(status, usageLimit, locale)}` },
       template: STREAM_TEMPLATE_MAP[displayStatus],
     },
     elements,

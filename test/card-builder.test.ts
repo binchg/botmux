@@ -24,6 +24,20 @@ import type { RelayPickerEntry } from '../src/im/lark/card-builder.js';
 import type { ProjectInfo } from '../src/services/project-scanner.js';
 import { globalConfigPath } from '../src/global-config.js';
 
+it('keeps Nene Codex App cards compact without local Codex or write-link actions', () => {
+  vi.stubEnv('BOTMUX_BOT_INDEX', '1');
+  for (const json of [
+    buildSessionCard('session', 'root', 'https://example.test', 'Nene', 'codex-app'),
+    buildStreamingCard('session', 'root', 'https://example.test', 'Nene', '', 'idle', 'codex-app'),
+  ]) {
+    const card = JSON.parse(json);
+    const actions = JSON.stringify(card);
+    expect(actions).not.toContain('open_local_terminal');
+    expect(actions).not.toContain('get_write_link');
+    expect(actions).toContain('close');
+  }
+});
+
 // The terminal button's URL wrapping now depends on the global dashboard
 // setting `openTerminalInFeishu` (read via readGlobalConfig at build time):
 // default → direct URL, opt-in → Feishu sidebar wrapper. Isolate HOME to an
@@ -33,6 +47,7 @@ let cardTestHome: string;
 beforeEach(() => {
   cardTestHome = mkdtempSync(join(tmpdir(), 'botmux-card-builder-'));
   vi.stubEnv('HOME', cardTestHome);
+  vi.stubEnv('BOTMUX_BOT_INDEX', '0');
   // The local-CLI button is gated on localTerminalCapable() (headless hosts
   // hide it) — pin a GUI-looking env so the button assertions below are
   // deterministic on headless CI runners.
