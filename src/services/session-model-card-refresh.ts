@@ -8,6 +8,7 @@ import { sessionAnchorId } from '../core/types.js';
 import { buildTerminalUrl } from '../core/terminal-url.js';
 import { sessionModelCardNeedsRefresh } from './session-model-card-status.js';
 import { logger } from '../utils/logger.js';
+import { sessionCardStatisticsNeedsRefresh } from './session-card-statistics.js';
 
 const started = new Set<string>();
 
@@ -23,11 +24,13 @@ export function refreshSessionModelCards(appId: string): number {
       || !(ds.workerPort ?? ds.session.webPort)
       || (!ds.streamingCardForced && (bot.disableStreamingCard || bot.privateCard || (ds.chatId && bot.noCardChats?.includes(ds.chatId))))) continue;
     const key = ds.streamCardNonce || sessionAnchorId(ds);
-    if (!sessionModelCardNeedsRefresh(config.session.dataDir, ds.session.sessionId, key)) continue;
+    const locale = localeForBot(appId);
+    if (!sessionModelCardNeedsRefresh(config.session.dataDir, ds.session.sessionId, key)
+      && !sessionCardStatisticsNeedsRefresh(config.session.dataDir, ds.session.sessionId, locale, key)) continue;
     const card = buildStreamingCard(ds.session.sessionId, sessionAnchorId(ds), buildTerminalUrl(ds),
       ds.currentTurnTitle || ds.session.title || getCliDisplayName('codex-app'), ds.lastScreenContent ?? '',
       ds.lastScreenStatus ?? 'idle', 'codex-app', ds.displayMode ?? 'hidden', ds.streamCardNonce,
-      ds.currentImageKey, false, false, localeForBot(appId), cardUsageLimit(ds), writableTerminalLinkFor(ds));
+      ds.currentImageKey, false, false, locale, cardUsageLimit(ds), writableTerminalLinkFor(ds));
     scheduleCardPatch(ds, card);
     count++;
   }

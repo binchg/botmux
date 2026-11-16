@@ -11,6 +11,15 @@ const fixture = () => { const d = mkdtempSync(join(tmpdir(), 'codex-stats-')); d
 const event = (type: string, payload: unknown, at = 1_800_000_000_000) => JSON.stringify({ type, payload, timestamp: new Date(at).toISOString() }) + '\n';
 afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
 
+it('兼容 TraeX history_mutation 工具调用，跨记录重复和工具结果均不重复计数', () => {
+  const path = fixture();
+  const call = { type: 'function_call', call_id: 'tool-a', name: 'exec_command' };
+  const custom = { type: 'custom_tool_call', call_id: 'tool-b', name: 'apply_patch' };
+  writeFileSync(path, event('history_mutation', { items: [call, custom, { type: 'function_call_output', call_id: 'tool-a' }] })
+    + event('history_mutation', { items: [call, custom] }) + event('response_item', call));
+  expect(readCodexSessionStatistics(path)?.tools).toBe(2);
+});
+
 it('counts cumulative usage once, separates live work from idle time, and deduplicates completion', () => {
   const path = fixture(), start = 1_800_000_000_000;
   const complete = event('event_msg', { type:'task_complete', turn_id:'a', started_at:start/1000, completed_at:start/1000+10, duration_ms:9000 }, start+10000);
