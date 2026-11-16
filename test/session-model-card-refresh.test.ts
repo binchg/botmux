@@ -10,6 +10,7 @@ vi.mock('../src/core/worker-pool.js', () => ({ listActiveSessions: () => f.sessi
 vi.mock('../src/core/terminal-url.js', () => ({ buildTerminalUrl: () => 'http://terminal' }));
 vi.mock('../src/services/session-model-card-status.js', () => ({ sessionModelCardNeedsRefresh: f.needs }));
 vi.mock('../src/services/session-card-statistics.js', () => ({ sessionCardStatisticsNeedsRefresh: f.statsNeeds }));
+vi.mock('../src/services/session-card-task-context.js', () => ({ sessionCardTaskContextNeedsRefresh: () => false }));
 import { refreshSessionModelCards } from '../src/services/session-model-card-refresh.js';
 
 /** 模拟已发出的普通会话卡，不包含实际用户输入或飞书凭据。 */

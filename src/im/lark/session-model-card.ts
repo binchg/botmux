@@ -5,6 +5,7 @@ import type { Locale } from '../../i18n/index.js';
 import { getSession } from '../../services/session-store.js';
 import { sessionModelCardStatus } from '../../services/session-model-card-status.js';
 import { sessionCardStatistics } from '../../services/session-card-statistics.js';
+import { sessionCardTaskLocation } from '../../services/session-card-task-context.js';
 
 const text = (content: string) => ({ tag: 'div', text: { tag: 'lark_md', content } });
 const safe = (value?: string) => value?.replace(/[^\w.:-]/g, '') || '未知';
@@ -17,7 +18,8 @@ export function sessionModelCardElements(sessionId: string, cliId?: string, loca
     const state = sessionModelStatus(config.session.dataDir, sessionId);
     const current = state.runtime?.selection;
     const session = getSession(sessionId);
-    const workingDir = session?.workingDir || (en ? 'Unknown directory' : '目录未知');
+    const workingDir = sessionCardTaskLocation(config.session.dataDir, sessionId, state, snapshotKey)
+      ?? session?.workingDir ?? (en ? 'Unknown directory' : '目录未知');
     const compact = (v: ModelSelection) => `${safe(v.model).replace(/^gpt-/, '')} ${safe(v.effort).replace('medium', 'M').replace('xhigh', 'XH').replace('high', 'H').replace('low', 'L')} F${v.serviceTier === 'priority' ? '√' : v.serviceTier === 'default' ? '×' : '?'}`;
     const status = sessionModelCardStatus(config.session.dataDir, sessionId, state, snapshotKey)
       ?? (current ? `${state.runnerAlive ? '' : (en ? 'last ' : '上次 ')}${compact(current)}` : (en ? 'awaiting receipt' : '待回执'));

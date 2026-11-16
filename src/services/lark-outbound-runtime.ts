@@ -17,7 +17,7 @@ export function startLarkOutboundDelivery(botIndex: number): { outbox: LarkReply
   const bot = loadBotConfigs()[botIndex];
   if (!bot) throw new Error('Reply outbox requires the assigned bot configuration');
   registerSessionHandoffApi(bot.larkAppId);
-  const customize = (content: string) => customizeSessionCard(content, readSessionCardCustomization(config.session.dataDir, bot.larkAppId));
+  const customize = (content: string) => customizeSessionCard(content, readSessionCardCustomization(config.session.dataDir, bot.larkAppId), config.session.dataDir);
   startSessionModelCardRefresh(bot.larkAppId);
   const deliveryGuard = (request: import('./lark-reply-outbox.js').OutboundRequest) =>
     assertSessionReplyAllowed(request, bot.larkAppId);

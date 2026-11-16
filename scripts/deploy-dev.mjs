@@ -118,6 +118,7 @@ function main() {
   run('corepack', ['pnpm', 'exec', 'vitest', 'run', '--project', 'unit',
     'test/session-card-customization.test.ts', 'test/session-model-card-status.test.ts', 'test/session-model-card-refresh.test.ts',
     'test/session-card-statistics.test.ts',
+    'test/session-card-task-tag.test.ts', 'test/session-card-bindings.test.ts', 'test/session-card-task-context.test.ts',
     'test/lark-outbound-privacy.test.ts', 'test/lark-outbound-delivery.test.ts', 'test/lark-reply-outbox.test.ts', 'test/lark-client-delivery.test.ts',
     'test/codex-auto-bridge.test.ts', 'test/external-codex-bridge.test.ts', 'test/external-codex-runtime.test.ts',
     'test/codex-owner-ipc.test.ts', 'test/external-codex-incremental.test.ts', 'test/codex-sync-statistics.test.ts', 'test/codex-sync-api.test.ts',
