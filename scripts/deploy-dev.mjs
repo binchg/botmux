@@ -5,6 +5,8 @@ import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bumpPatchVersion, readVersionPayload } from './lib/dev-version.mjs';
+import { resolveDeployTarget, verifyTargetRestart, deployPm2Home } from './lib/deploy-target.mjs';
+import { homedir } from 'node:os';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const versionPath = join(repoRoot, 'dev-version.json');
@@ -33,20 +35,31 @@ function git(args, capture = true) {
 
 function parseArgs(argv) {
   let message = '';
+  let bot;
   let local = false;
   let deferRestart = false;
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === '--message' || argv[i] === '-m') message = argv[++i] || '';
+    else if (argv[i] === '--bot') bot = argv[++i] || '';
     else if (argv[i] === '--local') local = true;
     else if (argv[i] === '--defer-restart') deferRestart = true;
     else if (argv[i] === '--help' || argv[i] === '-h') {
-      console.log('Usage: corepack pnpm deploy:dev -- --message "fix(scope): 中文描述" [--local] [--defer-restart]');
+      console.log('Usage: corepack pnpm deploy:dev -- --message "fix(scope): 中文描述" [--local] [--defer-restart] [--bot <AppID>]');
       process.exit(0);
     } else if (argv[i] !== '--') throw new Error(`未知参数: ${argv[i]}`);
   }
   if (!message.trim()) throw new Error('必须通过 --message 提供本次提交说明');
   if (/[\r\n]/.test(message)) throw new Error('--message 只允许单行提交标题');
-  return { message: message.trim(), local, deferRestart };
+  if (bot !== undefined && !/^cli_[a-z0-9]+$/.test(bot)) throw new Error('--bot 必须为准确 AppID');
+  return { message: message.trim(), local, deferRestart, bot };
+}
+
+/** PM2 操作仅用于已冻结的目标；每条命令都指定隔离目录。 */
+function pm2(args, capture = true) {
+  return execFileSync(process.execPath, [join(repoRoot, 'node_modules/pm2/bin/pm2'), ...args], {
+    cwd: repoRoot, env: { ...process.env, PM2_HOME: deployPm2Home() }, encoding: 'utf8', timeout: 30000,
+    stdio: capture ? ['ignore', 'pipe', 'pipe'] : 'inherit',
+  });
 }
 
 function assertCanonicalCheckout() {
@@ -93,16 +106,19 @@ function verifyRemoteHead(localHead) {
 }
 
 function main() {
-  const { message, local, deferRestart } = parseArgs(process.argv.slice(2));
+  const { message, local, deferRestart, bot } = parseArgs(process.argv.slice(2));
   assertCanonicalCheckout();
   assertNoSensitiveChanges();
+  const before = bot && !deferRestart ? JSON.parse(pm2(['jlist'])) : undefined;
+  const botConfigs = before ? JSON.parse(readFileSync(join(homedir(), '.botmux/bots.json'), 'utf8')) : undefined;
+  const target = before ? resolveDeployTarget(bot, Array.isArray(botConfigs) ? botConfigs : botConfigs.bots, before, repoRoot) : undefined;
   if (!local) assertNotBehindRemote();
   const { current, next } = bumpVersion();
 
   run('corepack', ['pnpm', 'exec', 'vitest', 'run', '--project', 'unit',
     'test/codex-auto-bridge.test.ts', 'test/external-codex-bridge.test.ts', 'test/external-codex-runtime.test.ts',
     'test/codex-owner-ipc.test.ts', 'test/external-codex-incremental.test.ts', 'test/codex-sync-statistics.test.ts', 'test/codex-sync-api.test.ts',
-    'test/dev-deploy-version.test.ts', 'test/install-info.test.ts',
+    'test/dev-deploy-version.test.ts', 'test/deploy-target.test.ts', 'test/traex-queue-wait.test.ts', 'test/traex-probe.test.ts', 'test/install-info.test.ts',
     'test/restart-report.test.ts', 'test/codex-app-progress.test.ts',
     'test/conversation-history.test.ts', 'test/conversation-history-cache.test.ts',
     'test/conversation-history-lineage.test.ts', 'test/conversation-history-turns.test.ts', 'test/conversation-history-live.test.ts', 'test/conversation-history-window.test.ts',
@@ -140,9 +156,17 @@ function main() {
   }
 
   // 只有远程回读已包含当前 HEAD 后，才能改变 live 运行态。
+  let targetedRestart;
   if (!deferRestart) {
     run('corepack', ['pnpm', 'use:here']);
-    run('corepack', ['pnpm', 'daemon:restart']);
+    if (target) {
+      // 重新核对冻结进程，构建或推送期间发生漂移则停止，不扩大重启范围。
+      const latest = JSON.parse(pm2(['jlist']));
+      const matched = resolveDeployTarget(bot, Array.isArray(botConfigs) ? botConfigs : botConfigs.bots, latest, repoRoot);
+      if (matched.pid !== target.pid) throw new Error('目标 PID 已漂移');
+      pm2(['restart', target.name], false);
+      targetedRestart = verifyTargetRestart(target, before, JSON.parse(pm2(['jlist'])));
+    } else run('corepack', ['pnpm', 'daemon:restart']);
   }
   const runtimeVersion = execFileSync(process.execPath, [join(repoRoot, 'dist', 'cli.js'), '--version'], {
     cwd: repoRoot,
@@ -159,6 +183,7 @@ function main() {
     deployedAfterPush: !local,
     localDeployment: local,
     restartDeferred: deferRestart,
+    ...(targetedRestart ? { targetedRestart } : {}),
   }, null, 2));
 }
 

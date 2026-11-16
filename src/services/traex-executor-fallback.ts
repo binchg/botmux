@@ -24,7 +24,7 @@ export async function runWithTraexFallback(options: TraexFallbackOptions): Promi
   const initial = readSessionModel(dataDir, sessionId);
   try { await run(); return; }
   catch (error) {
-    if (!(error instanceof TraexAdmissionStopped) || options.executor() !== 'traex'
+    if (!(error instanceof TraexAdmissionStopped) || initial?.routingMode === 'fixed' || options.executor() !== 'traex'
       || env.TRAEX_ADAPTIVE_FALLBACK_EXECUTOR !== 'codex-app') throw error;
   }
   options.signal.throwIfAborted();

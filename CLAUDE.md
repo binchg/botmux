@@ -14,6 +14,8 @@ pnpm daemon:logs          # 查看日志
   `corepack pnpm deploy:dev -- --message "type(scope): 中文描述"`。该命令会把
   `dev-version.json` 尾号 +1，先测试/build、commit/push 并回读远程 HEAD，
   只有 push 成功后才认领 checkout 并 restart。禁止把未 push 代码直接部署到 live。
+  单机器人修复使用同一入口加 `--bot <准确 AppID>`，只重启已核验的目标并回读其它进程 PID 不变；
+  持久 app-server 再通过目标 daemon 的 `/api/hooks/reload` 在空闲边界重载，不扩大到全量重启。
 
 ### 多 checkout：全局 `botmux` 指向谁
 

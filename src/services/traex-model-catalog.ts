@@ -24,6 +24,7 @@ export interface TraexQuotaSnapshot {
 export interface TraexRouteCandidate {
   model: TraexCatalogModel;
   score: number;
+  probe: boolean;
 }
 
 const finite = (n: unknown): number | undefined => typeof n === 'number' && Number.isFinite(n) && n >= 0 ? n : undefined;
@@ -91,15 +92,25 @@ function loadPressure(loadPercent: number | undefined): number {
   return 290 + (loadPercent - 150) * 8;
 }
 
-export function rankTraexCandidates(models: TraexCatalogModel[], policyOrder: string[], effort = 'xhigh'): TraexRouteCandidate[] {
+/** 目录负载只用于排序；允许探测时，真实排队与账户额度才决定是否退出。 */
+export function rankTraexCandidates(models: TraexCatalogModel[], policyOrder: string[], effort = 'xhigh', allowProbe = false): TraexRouteCandidate[] {
   const byModel = new Map(models.map(model => [model.model, model]));
   return policyOrder.map((name, preference) => {
     const model = byModel.get(name);
-    if (!model || !isTraexCatalogCandidate(model, effort)) return undefined;
+    if (!model || !isTraexCatalogSupported(model, effort)) return undefined;
+    const probe = !isTraexCatalogCandidate(model, effort);
+    if (probe && !allowProbe) return undefined;
     const quotaBias = model.quota.state === 'available' ? -20 : model.quota.state === 'exhausted' ? 600 : 0;
-    return { model, score: preference * 35 + loadPressure(model.loadPercent) + quotaBias };
+    // 空闲候选始终优先；全部繁忙或负载未知时，有限探测成本最低的候选。
+    return { model, probe, score: (probe ? 100000 : 0) + preference * 35
+      + loadPressure(model.loadPercent) + Math.min(model.queueSize ?? 0, 1000) * 5 + quotaBias };
   }).filter((candidate): candidate is TraexRouteCandidate => !!candidate)
     .sort((a, b) => a.score - b.score || policyOrder.indexOf(a.model.model) - policyOrder.indexOf(b.model.model));
+}
+
+/** 缺失负载不等于空闲，也不能证明不可用；显式不支持与额度耗尽仍禁止探测。 */
+export function isTraexCatalogSupported(model: TraexCatalogModel, effort = 'xhigh'): boolean {
+  return model.efforts.includes(effort) && model.quota.state !== 'exhausted';
 }
 
 /** Compatibility helper for diagnostics and callers that only need IDs. */

@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { createHash } from 'node:crypto';
 import { expect, it, vi } from 'vitest';
 import { sessionModelStatus } from '../src/services/session-model-store.js';
 
@@ -9,6 +10,12 @@ import { sessionModelStatus } from '../src/services/session-model-store.js';
 it.each(['new', 'busy', 'tools', 'waiting'])('自然语言模型设置自动应用：%s', async mode => {
   const dir = mkdtempSync(join(tmpdir(), 'model-intent-runner-')), calls = join(dir, 'calls.jsonl'), bin = join(dir, 'server');
   mkdirSync(join(dir, 'cli'));
+  if (mode === 'waiting') {
+    // 等待来自真实排队冷却，不再以目录超载冒充不可准入。
+    mkdirSync(join(dir, 'traex-adaptive'));
+    const blockedUntil = { 'gpt-5.5': Date.now() + 120000, 'gpt-6.1-sol': Date.now() + 120000 };
+    writeFileSync(join(dir, 'traex-adaptive', createHash('sha256').update('intent').digest('hex') + '.json'), JSON.stringify({ blockedUntil }));
+  }
   writeFileSync(bin, `#!/usr/bin/env node
 const fs=require('node:fs'),rl=require('node:readline'),mode=process.env.TEST_MODE;let n=0;
 const record=x=>fs.appendFileSync(process.env.CALLS,JSON.stringify(x)+'\\n');

@@ -57,6 +57,10 @@ describe('TraeX 包装进程排队归属', () => {
       insert.run(304, null, 'pid:43:x', 'queue_end');
       expect(reader.poll(1000)).toMatchObject({ id: 302, position: 7 });
       expect(reader.poll(1000)).toBeUndefined();
+      expect(reader.activeEvidence).toMatchObject({ id: 302, position: 7 });
+      insert.run(305, null, 'pid:42:x', 'queue_end');
+      expect(reader.poll(1000)).toBeUndefined();
+      expect(reader.activeEvidence).toBeUndefined();
     } finally { reader.close(); db.close(); }
   });
 });

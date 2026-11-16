@@ -6,6 +6,7 @@ import { readSessionModel, readSessionModelRuntime, writeSessionModelRuntime, ty
 import { readSessionModelDisplay } from './session-model-display.js';
 import { TraexAdaptiveRouter, TraexQueueReader } from './traex-adaptive-model.js';
 import type { TraexAdmission } from './traex-admission.js';
+import { TraexQueueWait } from './traex-queue-wait.js';
 import { agentTeamOutputSchema } from './agent-team-result-schema.js';
 
 /** 单轮执行所需状态；可变字段通过入口的访问器读取，避免切换后使用旧进程。 */
@@ -96,6 +97,8 @@ export async function runSingleTurn(context: SingleTurnContext, content: string,
   let queueTimer: ReturnType<typeof setInterval> | undefined;
   if (traex && selection.model && client.pid) {
     let fixedQueueNotified = false;
+    let waitingNotified = false;
+    const queueWait = new TraexQueueWait();
     attempted.add(selection.model);
     try { queueReader = new TraexQueueReader(tid, client.pid); }
     catch (error) { writeLine(`[traex-adaptive] queue observation unavailable: ${asError(error).message}`); }
@@ -103,7 +106,8 @@ export async function runSingleTurn(context: SingleTurnContext, content: string,
       if (!queueReader || context.activeTurn !== turn || !turn.turnId || turn.finished || turn.userInterrupted || turn.criticalHookFailure || turn.modelSwitchPending || turn.adaptiveChecking || turn.adaptiveNextModel || turn.toolItems?.size) return;
       const activityAt = turn.adaptiveActivityAt ?? turn.startedAtMs;
       let evidence;
-      try { evidence = queueReader.poll(activityAt); } catch { return; }
+      try { queueReader.poll(activityAt); evidence = queueReader.activeEvidence; } catch { return; }
+      const degrade = queueWait.shouldDegrade(evidence);
       if (!evidence) return;
       turn.adaptiveChecking = true;
       modelReceipt('running', turn.turnId, 'queued', evidence.position);
@@ -111,6 +115,13 @@ export async function runSingleTurn(context: SingleTurnContext, content: string,
         if (!fixedQueueNotified) emitMarker('progress', { content: `指定的 ${selection.model} 已应用，但服务端仍在排队。发送“恢复自动选模”可允许自动降级。`,
           turnId: turn.turnId, startedAtMs: turn.startedAtMs, updatedAtMs: Date.now() });
         fixedQueueNotified = true;
+        turn.adaptiveChecking = false;
+        return;
+      }
+      if (!degrade) {
+        if (!waitingNotified) emitMarker('progress', { content: `TraeX ${selection.model} 当前排队第 ${evidence.position} 位，最多等待 10 秒；仍未准入则自动降级。`,
+          turnId: turn.turnId, startedAtMs: turn.startedAtMs, updatedAtMs: Date.now() });
+        waitingNotified = true;
         turn.adaptiveChecking = false;
         return;
       }
