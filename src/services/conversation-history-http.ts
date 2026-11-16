@@ -8,6 +8,7 @@ import { cachedHistoryPage } from './conversation-history-page-cache.js';
 import { renderConversationHistory } from './conversation-history-page.js';
 import { terminalAccessEnabled } from './terminal-access.js';
 import { readHistoryImage } from './conversation-history-images.js';
+import { nativeTerminalText, renderNativeTerminalPage } from './conversation-terminal-page.js';
 
 const requests = new Map<string, { start: number; count: number }>();
 
@@ -73,6 +74,17 @@ export async function handleConversationHistoryRequest(
     if (Object.keys(cursors).length > 1 || Object.values(cursors).some(value => !/^[A-Za-z0-9_-]{22}$/.test(value))) { finish(400, '无效的分页位置。'); return true; }
     const state = cachedHistoryPage(history, opts.dataDir ?? config.session.dataDir);
     if (url.searchParams.has('preload')) { finish(state.error ? 503 : state.page ? 200 : 202, '', expiry); return true; }
+    if (url.searchParams.get('view') === 'terminal') {
+      const messages = state.bundle?.messages ?? history.messages;
+      if (url.searchParams.get('format') === 'json') {
+        finish(200, JSON.stringify({ text: nativeTerminalText(messages) }), { ...expiry, 'content-type': 'application/json; charset=utf-8' });
+      } else {
+        const page = renderNativeTerminalPage(messages);
+        finish(200, page.html, { ...expiry,
+          'content-security-policy': `default-src 'none'; connect-src 'self'; style-src 'unsafe-inline'; script-src 'nonce-${page.nonce}'; base-uri 'none'; frame-ancestors 'none'` });
+      }
+      return true;
+    }
     if ((url.searchParams.has('complete') || Object.keys(cursors).length) && !state.page) {
       finish(state.error ? 503 : 202, state.error ? '暂时无法读取完整历史。' : '', { ...expiry, 'retry-after': '1' }); return true;
     }
@@ -86,15 +98,7 @@ export async function handleConversationHistoryRequest(
     }
     if (page && url.searchParams.get('revision') === page.revision) { finish(204, '', expiry); return true; }
     if (!page) { const window = historyWindow(history.messages); page = renderConversationHistory(history, window.messages, undefined, true, window); }
-    // Native Codex has no PTY port. Its Web-terminal button opens the same
-    // protected, live transcript in a compact read-only terminal view.
-    const terminalView = url.searchParams.get('view') === 'terminal';
-    const html = terminalView ? page.html
-      .replace('<html lang="zh-CN"', '<html lang="zh-CN" data-view="terminal"')
-      .replace('</style>', 'html[data-view="terminal"] body{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:14px}html[data-view="terminal"] main{max-width:1000px}html[data-view="terminal"] .message{margin:14px 0}html[data-view="terminal"] .message-body{max-width:100%}</style>')
-      .replace('<title>', '<title>Web 终端（只读） · ')
-      : page.html;
-    finish(200, html, { ...expiry, 'x-botmux-history-cache': state.page ? 'hit' : 'loading',
+    finish(200, page.html, { ...expiry, 'x-botmux-history-cache': state.page ? 'hit' : 'loading',
       'content-security-policy': `default-src 'none'; img-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; script-src 'nonce-${page.nonce}'; base-uri 'none'; frame-ancestors 'none'` });
   } catch { finish(503, '暂时无法读取完整对话历史，请稍后重试。'); }
   return true;

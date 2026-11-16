@@ -35,8 +35,8 @@ export function startExternalCodexBridge(selfAppId: string): void {
       },
       reply: async (b, text, uuid, kind) => replyMessage(b.larkAppId, b.outputRootMessageId ?? b.rootMessageId,
         buildExternalCodexForwardCard(b, text, kind, nativeConversationHistoryButtons({ ...b, rootMessageId: b.outputRootMessageId ?? b.rootMessageId }, kind === 'user' ? uuid : false)), 'interactive', true, uuid),
-      received: (b, messageId) => replyMessage(b.larkAppId, b.outputRootMessageId ?? b.rootMessageId,
-        buildExternalCodexStatusCard(b), 'interactive', true, `codex-status:${messageId}`),
+      received: (b, messageId, text) => replyMessage(b.larkAppId, b.outputRootMessageId ?? b.rootMessageId,
+        buildExternalCodexStatusCard(b, text), 'interactive', true, `codex-status:${messageId}`),
       turn: (b, text, checkpoint, clientUserMessageId) => runExternalCodexTurn(cfg.codexBin, b.codexHome, b, text, checkpoint, clientUserMessageId),
       excluded: () => collectBotmuxSessionIdentities() ?? new Set(),
       error: e => logger.error(`[codex-auto] ${String(e)}`),
@@ -56,8 +56,8 @@ export function startExternalCodexBridge(selfAppId: string): void {
   externalCodexBridge = new ExternalCodexBridge(cfg.bindings, statePath, {
     reply: async (b, text, uuid, kind) => replyMessage(b.larkAppId, b.outputRootMessageId ?? b.rootMessageId,
         buildExternalCodexForwardCard(b, text, kind, nativeConversationHistoryButtons({ ...b, rootMessageId: b.outputRootMessageId ?? b.rootMessageId }, kind === 'user' ? uuid : false)), 'interactive', true, uuid),
-    received: (b, messageId) => replyMessage(b.larkAppId, b.outputRootMessageId ?? b.rootMessageId,
-      buildExternalCodexStatusCard(b), 'interactive', true, `codex-status:${messageId}`),
+    received: (b, messageId, text) => replyMessage(b.larkAppId, b.outputRootMessageId ?? b.rootMessageId,
+      buildExternalCodexStatusCard(b, text), 'interactive', true, `codex-status:${messageId}`),
     turn: (b, text, checkpoint, clientUserMessageId) => runExternalCodexTurn(cfg.codexBin, cfg.codexHome, b, text, checkpoint, clientUserMessageId),
     error: e => logger.error(`[external-codex] ${String(e)}`),
   });
@@ -77,27 +77,32 @@ export function buildExternalCodexForwardCard(binding: ExternalCodexBinding, tex
 }
 
 /** Immediate, small acknowledgement for a follow-up to a native Codex thread. */
-export function buildExternalCodexStatusCard(binding: ExternalCodexBinding): string {
+export function buildExternalCodexStatusCard(binding: ExternalCodexBinding, title = 'Codex'): string {
   const stats = readCodexSessionStatistics(binding.rolloutPath, Date.now(), false);
   const lines = codexStatisticsText(stats, undefined, Date.now(), false).split('\n');
   const model = readNativeModelStatus(binding.rolloutPath);
   const cwd = binding.cwd.length > 36 ? `…/${basename(binding.cwd)}` : binding.cwd;
   const compactLines = [
     `📁 ${cwd} · ${model}`,
-    (lines[0] ?? '').replace(/^⏱ 创建至今 /, '⏱ 至今 ').replace('累计运行', '累计'),
-    (lines[1] ?? '').replace(/^📊 消耗 /, '📊 耗 ').replace('缓存率', '缓存').replace(/ · 工具.*$/, ''),
+    lines[0] ?? '',
+    lines[1] ?? '',
   ];
   const historyButtons = nativeConversationHistoryButtons({ ...binding, rootMessageId: binding.outputRootMessageId ?? binding.rootMessageId });
   const terminalButtons = historyButtons.map(button => {
     const url = new URL(button.multi_url.url);
     url.searchParams.set('view', 'terminal');
     const href = url.toString();
-    return { ...button, type: 'primary', text: { tag: 'plain_text', content: '🖥️ 打开 Web 终端（只读）' },
+    return { ...button, type: 'primary', text: { tag: 'plain_text', content: '🖥️ 打开 Web 终端' },
       multi_url: { url: href, pc_url: href, android_url: href, ios_url: href } };
   });
-  const card = JSON.parse(buildMarkdownCard(compactLines.join('\n\n'), undefined, ''));
-  card.body.elements.push(...terminalButtons, ...historyButtons);
-  return JSON.stringify(card);
+  return JSON.stringify({
+    config: { wide_screen_mode: true },
+    header: { template: 'green', title: { tag: 'plain_text', content: Array.from(title.replace(/\s+/g, ' ').trim()).slice(0, 18).join('') || 'Codex' } },
+    elements: [
+      ...compactLines.map(content => ({ tag: 'div', text: { tag: 'plain_text', content } })),
+      { tag: 'action', actions: [...terminalButtons, ...historyButtons] },
+    ],
+  });
 }
 
 /** Read only a bounded JSONL tail to show the native thread's actual model. */
