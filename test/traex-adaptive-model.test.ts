@@ -75,9 +75,9 @@ describe('TraeX admission routing', () => {
       quota: { state: 'unknown' }, efforts: ['xhigh'] }], 10);
     const notice = vi.fn();
     expect(await admission.select(new Set(), new AbortController().signal, notice)).toBe('top');
-    expect(refreshed).toBe(3); expect(notice).toHaveBeenCalledTimes(1);
+    expect(refreshed).toBe(1); expect(notice).not.toHaveBeenCalled();
     const aborted = new AbortController();
-    const unavailable = new TraexAdmission(router, async () => [], 10000);
+    const unavailable = new TraexAdmission(router, async () => { throw new Error('offline'); }, 10000);
     const pending = unavailable.select(new Set(), aborted.signal, () => aborted.abort());
     await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
   });
@@ -118,6 +118,7 @@ describe('real runner adaptive protocol', () => {
     writeFileSync(executable, `#!/usr/bin/env node
 const fs=require('node:fs'),readline=require('node:readline'),{DatabaseSync}=require('node:sqlite');
 if(process.argv[2]==='debug'){
+if(process.env.ADAPTIVE_TEST_MODE==='waiting')process.exit(1);
 const busy=process.env.ADAPTIVE_TEST_MODE==='load'&&!fs.existsSync(process.env.MODEL_TEST_CALLS);
 const quota=process.env.ADAPTIVE_TEST_MODE==='quota'&&fs.existsSync(process.env.MODEL_TEST_CALLS)?{daily_quota:{exhausted:true}}:{};
 process.stdout.write(JSON.stringify({models:['top','low'].map(slug=>({slug,visibility:'list',model_provider_id:'trae',supported_reasoning_levels:[{effort:'xhigh'}],business_metadata:{load:{load_percent:process.env.ADAPTIVE_TEST_MODE==='waiting'||busy&&slug==='top'?100:30,queue_size:process.env.ADAPTIVE_TEST_MODE==='waiting'?1:null},...(slug==='top'?quota:{})}}))}));process.exit(0);}

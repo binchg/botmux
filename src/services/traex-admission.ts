@@ -1,12 +1,13 @@
 import { setTimeout as delay } from 'node:timers/promises';
-import { fetchTraexCatalog, isTraexCatalogCandidate, rankTraexCandidates, type TraexCatalogModel } from './traex-model-catalog.js';
+import { fetchTraexCatalog, isTraexCatalogSupported, rankTraexCandidates, type TraexCatalogModel } from './traex-model-catalog.js';
 import { TraexAdaptiveRouter } from './traex-adaptive-model.js';
 
 /** 达到准入边界时结束当前自动重试，交由用户决定下一次请求。 */
 export class TraexAdmissionStopped extends Error {
-  constructor(readonly reason: 'exhausted' | 'attempt_limit' | 'wait_timeout') {
+  constructor(readonly reason: 'exhausted' | 'attempt_limit' | 'wait_timeout' | 'unsupported') {
     const detail = reason === 'exhausted' ? '本轮候选均已尝试，仍未获准入'
-      : reason === 'attempt_limit' ? '本轮已达到模型尝试次数上限' : '等待空闲模型已超时';
+      : reason === 'attempt_limit' ? '本轮已达到模型尝试次数上限'
+        : reason === 'unsupported' ? '当前目录没有支持本轮推理级别且额度可用的候选' : '等待空闲模型已超时';
     super(`TraeX ${detail}，已停止自动重试。会话历史保留，请稍后继续或选择其它执行器。`);
     this.name = 'TraexAdmissionStopped';
   }
@@ -22,7 +23,7 @@ export class TraexAdmission {
   async refresh(): Promise<void> { this.catalog = await this.fetchCatalog(); }
 
   choose(attempted = new Set<string>(), effort = 'xhigh'): string | undefined {
-    return this.router.choose(rankTraexCandidates(this.catalog, this.router.policy.models, effort).map(candidate => candidate.model.model), attempted);
+    return this.router.choose(rankTraexCandidates(this.catalog, this.router.policy.models, effort, true).map(candidate => candidate.model.model), attempted);
   }
 
   async select(attempted: Set<string>, signal: AbortSignal, notice: (message: string) => void,
@@ -40,7 +41,8 @@ export class TraexAdmission {
         const model = this.choose(attempted, effort);
         if (model) return model;
         const candidates = this.catalog.filter(model => this.router.policy.models.includes(model.model)
-          && isTraexCatalogCandidate(model, effort));
+          && isTraexCatalogSupported(model, effort));
+        if (!candidates.length) throw new TraexAdmissionStopped('unsupported');
         // 已证实排队后，只看仍可准入且尚未尝试的候选；繁忙高档模型不能拖延退出。
         if (attempted.size > 0 && candidates.every(model => attempted.has(model.model))) {
           throw new TraexAdmissionStopped('exhausted');

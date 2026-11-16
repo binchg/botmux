@@ -51,19 +51,19 @@ send({id:m.id,result});});
     await vi.waitFor(() => expect(state().runtime?.phase, output).toBe(mode === 'success' ? 'completed' : 'failed'), { timeout: 15000 });
     if (mode === 'success') {
       const turns = rows().filter(row => row.method === 'turn/start');
-      expect(turns.map(row => row.name)).toEqual(['traex', 'codex']);
-      expect(turns[1].params.input[0].text).toContain('preserve QA results');
-      expect(turns[1].params.input[0].text).toContain('compare control and experiment');
+      expect(turns.map(row => row.name)).toEqual(['traex', 'traex', 'codex']);
+      expect(turns[2].params.input[0].text).toContain('preserve QA results');
+      expect(turns[2].params.input[0].text).toContain('compare control and experiment');
       expect(state().desired?.executor).toBe('codex-app');
       await stop(); runner = start(); attach();
       await vi.waitFor(() => expect(state().runtime?.pid, output).toBe(runner.pid), { timeout: 10000 });
       send('continue after restart');
       await vi.waitFor(() => expect(state().runtime?.phase, output).toBe('completed'), { timeout: 10000 });
-      expect(rows().filter(row => row.method === 'turn/start').map(row => row.name)).toEqual(['traex', 'codex', 'codex']);
+      expect(rows().filter(row => row.method === 'turn/start').map(row => row.name)).toEqual(['traex', 'traex', 'codex', 'codex']);
       expect(rows().filter(row => row.method === 'thread/resume').at(-1)).toMatchObject({ name: 'codex', params: { threadId: 'codex-thread' } });
     } else {
       expect(readSessionExecutor(dir, 'fallback')?.executor).toBe('traex');
-      expect(rows().filter(row => row.method === 'turn/start').map(row => row.name)).toEqual(['traex']);
+      expect(rows().filter(row => row.method === 'turn/start').map(row => row.name)).toEqual(['traex', 'traex']);
       expect(output).toContain('executor_model_mismatch');
     }
   } finally { await stop(); rmSync(dir, { recursive: true, force: true }); }

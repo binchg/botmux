@@ -40,12 +40,12 @@ describe('TraeX 自动降级边界', () => {
     expect(refreshes).toBe(2);
   });
 
-  it('可准入候选均已排队时，不为空闲未知或超载高档型号额外等待两分钟', async () => {
+  it('空闲候选已排队时，仍对未尝试的超载或未知负载模型有限探测', async () => {
     const missing = { ...model('unknown'), loadPercent: undefined };
     const fetch = vi.fn(async () => [model('busy', 119), missing, model('top'), model('low')]);
     const notice = vi.fn();
-    await expect(new TraexAdmission(router(['busy', 'unknown', 'top', 'low']), fetch)
-      .select(new Set(['top', 'low']), new AbortController().signal, notice)).rejects.toMatchObject({ reason: 'exhausted' });
+    expect(await new TraexAdmission(router(['busy', 'unknown', 'top', 'low']), fetch)
+      .select(new Set(['top', 'low']), new AbortController().signal, notice)).toBe('busy');
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(notice).not.toHaveBeenCalled();
   });
@@ -74,7 +74,9 @@ describe('TraeX 自动降级边界', () => {
     });
     const notice = vi.fn();
     const attempted = new Set<string>();
-    await expect(new TraexAdmission(router(), fetch, 5, 50)
+    const routing = router();
+    await routing.queued('top'); await routing.queued('low');
+    await expect(new TraexAdmission(routing, fetch, 5, 50)
       .select(attempted, new AbortController().signal, notice)).rejects.toMatchObject({ reason: 'wait_timeout' });
     expect(notice).toHaveBeenCalledTimes(1);
     expect(attempted.size).toBe(0);

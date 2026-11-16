@@ -96,6 +96,7 @@ export function parseTraexQueueEvidence(row: any): TraexQueueEvidence | undefine
 export class TraexQueueReader {
   private db: any;
   private cursor = 0;
+  activeEvidence?: TraexQueueEvidence;
   constructor(private readonly threadId: string, private readonly pid: number,
     path = join(traeHome(), 'cli', 'logs_2.sqlite')) {
     const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite');
@@ -103,6 +104,7 @@ export class TraexQueueReader {
     this.cursor = Number(this.db.prepare('SELECT COALESCE(MAX(id), 0) AS id FROM logs').get().id);
   }
   poll(afterMs: number): TraexQueueEvidence | undefined {
+    if (this.activeEvidence && this.activeEvidence.atMs < afterMs) this.activeEvidence = undefined;
     const pids = traexAppServerPids(this.pid);
     const nextCursor = Number(this.db.prepare('SELECT COALESCE(MAX(id), 0) AS id FROM logs').get().id);
     // 直接读取最新队列状态，避免工具执行期间积压的旧排队事件覆盖后来的 queue_end。
@@ -114,9 +116,10 @@ export class TraexQueueReader {
     // 无排队事件也推进快照游标，避免空闲会话反复扫描历史日志。
     this.cursor = nextCursor;
     if (!row) return undefined;
-    if (/\bqueue_end\b/.test(String(row.feedback_log_body))) return undefined;
+    if (/\bqueue_end\b/.test(String(row.feedback_log_body))) { this.activeEvidence = undefined; return undefined; }
     const evidence = parseTraexQueueEvidence(row);
-    return evidence && evidence.atMs >= afterMs ? evidence : undefined;
+    this.activeEvidence = evidence && evidence.atMs >= afterMs ? evidence : undefined;
+    return this.activeEvidence;
   }
   close(): void { this.db?.close(); this.db = undefined; }
 }

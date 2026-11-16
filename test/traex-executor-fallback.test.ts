@@ -33,6 +33,14 @@ it('已启用时校验模型后只接续一次，并持久保存目标选择', a
   expect(readSessionModel(o.dataDir, o.sessionId)).toMatchObject({ executor: 'codex-app', model: 'target', effort: 'xhigh', serviceTier: 'default' });
 });
 
+it('固定选模保持用户指定的执行器，不因准入错误覆盖', async () => {
+  const o = options();
+  writeSessionModel(o.dataDir, o.sessionId, { executor: 'traex', model: 'chosen', effort: 'xhigh', routingMode: 'fixed' });
+  await expect(runWithTraexFallback(o)).rejects.toBeInstanceOf(TraexAdmissionStopped);
+  expect(o.models).not.toHaveBeenCalled();
+  expect(readSessionModel(o.dataDir, o.sessionId)?.executor).toBe('traex');
+});
+
 it.each([new Error('hook failed'), new DOMException('cancelled', 'AbortError')])('普通失败和取消不触发接续', async error => {
   const o = options(); o.run = vi.fn().mockRejectedValue(error);
   await expect(runWithTraexFallback(o)).rejects.toBe(error);

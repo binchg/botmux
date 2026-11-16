@@ -223,6 +223,15 @@ CLI 进入 botmux 会话时自动获得 `~/.botmux/bin` 在 PATH 中，以及一
 corepack pnpm deploy:dev -- --message "fix(scope): 中文描述"
 ```
 
+指定机器人时增加 `--bot <AppID>`，只重启准确目标并核对其它机器人进程未改变。
+TraeX 自动路由优先空闲候选；全部繁忙或负载未知时最多探测三个模型，目录负载超过 100% 不再直接阻止请求。
+实际短队列最多等待十秒，长队列或额度低优先级立即降级；明确不支持和额度耗尽仍不请求。
+需要跨执行器接续时，仅为目标机器人配置 `TRAEX_ADAPTIVE_FALLBACK_EXECUTOR=codex-app`、
+`TRAEX_ADAPTIVE_FALLBACK_MODEL` 和可选 `TRAEX_ADAPTIVE_FALLBACK_EFFORT`。
+准入耗尽后只向 Codex 接续一次，迁移最近可见对话；显式固定选模、取消和工具执行边界仍保留。
+真实回归使用 `pnpm exec tsx scripts/verify-traex-admission.ts --fallback`，验证工具读取与连续三轮追问，
+测试不会发送飞书消息，证据保存在独立临时目录。
+
 命令会自动将 `dev-version.json` 的 patch 尾号 +1，先完成测试和构建，再提交并 push `dev`；只有远程 HEAD 回读与本地一致后才重启。重启通知因此显示可追溯的 `v0.0.N`，不再显示源码占位版本 `v0.0.0`。npm 正式版本仍由 tag/CI 管理。
 
 ---
