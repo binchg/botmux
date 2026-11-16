@@ -225,6 +225,10 @@ corepack pnpm deploy:dev -- --message "fix(scope): 中文描述"
 
 指定机器人时增加 `--bot <AppID>`，只重启准确目标并核对其它机器人进程未改变。
 同机多机器人可重复传入 `--bot <AppID>`，一次构建发布后只重启选中集合；未知目标会在构建前拒绝。
+会话卡定制写入 data 目录的 `session-card-customization.json`，形如
+`{"bots":{"<AppID>":{"compactButtons":true,"modelInCard":true}}}`。
+精简模式只保留 Web 终端和对话历史；模型移入即时卡后，正文不再重复模型首行。
+首张卡不等待模型回执，后台延迟补齐；后续模型切换至少间隔三十秒，负载波动不单独刷新。
 TraeX 自动路由优先空闲候选；全部繁忙或负载未知时最多探测三个模型，目录负载超过 100% 不再直接阻止请求。
 实际短队列最多等待十秒，长队列或额度低优先级立即降级；明确不支持和额度耗尽仍不请求。
 需要跨执行器接续时，仅为目标机器人配置 `TRAEX_ADAPTIVE_FALLBACK_EXECUTOR=codex-app`、
