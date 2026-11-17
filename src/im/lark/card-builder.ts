@@ -285,7 +285,7 @@ export function buildSessionCard(
   adoptMode?: boolean,
   locale?: Locale,
 ): string {
-  const compactNeneCard = process.env.BOTMUX_BOT_INDEX === '1' && cliId === 'codex-app';
+  const compactCodexAppCard = cliId === 'codex-app' && ['0', '1'].includes(process.env.BOTMUX_BOT_INDEX ?? '0');
   const cliName = getCliDisplayName(cliId ?? 'claude-code');
   const actionBase = { root_id: rootId, session_id: sessionId, cli_id: cliId ?? 'claude-code' };
   const actions: any[] = [
@@ -295,11 +295,11 @@ export function buildSessionCard(
       type: 'primary',
       multi_url: terminalMultiUrl(terminalUrl),
     },
-    ...(!compactNeneCard ? sessionModelButton(sessionId, actionBase, cliId) : []),
+    ...(!compactCodexAppCard ? sessionModelButton(sessionId, actionBase, cliId) : []),
     ...conversationHistoryButtons(sessionId, locale),
-    ...(!compactNeneCard ? openLocalTerminalButtons(actionBase, cliName, locale) : []),
+    ...(!compactCodexAppCard ? openLocalTerminalButtons(actionBase, cliName, locale) : []),
   ];
-  if (!showManageButtons && !compactNeneCard) {
+  if (!showManageButtons && !compactCodexAppCard) {
     actions.push({
       tag: 'button',
       text: { tag: 'plain_text', content: t('card.btn.get_write_link', undefined, locale) },
@@ -307,7 +307,7 @@ export function buildSessionCard(
       value: { action: 'get_write_link', ...actionBase },
     });
   }
-  if (showManageButtons && !adoptMode && !compactNeneCard) {
+  if (showManageButtons && !adoptMode && !compactCodexAppCard) {
     actions.push({
       tag: 'button',
       text: { tag: 'plain_text', content: t('card.btn.restart_cli', { cliName }, locale) },
@@ -315,8 +315,8 @@ export function buildSessionCard(
       value: { action: 'restart', ...actionBase },
     });
   }
-  if (compactNeneCard) {
-    // Nene's small card is informational; the two links above are its only actions.
+  if (compactCodexAppCard) {
+    // The compact Codex App card is informational; the two links above are its only actions.
   } else if (adoptMode) {
     actions.push({
       tag: 'button',
@@ -704,9 +704,9 @@ export function buildStreamingCard(
   usageLimit?: CliUsageLimitState,
   writableTerminalUrl?: string,
 ): string {
-  const compactNeneCard = process.env.BOTMUX_BOT_INDEX === '1' && cliId === 'codex-app';
-  if (compactNeneCard) displayMode = 'hidden';
-  const shortNeneTitle = Array.from(title.replace(/\s+/g, ' ').trim()).slice(0, 12).join('');
+  const compactCodexAppCard = cliId === 'codex-app' && ['0', '1'].includes(process.env.BOTMUX_BOT_INDEX ?? '0');
+  if (compactCodexAppCard) displayMode = 'hidden';
+  const shortCodexAppTitle = Array.from(title.replace(/\s+/g, ' ').trim()).slice(0, 12).join('');
   const effectiveCliId = cliId ?? 'claude-code';
   const cliName = getCliDisplayName(effectiveCliId);
   const actionBase = { root_id: rootId, session_id: sessionId, cli_id: effectiveCliId, ...(cardNonce ? { card_nonce: cardNonce } : {}) };
@@ -717,12 +717,12 @@ export function buildStreamingCard(
   elements.push(...sessionModelCardElements(sessionId, cliId, locale, cardNonce || rootId));
 
   // ── Output body (shared with the private snapshot card) ──────────────────
-  if (!compactNeneCard) pushStreamBody(elements, { status, usageLimit, displayMode, imageKey, cliName, locale });
+  if (!compactCodexAppCard) pushStreamBody(elements, { status, usageLimit, displayMode, imageKey, cliName, locale });
 
   // ── Main control row: display toggle, mode toggle, terminal, manage ─────
   const headerActions: any[] = [];
 
-  if (!compactNeneCard) headerActions.push({
+  if (!compactCodexAppCard) headerActions.push({
     tag: 'button',
     text: { tag: 'plain_text', content: t(displayMode === 'hidden' ? 'card.btn.show_output' : 'card.btn.hide_output', undefined, locale) },
     type: 'default' as const,
@@ -750,10 +750,10 @@ export function buildStreamingCard(
     type: 'primary',
     multi_url: terminalMultiUrl(terminalUrl),
   });
-  if (!compactNeneCard) headerActions.push(...sessionModelButton(sessionId, actionBase, cliId));
-  if (!compactNeneCard) headerActions.push(...openLocalTerminalButtons(actionBase, cliName, locale));
+  if (!compactCodexAppCard) headerActions.push(...sessionModelButton(sessionId, actionBase, cliId));
+  if (!compactCodexAppCard) headerActions.push(...openLocalTerminalButtons(actionBase, cliName, locale));
   headerActions.push(...conversationHistoryButtons(sessionId, locale));
-  if (!compactNeneCard && status === 'limited' && usageLimit?.retryReady) {
+  if (!compactCodexAppCard && status === 'limited' && usageLimit?.retryReady) {
     headerActions.push({
       tag: 'button',
       text: { tag: 'plain_text', content: t('card.btn.retry_last_task', undefined, locale) },
@@ -761,14 +761,14 @@ export function buildStreamingCard(
       value: { action: 'retry_last_task', ...actionBase },
     });
   }
-  if (!compactNeneCard) headerActions.push({
+  if (!compactCodexAppCard) headerActions.push({
     tag: 'button',
     text: { tag: 'plain_text', content: t('card.btn.get_write_link', undefined, locale) },
     type: 'default',
     value: { action: 'get_write_link', ...actionBase },
   });
-  if (compactNeneCard) {
-    // Only Web terminal and conversation history are shown for Nene.
+  if (compactCodexAppCard) {
+    // Only Web terminal and conversation history are shown on compact Codex App cards.
   } else if (adoptMode) {
     if (showTakeover) {
       headerActions.push({
@@ -798,7 +798,7 @@ export function buildStreamingCard(
   // When the bot enables `writableTerminalLinkInCard`, embed the token-bearing
   // link right in the card so anyone here can open a writable terminal without
   // the get-write-link → DM round-trip. The link is intentionally group-visible.
-  if (writableTerminalUrl && !compactNeneCard) {
+  if (writableTerminalUrl && !compactCodexAppCard) {
     elements.push({
       tag: 'markdown',
       content: t('card.writable_terminal_link', { url: writableTerminalUrl }, locale),
@@ -840,7 +840,7 @@ export function buildStreamingCard(
   const card = {
     config: { wide_screen_mode: true },
     header: {
-      title: { tag: 'plain_text', content: compactNeneCard ? `${shortNeneTitle}${Array.from(title.trim()).length > 12 ? '…' : ''}` : `🖥️ ${cliName} · ${escapeMd(title)} — ${streamStatusLabel(status, usageLimit, locale)}` },
+      title: { tag: 'plain_text', content: compactCodexAppCard ? `${shortCodexAppTitle}${Array.from(title.trim()).length > 12 ? '…' : ''}` : `🖥️ ${cliName} · ${escapeMd(title)} — ${streamStatusLabel(status, usageLimit, locale)}` },
       template: STREAM_TEMPLATE_MAP[displayStatus],
     },
     elements,
