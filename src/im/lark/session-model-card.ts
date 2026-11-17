@@ -3,14 +3,14 @@ import { sessionModelStatus, type ModelSelection } from '../../services/session-
 import type { AvailableSessionModel } from '../../services/session-model-selection.js';
 import type { Locale } from '../../i18n/index.js';
 import { getSession } from '../../services/session-store.js';
-import { resolveSessionTranscriptPath } from '../../services/transcript-resolver.js';
-import { readCodexSessionStatistics, codexStatisticsText } from '../../services/codex-session-statistics.js';
+import { sessionModelCardStatus } from '../../services/session-model-card-status.js';
+import { sessionCardStatistics } from '../../services/session-card-statistics.js';
+import { sessionCardTaskLocation } from '../../services/session-card-task-context.js';
 
 const text = (content: string) => ({ tag: 'div', text: { tag: 'lark_md', content } });
 const safe = (value?: string) => value?.replace(/[^\w.:-]/g, '') || '未知';
-const statisticsSnapshots = new Map<string, string[]>();
 
-/** Actual runtime and requested settings remain distinct until the runner acknowledges them. */
+/** 实际回执与待生效配置分别展示；即时卡中的模型信息按窗口限频。 */
 export function sessionModelCardElements(sessionId: string, cliId?: string, locale?: Locale, snapshotKey?: string): any[] {
   if (cliId !== 'codex-app') return [];
   const en = locale === 'en';
@@ -18,24 +18,15 @@ export function sessionModelCardElements(sessionId: string, cliId?: string, loca
     const state = sessionModelStatus(config.session.dataDir, sessionId);
     const current = state.runtime?.selection;
     const session = getSession(sessionId);
-    const workingDir = session?.workingDir || (en ? 'Unknown directory' : '目录未知');
+    const workingDir = sessionCardTaskLocation(config.session.dataDir, sessionId, state, snapshotKey)
+      ?? session?.workingDir ?? (en ? 'Unknown directory' : '目录未知');
     const compact = (v: ModelSelection) => `${safe(v.model).replace(/^gpt-/, '')} ${safe(v.effort).replace('medium', 'M').replace('xhigh', 'XH').replace('high', 'H').replace('low', 'L')} F${v.serviceTier === 'priority' ? '√' : v.serviceTier === 'default' ? '×' : '?'}`;
-    const status = current ? `${state.runnerAlive ? '' : (en ? 'last ' : '上次 ')}${compact(current)}` : (en ? 'awaiting receipt' : '待回执');
+    const status = sessionModelCardStatus(config.session.dataDir, sessionId, state, snapshotKey)
+      ?? (current ? `${state.runnerAlive ? '' : (en ? 'last ' : '上次 ')}${compact(current)}` : (en ? 'awaiting receipt' : '待回执'));
     const pending = state.desired && state.desired.revision !== state.runtime?.revision
       ? ` → ${compact(state.desired)}${en ? ' next' : ' 待生效'}` : '';
     const rows = [{ tag: 'div', text: { tag: 'plain_text', content: `📁 ${workingDir} · ${status}${pending}` } }];
-    const key = snapshotKey ? `${config.session.dataDir}:${sessionId}:${locale ?? 'zh'}:${snapshotKey}` : undefined;
-    let lines = key ? statisticsSnapshots.get(key) : undefined;
-    if (!lines) {
-      const resolved = resolveSessionTranscriptPath({ cliId: current?.executor === 'traex' ? 'traex' : 'codex', sessionId,
-        cliSessionId: state.runtime?.threadId ?? session?.cliSessionId, cwd: session?.workingDir });
-      const stats = resolved ? readCodexSessionStatistics(resolved.path, Date.now(), state.runnerAlive && state.runtime?.phase === 'running') : undefined;
-      lines = codexStatisticsText(stats, session?.createdAt, Date.now(), en).split('\n');
-      if (key) {
-        if (statisticsSnapshots.size >= 128) statisticsSnapshots.delete(statisticsSnapshots.keys().next().value!);
-        statisticsSnapshots.set(key, lines);
-      }
-    }
+    const lines = sessionCardStatistics(config.session.dataDir, sessionId, state, locale, snapshotKey);
     for (const content of lines) rows.push({ tag: 'div', text: { tag: 'plain_text', content } });
     return rows;
   } catch { return [text(en ? 'Model status unavailable' : '模型状态暂不可用')]; }

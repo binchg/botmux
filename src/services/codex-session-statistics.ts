@@ -33,7 +33,11 @@ function setTurn(a: Aggregate, id: string, t: Turn): void {
 function fold(a: Aggregate, row: any): void {
   const p = row.payload ?? {}, at = timestamp(row.timestamp);
   if (row.type === 'session_meta') a.created = timestamp(p.timestamp) ?? at;
-  if (row.type === 'response_item' && ['function_call', 'custom_tool_call'].includes(p.type) && p.call_id) a.tools.add(String(p.call_id));
+  // TraeX 原生历史把调用放在 mutation.items；按 call_id 与旧 response_item 统一去重。
+  const items = row.type === 'history_mutation' && Array.isArray(p.items) ? p.items : row.type === 'response_item' ? [p] : [];
+  for (const item of items) {
+    if (['function_call', 'custom_tool_call'].includes(item?.type) && item.call_id) a.tools.add(String(item.call_id));
+  }
   if (row.type !== 'event_msg') return;
   if (at !== undefined) a.created = Math.min(a.created ?? at, at);
   if (p.type === 'token_count' && p.info?.total_token_usage) {

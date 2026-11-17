@@ -54,7 +54,8 @@ function fallbackBody(request: OutboundRequest, body: Record<string, any>, text:
 
 /** 启动时安装一次；失败会抛给发送方并保存，不伪造成功回执或取消业务任务。 */
 export function installLarkOutboundPrivacy(http: typeof defaultHttpInstance = defaultHttpInstance,
-  outbox?: LarkReplyOutbox, deliveryGuard?: (request: OutboundRequest) => void): void {
+  outbox?: LarkReplyOutbox, deliveryGuard?: (request: OutboundRequest) => void,
+  customize?: (content: string) => string): void {
   if (installed.has(http)) return;
   installed.add(http);
   logger.info(`Lark outbound privacy guard installed (body redaction, text fallback, durable outbox=${!!outbox})`);
@@ -78,7 +79,7 @@ export function installLarkOutboundPrivacy(http: typeof defaultHttpInstance = de
     const transforms = request.transformResponse;
     const chain = Array.isArray(transforms) ? transforms : transforms ? [transforms] : [];
     if (!chain.includes(checkReply)) request.transformResponse = [...chain, checkReply];
-    request.data = { ...body, content: privateCardContent(body.content) };
+    request.data = { ...body, content: privateCardContent(customize ? customize(body.content) : body.content) };
     outbox?.prepare(request);
     return request;
   });

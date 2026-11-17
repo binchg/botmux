@@ -26,5 +26,17 @@ export function verifyTargetRestart(target, before, after) {
   return { appId: target.appId, name: target.name, previousPid: target.pid, pid: current.pid, otherProcessesPreserved: true };
 }
 
+/** 一次发布可选择多个准确 AppID，重复参数幂等去重。 */
+export function resolveDeployTargets(appIds, bots, apps, repoRoot) {
+  return [...new Set(appIds)].map(appId => resolveDeployTarget(appId, bots, apps, repoRoot));
+}
+
+/** 所有目标均须完成替换，集合之外的进程必须保持原 PID。 */
+export function verifyTargetRestarts(targets, before, after) {
+  const names = new Set(targets.map(target => target.name));
+  return targets.map(target => verifyTargetRestart(target,
+    before.filter(app => app.name === target.name || !names.has(app.name)), after));
+}
+
 /** 与 CLI 使用同一隔离 PM2_HOME，防止碰到系统的其他 PM2 实例。 */
 export function deployPm2Home() { return join(homedir(), '.botmux', 'pm2'); }
