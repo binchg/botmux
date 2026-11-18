@@ -1,6 +1,6 @@
 import { readCodexTopicSource, isCodexSubagent, isCodexFork } from './codex-topic-source.js';
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, openSync, readSync, closeSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { join, dirname, basename } from 'node:path';
 import { createHash } from 'node:crypto';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { ExternalCodexBridge, type ExternalCodexBinding, type ExternalCodexOutputKind } from './external-codex-bridge.js';
@@ -28,6 +28,8 @@ export interface AutoCodexConfig {
   larkAppId: string;
   chatId: string;
   ownerOpenId: string;
+  replySenderOpenIds?: string[];
+  allowGroupMembers?: boolean;
 }
 export class CodexAutoBridge {
   private registry: Registry;
@@ -48,7 +50,17 @@ export class CodexAutoBridge {
   }) {
     mkdirSync(dirname(stateFile), { recursive: true, mode: 0o700 });
     this.registry = existsSync(stateFile) ? JSON.parse(readFileSync(stateFile, 'utf8')) : { initialized: false, startedAt: Date.now(), baselines: {}, bindings: {} };
+    let relocated = false;
     for (const [key, b] of Object.entries(this.registry.bindings)) {
+      if (!existsSync(b.rolloutPath)) {
+        const archived = join(b.codexHome, 'archived_sessions', basename(b.rolloutPath));
+        if (existsSync(archived)) {
+          this.registry.baselines[archived] ??= this.registry.baselines[b.rolloutPath]
+            ?? { offset: this.completeOffset(archived, statSync(archived).size), protected: true };
+          b.rolloutPath = archived;
+          relocated = true;
+        }
+      }
       if (existsSync(b.rolloutPath)) {
         const meta = readCodexTopicSource(b.rolloutPath).meta;
         if (typeof meta?.forked_from_id === 'string') b.sourceThreadId = meta.forked_from_id;
@@ -58,6 +70,7 @@ export class CodexAutoBridge {
       }
       else this.deps.error(new Error(`Codex transcript unavailable for ${b.threadId}; other sessions remain active`));
     }
+    if (relocated) this.save();
   }
   private rememberOrigin(path: string): void {
     const meta = readCodexTopicSource(path).meta;
@@ -72,7 +85,8 @@ export class CodexAutoBridge {
   private save(): void { atomicWriteFileSync(this.stateFile, JSON.stringify(this.registry, null, 2), { mode: 0o600 }); }
   private key(home: string, id: string): string { return createHash('sha256').update(`${home}:${id}`).digest('hex'); }
   private observe(key: string, b: AutoCodexBinding, offset?: number): ExternalCodexBridge {
-    const observer = new ExternalCodexBridge([b], join(dirname(this.stateFile), `${key}.json`), {
+    const observer = new ExternalCodexBridge([{ ...b, replySenderOpenIds: this.cfg.replySenderOpenIds,
+      allowGroupMembers: this.cfg.allowGroupMembers }], join(dirname(this.stateFile), `${key}.json`), {
       reply: async (source, text, uuid, kind) => { if (!this.isManaged(b)) await this.deps.reply({ ...b, currentUserMessage: source.currentUserMessage }, text, uuid, kind); },
       received: async (_, messageId, text) => { if (!this.isManaged(b)) await this.deps.received?.(b, messageId, text); },
       turn: async (_, text, checkpoint, clientUserMessageId) => { if (!this.isManaged(b)) await this.deps.turn(b, text, checkpoint, clientUserMessageId); }, error: this.deps.error,
@@ -93,7 +107,8 @@ export class CodexAutoBridge {
     // A recalled erroneous child topic must never fall through to a fresh bot session.
     if (found[1].suppressed || this.subagentThreads.has(found[1].threadId)) return true;
     if (this.isManaged(found[1])) return false;
-    if (sender !== this.cfg.ownerOpenId) return true;
+    if (sender !== this.cfg.ownerOpenId && !this.cfg.replySenderOpenIds?.includes(sender)
+        && !(this.cfg.allowGroupMembers && sender.startsWith('ou_'))) return true;
     const [key, source] = found;
     const previous = this.routes.get(key) ?? Promise.resolve();
     const operation = previous.catch(() => {}).then(async () => {

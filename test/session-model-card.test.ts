@@ -50,7 +50,7 @@ describe('per-session model control card', () => {
     expect(first).toHaveLength(3);
     expect(first.map(r=>r.text.content).every(s=>!s.includes('\n'))).toBe(true);
     expect(read).toHaveBeenCalledTimes(1);expect(resolve).toHaveBeenCalledTimes(1);
-    expect(JSON.stringify(sessionModelCardElements('snapshot','codex-app','zh','card-two'))).toContain('工具 70次');
+    expect(JSON.stringify(sessionModelCardElements('snapshot','codex-app','zh','card-two'))).toContain('耗 0.20亿 · 缓存 50%');
     expect(read).toHaveBeenCalledTimes(2);
   });
   it('labels a previous receipt without an offline warning or pretending it is current', () => {

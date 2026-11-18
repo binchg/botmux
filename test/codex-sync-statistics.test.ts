@@ -1,4 +1,4 @@
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { mkdtempSync, writeFileSync, appendFileSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -6,6 +6,8 @@ import { readCodexSessionStatistics, codexStatisticsText } from '../src/services
 import { readCodexSyncEvents } from '../src/services/codex-sync-reader.js';
 import { publicCodexEvent } from '../src/services/codex-sync-events.js';
 
+beforeEach(() => vi.stubEnv('BOTMUX_BOT_INDEX', '2'));
+afterEach(() => vi.unstubAllEnvs());
 const dirs: string[] = [];
 const fixture = () => { const d = mkdtempSync(join(tmpdir(), 'codex-stats-')); dirs.push(d); const p = join(d, 'rollout.jsonl'); writeFileSync(p, ''); return p; };
 const event = (type: string, payload: unknown, at = 1_800_000_000_000) => JSON.stringify({ type, payload, timestamp: new Date(at).toISOString() }) + '\n';
@@ -104,4 +106,15 @@ it('supports canonical-only messages, deduplicates event copies and detects a la
   expect(rewritten.epoch).not.toBe(first.epoch);
   expect(rewritten.events.some(e=>e.kind==='final')).toBe(true);
   expect(readCodexSessionStatistics(path,start+1000,false)).toMatchObject({runningMs:300,turns:1});
+});
+
+it.each(['0', '1', undefined])('uses the same concise statistics for bot %s without double-counting cache', (botIndex) => {
+  vi.stubEnv('BOTMUX_BOT_INDEX', botIndex);
+  const stats = { runningMs: 791000, turns: 1, tools: 65, inputTokens: 4690959, outputTokens: 18298, cachedTokens: 4581248, incomplete: false };
+  const text = codexStatisticsText(stats, undefined, 0);
+  expect(text.split('\n')).toHaveLength(2);
+  expect(text).toContain('耗 0.05亿 · 缓存 98%');
+  expect(text).not.toContain('工具');
+  expect(codexStatisticsText(undefined)).toContain('耗 — · 缓存 —');
+  expect(codexStatisticsText(stats, undefined, 0, true)).toContain('Tools 65');
 });

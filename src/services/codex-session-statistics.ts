@@ -109,5 +109,9 @@ export function codexStatisticsText(stats: CodexSessionStatistics | undefined, c
   const rate = stats?.inputTokens && stats.cachedTokens !== undefined
     ? `${(Math.min(1, stats.cachedTokens / stats.inputTokens) * 100).toFixed(1)}%` : stats?.inputTokens === 0 && stats.cachedTokens === 0 ? '0.0%' : '—';
   if (en) return `Created ${age} ago · Running ${stats ? formatStatisticsDuration(stats.runningMs) : '—'}\nUsage ${total === undefined ? '—' : `${total} × 100M tokens`} · Cache ${rate} · Tools ${number(stats?.tools)}`;
+  if (['0', '1'].includes(process.env.BOTMUX_BOT_INDEX ?? '0')) {
+    const compactRate = rate === '—' ? rate : `${Math.round(Number.parseFloat(rate))}%`;
+    return `至今 ${age} · 累计 ${stats ? formatStatisticsDuration(stats.runningMs) : '—'}\n耗 ${total === undefined ? '—' : `${total}亿`} · 缓存 ${compactRate}`;
+  }
   return `⏱ 创建至今 ${age} · 累计运行 ${stats ? formatStatisticsDuration(stats.runningMs) : '—'}\n📊 消耗 ${total === undefined ? '—' : `${total}亿`} · 缓存率 ${rate} · 工具 ${number(stats?.tools)}次`;
 }

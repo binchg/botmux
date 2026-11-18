@@ -24,8 +24,8 @@ import type { RelayPickerEntry } from '../src/im/lark/card-builder.js';
 import type { ProjectInfo } from '../src/services/project-scanner.js';
 import { globalConfigPath } from '../src/global-config.js';
 
-it('keeps Nene Codex App cards compact without local Codex or write-link actions', () => {
-  vi.stubEnv('BOTMUX_BOT_INDEX', '1');
+it.each(['0', '1', undefined])('keeps bot %s Codex App cards compact without local Codex or write-link actions', (botIndex) => {
+  vi.stubEnv('BOTMUX_BOT_INDEX', botIndex);
   for (const json of [
     buildSessionCard('session', 'root', 'https://example.test', 'Nene', 'codex-app'),
     buildStreamingCard('session', 'root', 'https://example.test', 'Nene', '', 'idle', 'codex-app'),
@@ -276,7 +276,8 @@ describe('buildSessionCard', () => {
       expect(localBtn.value.session_id).toBe(SID);
     });
 
-    it('uses the same local open label for Codex App sessions', () => {
+    it('retains the local open label for other bots using full Codex App cards', () => {
+      vi.stubEnv('BOTMUX_BOT_INDEX', '2');
       const card = parse(buildSessionCard(SID, ROOT, URL, TITLE, 'codex-app'));
       const actions = findActions(card);
       const localBtn = actions.find((a: any) => a.value?.action === 'open_local_terminal');

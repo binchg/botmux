@@ -8,6 +8,8 @@ import { sessionModelStatus, writeSessionModelRuntime } from '../src/services/se
 import * as resolver from '../src/services/transcript-resolver.js';
 import * as statistics from '../src/services/codex-session-statistics.js';
 vi.mock('../src/services/session-store.js', () => ({ getSession: () => ({ larkAppId: 'selected', workingDir: '/workspace', createdAt: '2026-11-16T00:00:00Z' }) }));
+beforeEach(() => vi.stubEnv('BOTMUX_BOT_INDEX', '2'));
+afterEach(() => vi.unstubAllEnvs());
 const dirs: string[] = [];
 beforeEach(() => { vi.spyOn(resolver, 'resolveSessionTranscriptPath').mockReturnValue(null); });
 afterEach(() => { vi.restoreAllMocks(); dirs.splice(0).forEach(d => rmSync(d, { recursive: true, force: true })); });

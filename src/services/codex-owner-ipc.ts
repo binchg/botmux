@@ -27,7 +27,7 @@ export async function submitToCodexOwner(home: string, threadId: string, text: s
         request: { threadId, input: [{ type: 'text', text, text_elements: [] }], clientUserMessageId: clientUserMessageId ?? randomUUID() },
         context: { inheritThreadSettings: true, useAppServerPermissionDefault: true, useAppServerServiceTierDefault: true },
       },
-    }, 2, owner.handledByClientId);
+    }, 2, owner.handledByClientId, 90_000);
     if (result.resultType === 'error' && result.error === 'no-client-found') {
       // The router explicitly rejected delivery after the IDE disconnected.
       // This is a known non-submission, unlike a timeout/unknown result.
@@ -68,12 +68,12 @@ class OwnerIpc {
       });
     });
   }
-  request(method: string, params: unknown, version?: number, targetClientId?: string): Promise<any> {
+  request(method: string, params: unknown, version?: number, targetClientId?: string, timeoutMs = 12_000): Promise<any> {
     return new Promise((resolve, reject) => {
       const requestId = randomUUID();
-      const timer = setTimeout(() => { this.pending.delete(requestId); reject(new Error(`Codex IPC ${method} timed out; outcome may be unknown`)); }, 15000);
+      const timer = setTimeout(() => { this.pending.delete(requestId); reject(new Error(`Codex IPC ${method} timed out; outcome may be unknown`)); }, timeoutMs + 3000);
       this.pending.set(requestId, { resolve, reject, timer });
-      const data = Buffer.from(JSON.stringify({ type: 'request', requestId, method, params, version, targetClientId, timeoutMs: 12000 }));
+      const data = Buffer.from(JSON.stringify({ type: 'request', requestId, method, params, version, targetClientId, timeoutMs }));
       const header = Buffer.alloc(4); header.writeUInt32LE(data.length);
       this.socket!.write(Buffer.concat([header, data]));
     });

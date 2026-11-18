@@ -14,6 +14,8 @@ export interface ExternalCodexBinding {
   chatId: string;
   larkAppId: string;
   ownerOpenId: string;
+  replySenderOpenIds?: string[];
+  allowGroupMembers?: boolean;
   rootMessageId: string;
   /** Output-only mirror target; never changes the thread used for inbound questions. */
   outputRootMessageId?: string;
@@ -28,6 +30,7 @@ export interface ExternalCodexCursor {
   received: string[];
   completed?: string[];
   notBefore?: number;
+  retryAfter?: number;
   queued?: Array<{ messageId: string; text: string }>;
   pending?: { messageId: string; text: string; status: 'queued' | 'started'; clientUserMessageId?: string; receiptTurnId?: string; errorNotified?: boolean };
   turnId?: string;
@@ -175,7 +178,8 @@ export class ExternalCodexBridge {
   async receive(rootId: string, appId: string, sender: string, messageId: string, text: string): Promise<boolean> {
     const b = this.bindings.find(b => b.rootMessageId === rootId && b.larkAppId === appId);
     if (!b) return false;
-    if (sender !== b.ownerOpenId) return true;
+    if (sender !== b.ownerOpenId && !b.replySenderOpenIds?.includes(sender)
+        && !(b.allowGroupMembers && sender.startsWith('ou_'))) return true;
     const state = this.states.get(b.threadId)!;
     if (state.received.includes(messageId)) return true;
     state.received.push(messageId);
@@ -254,7 +258,8 @@ export class ExternalCodexBridge {
           state.pending = { ...state.queued.shift()!, status: 'queued' };
           this.save();
         }
-        if (state.pending?.status === 'queued' && !state.busy && !this.submitting.has(b.threadId)) {
+        if (state.pending?.status === 'queued' && !state.busy && !this.submitting.has(b.threadId)
+            && (!state.retryAfter || Date.now() >= state.retryAfter)) {
           const pending = state.pending;
           pending.clientUserMessageId ??= randomUUID();
           this.save();
@@ -265,11 +270,13 @@ export class ExternalCodexBridge {
             try {
               await this.deps.turn(b, pending.text, (submitted = true) => {
                 pending.status = submitted ? 'started' : 'queued';
+                if (submitted) delete state.retryAfter;
                 this.save();
               }, pending.clientUserMessageId);
               if (state.pending === pending) state.pending = undefined;
               this.save();
             } catch (error) {
+              if (pending.status === 'queued') state.retryAfter = Date.now() + 15_000;
               if (state.pending === pending && !pending.errorNotified) {
                 pending.errorNotified = true;
                 state.outbox.push({ id: `delivery-status:${pending.messageId}`, kind: 'progress', question: pending.text,

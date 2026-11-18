@@ -1,5 +1,5 @@
 import { it, expect, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, readFileSync, rmSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
@@ -19,6 +19,25 @@ function fixture() {
   const stateFile = join(dir, 'state', 'registry.json');
   return { dir, homes, cfg, stateFile };
 }
+
+it('keeps an existing topic bound when Codex archives its transcript', async () => {
+  const f = fixture(); const original = file(f.homes[0], 'archived');
+  const replies: string[] = [];
+  const deps = { topic: async () => 'root', reply: async (_: unknown, text: string) => { replies.push(text); }, received: async () => {},
+    turn: async () => {}, excluded: () => new Set<string>(), error: (e: unknown) => { throw e; } };
+  try {
+    const bridge = new CodexAutoBridge(f.cfg, f.stateFile, deps);
+    await bridge.scan(); appendFileSync(original, done('new', 'answer')); await bridge.scan();
+    await vi.waitFor(() => expect(replies).toContain('answer'));
+    const archive = join(f.homes[0], 'archived_sessions', 'rollout-archived.jsonl');
+    mkdirSync(join(f.homes[0], 'archived_sessions')); renameSync(original, archive);
+    const restored = new CodexAutoBridge(f.cfg, f.stateFile, deps);
+    expect(restored.owns('root', 'app')).toBe(true);
+    const saved = JSON.parse(readFileSync(f.stateFile, 'utf8'));
+    expect(Object.values(saved.bindings)[0]).toMatchObject({ rolloutPath: archive });
+    restored.stop(); bridge.stop();
+  } finally { rmSync(f.dir, { recursive: true, force: true }); }
+});
 
 it('discovers every active thread across both libraries, skips history and excludes native botmux threads', async () => {
   const f = fixture(); const topics: string[] = [], replies: string[] = [], errors: unknown[] = [];
@@ -68,6 +87,32 @@ it('resumes the original topic thread directly across restart without creating a
     expect(readFileSync(original, 'utf8')).toContain('first');
     expect(readFileSync(original, 'utf8')).toContain('second');
   } finally { rmSync(f.dir, { recursive: true, force: true }); }
+});
+
+it('routes a group member follow-up to the exact mapped original thread without forking', async () => {
+  const f = fixture();
+  const original = file(f.homes[0], 'imported');
+  const turn = vi.fn(async (b: any, text: string, checkpoint: () => void) => {
+    expect(b.threadId).toBe('imported');
+    expect(b.rolloutPath).toBe(original);
+    expect(text).toBe('question');
+    checkpoint();
+  });
+  const fork = vi.fn(async () => { throw new Error('unexpected fork'); });
+  const bridge = new CodexAutoBridge({ ...f.cfg, writableThreadIds: ['fixed-test-fork'], allowGroupMembers: true }, f.stateFile, {
+    topic: async () => 'root', reply: async () => {}, turn, fork,
+    excluded: () => new Set(), error: e => { throw e; },
+  });
+  try {
+    await bridge.scan();
+    appendFileSync(original, done('historical-turn', 'historical answer'));
+    await bridge.scan();
+    expect(bridge.owns('root', 'app')).toBe(true);
+    expect(await bridge.receive('root', 'app', 'ou_another_member', 'follow-up', 'question')).toBe(true);
+    await bridge.scan();
+    await vi.waitFor(() => expect(turn).toHaveBeenCalledTimes(1));
+    expect(fork).not.toHaveBeenCalled();
+  } finally { bridge.stop(); rmSync(f.dir, { recursive: true, force: true }); }
 });
 
 it('skips botmux origins before their native session identity has been saved', async () => {
