@@ -3,7 +3,13 @@ import { mkdtempSync,writeFileSync,appendFileSync,readFileSync,rmSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ExternalCodexBridge,consumeExternalCodex,type ExternalCodexCursor } from '../src/services/external-codex-bridge.js';
+import { publicCodexUserText } from '../src/services/codex-sync-events.js';
 const event=(payload:unknown)=>JSON.stringify({type:'event_msg',payload})+'\n';
+it('shows only the actual question from a selected-response annotation', () => {
+  const annotated = '\n# Response annotations:\nInternal instruction\n<response-annotations>\n[{"text":"old reply"}]\n</response-annotations>\n\n## My request:\n第二点没看懂';
+  expect(publicCodexUserText(annotated)).toBe('第二点没看懂');
+  expect(publicCodexUserText('# Response annotations:\nInternal instruction')).toBeUndefined();
+});
 it('snapshots each turn question for queued replies and emits no empty progress',()=>{
   const s:ExternalCodexCursor={offset:0,carry:'',busy:false,outbox:[],received:[],echoInputs:['飞书追问']};
   consumeExternalCodex(s,event({type:'task_started',turn_id:'one'})+event({type:'user_message',message:'飞书追问'})+
