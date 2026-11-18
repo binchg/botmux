@@ -12,6 +12,13 @@ export function publicCodexToolEvent(row: any): string | undefined {
 
 export interface CodexSyncEvent { id: string; kind: 'user' | 'progress' | 'tool' | 'final' | 'status'; text: string; at?: string }
 export function publicCodexUserText(text: string): string | undefined {
+  // Codex stores selected-response annotations as a user-role prompt. The
+  // English preamble and JSON are internal context; only the user's request
+  // belongs in the mirrored question and answer-card title.
+  if (/^\s*# Response annotations:\s*/.test(text)) {
+    const request = /\n#{1,3}\s*My request:\s*([\s\S]*)$/i.exec(text)?.[1]?.trim();
+    return request || undefined;
+  }
   // These are host-injected context records stored with role=user, not a
   // human question. In particular, selected Pages must never be mirrored.
   if (/^\s*(?:# AGENTS\.md instructions|<(?:environment_context|permissions instructions|collaboration_mode|external_codex_apps_[\w]+|user_instructions|system_reminder)(?:\s|>))/.test(text)) return;
