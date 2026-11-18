@@ -35,7 +35,7 @@ export function arkModels(env = process.env): AvailableSessionModel[] {
 
 /** 目录探测与实际运行复用同一环境，原生 Codex 和 TraeX 不继承方舟配置。 */
 export async function executorModels(executor: ModelExecutor, cwd = process.cwd(), codexBin?: string,
-  env = process.env): Promise<AvailableSessionModel[]> {
+  env = process.env, traexBin = env.TRAEX_APP_SERVER_BIN || 'traex'): Promise<AvailableSessionModel[]> {
   if (executor === 'ark') return arkModels(env);
-  return listCodexAppModels({ cwd, codexBin: executor === 'traex' ? 'traex' : codexBin });
+  return listCodexAppModels({ cwd, codexBin: executor === 'traex' ? traexBin : codexBin });
 }

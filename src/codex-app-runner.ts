@@ -431,7 +431,7 @@ const modelSwitch = new SessionModelTurnSwitch({ active: () => activeTurn, proce
   interrupt: turn => client.request('turn/interrupt', { threadId, turnId: turn.turnId }), notice: modelNotice });
 const modelInput = new SessionModelInput({ dataDir: config.session.dataDir, sessionId: args.sessionId,
   defaults: () => ({ executor: activeExecutor, model: defaultThreadModel ?? '', effort: defaultThreadEffort ?? 'xhigh', serviceTier: defaultServiceTier }),
-  models: executor => mixedPolicy ? Promise.resolve(mixedModels(mixedPolicy)) : executorModels(executor, args.cwd, args.codexBin),
+  models: executor => mixedPolicy ? Promise.resolve(mixedModels(mixedPolicy)) : executorModels(executor, args.cwd, args.codexBin, process.env, args.traexBin),
   deliver: (content, changed) => changed ? modelSwitch.schedule(content) : handleUserMessage(content), notice: modelNotice });
 
 async function main(): Promise<void> {
