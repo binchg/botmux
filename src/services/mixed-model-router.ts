@@ -45,10 +45,20 @@ export class MixedModelRouter {
     catalog: () => Promise<TraexCatalogModel[]>;
     run: () => Promise<void>; safe: () => boolean; notice: (message: string) => void;
     metrics?: () => { firstTokenMs?: number };
+    completed?: () => boolean;
   }): Promise<void> {
     const { dataDir, sessionId, signal } = options;
     const initial = readSessionModel(dataDir, sessionId);
-    if (initial?.routingMode === 'fixed') return options.run();
+    if (initial?.routingMode === 'fixed') {
+      if (initial.executor !== 'gateway' && this.policy.gatewayOnlyModels?.includes(initial.model)) {
+        const gateway = this.policy.routes.find(route => route.executor === 'gateway'
+          && route.policyModel === initial.model && route.effort === initial.effort);
+        if (!gateway) throw new Error(`${initial.model} 仅通过受管网关提供，当前该档位暂不可用。请改选可用模型或恢复自动选模。`);
+        signal.throwIfAborted();
+        writeSessionModel(dataDir, sessionId, { ...initial, executor: 'gateway', model: gateway.model, serviceTier: 'default' });
+      }
+      return options.run();
+    }
     let catalog: TraexCatalogModel[] = [];
     try { catalog = await options.catalog(); } catch { /* 目录不可用不能阻断其他已配置通道。 */ }
     signal.throwIfAborted();
@@ -69,7 +79,9 @@ export class MixedModelRouter {
       const started = Date.now();
       try {
         await options.run();
-        await this.record(route, { blockedUntil: 0, elapsedMs: Date.now() - started, reason: 'completed', ...options.metrics?.() });
+        const completed = options.completed?.() ?? true;
+        await this.record(route, { ...(completed ? { blockedUntil: 0 } : {}), elapsedMs: Date.now() - started,
+          reason: completed ? 'completed' : 'turn_failed_without_replay', ...options.metrics?.() });
         return;
       } catch (error) {
         signal.throwIfAborted();

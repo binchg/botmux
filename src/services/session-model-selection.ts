@@ -2,7 +2,7 @@ import type { ModelSelection } from './session-model-store.js';
 
 export interface AvailableSessionModel {
   model: string;
-  executor?: 'codex-app' | 'traex' | 'ark';
+  executor?: 'codex-app' | 'traex' | 'ark' | 'gateway';
   displayName?: string;
   id?: string;
   configName?: string;
@@ -10,9 +10,9 @@ export interface AvailableSessionModel {
   defaultReasoningEffort: string;
   serviceTiers?: Array<{ id: string }>;
 }
-export function normalizeSessionExecutor(value: unknown): 'codex-app' | 'traex' | 'ark' {
+export function normalizeSessionExecutor(value: unknown): 'codex-app' | 'traex' | 'ark' | 'gateway' {
   if (value === 'codex' || value === 'codex-app') return 'codex-app';
-  if (value === 'traex' || value === 'ark') return value;
+  if (value === 'traex' || value === 'ark' || value === 'gateway') return value;
   throw new Error('unsupported_executor');
 }
 export function validateModelSelection(input: unknown, models: AvailableSessionModel[], previous?: ModelSelection): ModelSelection {

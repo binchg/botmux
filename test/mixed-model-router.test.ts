@@ -68,6 +68,19 @@ it('尚未实测的目录候选可以手选，不能自动改变现有排序', (
   expect(mixedModels(configured)).toHaveLength(3);
 });
 
+it('受管型号不允许进入直连目录，且历史固定会话不回退到其它提供方', async () => {
+  const { router, options } = fixture();
+  const managed = { ...policy, gatewayOnlyModels: ['gpt-6.1-sol'] };
+  const path = join(options.dataDir, 'routes.json');
+  writeFileSync(path, JSON.stringify({ version: 1, ...managed }));
+  expect(() => readMixedPolicy({ MIXED_MODEL_ROUTES_FILE: path })).toThrow('managed_gateway_required');
+  writeSessionModel(options.dataDir, options.sessionId, { executor: 'traex', model: 'gpt-6.1-sol', effort: 'xhigh', routingMode: 'fixed' });
+  const locked = new MixedModelRouter({ ...managed, routes: policy.routes.slice(0, 2) }, join(options.dataDir, 'locked.json'));
+  await expect(locked.run(options)).rejects.toThrow('仅通过受管网关');
+  expect(options.run).not.toHaveBeenCalled();
+  expect(router.read()).toEqual({});
+});
+
 it('拒绝重复候选和无限重试配置', () => {
   const path = join(root(), 'policy.json');
   writeFileSync(path, JSON.stringify({ version: 1, ...policy, maxAttempts: 100 }));

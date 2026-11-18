@@ -9,7 +9,7 @@ export interface TraexFallbackOptions {
   sessionId: string;
   cwd: string;
   codexBin: string;
-  executor: () => 'traex' | 'codex-app' | 'ark';
+  executor: () => 'traex' | 'codex-app' | 'ark' | 'gateway';
   run: () => Promise<void>;
   notice: (text: string) => void;
   signal: AbortSignal;

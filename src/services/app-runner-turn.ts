@@ -15,7 +15,7 @@ import { waitForMixedTurn } from './mixed-model-admission.js';
 export interface SingleTurnContext {
   args: Args;
   client: AppServerClient;
-  activeExecutor: 'traex' | 'codex-app' | 'ark';
+  activeExecutor: 'traex' | 'codex-app' | 'ark' | 'gateway';
   activeHookTrust: 'always' | 'review';
   threadId?: string;
   defaultThreadModel?: string;

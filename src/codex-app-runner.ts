@@ -72,8 +72,8 @@ let mixedFirstTokenMs: number | undefined;
 let admissionAbort: AbortController | undefined;
 let requestAbort: AbortController | undefined;
 const savedExecutor = readSessionExecutor(config.session.dataDir, args.sessionId);
-let activeExecutor: 'codex-app' | 'traex' | 'ark' = savedExecutor?.executor
-  ?? (process.env.TRAEX_APP_SERVER_DEFAULT === '1' || process.env.TRAEX_ADAPTIVE_MODELS ? 'traex' : 'codex-app');
+let activeExecutor: 'codex-app' | 'traex' | 'ark' | 'gateway' = savedExecutor?.executor
+  ?? (process.env.TRAEX_APP_SERVER_DEFAULT === '1' || !mixedPolicy && process.env.TRAEX_ADAPTIVE_MODELS ? 'traex' : 'codex-app');
 let activeHookTrust = readGlobalConfig().hookTrust ?? savedExecutor?.hookTrust ?? readSessionModel(config.session.dataDir, args.sessionId)?.hookTrust ?? 'review';
 let client = new AppServerClient(activeExecutor === 'traex' ? args.traexBin : args.codexBin, args.cwd, modelExecutorEnv(activeExecutor));
 let threadId = savedExecutor?.threadId ?? args.threadId;
@@ -385,12 +385,10 @@ async function drainQueue(): Promise<void> {
         if (mixedRouter) await mixedRouter.run({ dataDir: config.session.dataDir, sessionId: args.sessionId,
           signal: requestAbort.signal, catalog: () => fetchTraexCatalog(args.traexBin, args.cwd),
           safe: () => !mixedEffects, metrics: () => ({ firstTokenMs: mixedFirstTokenMs }),
+          completed: () => readSessionModelRuntime(config.session.dataDir, args.sessionId)?.phase === 'completed',
           run: async () => {
             mixedAttemptStarted = Date.now(); mixedFirstTokenMs = undefined;
             await runTurn(next);
-            if (readSessionModelRuntime(config.session.dataDir, args.sessionId)?.phase === 'failed') {
-              throw new Error('本轮执行失败，保留已输出内容与已完成操作，不自动重放。');
-            }
           },
           notice: content => emitMarker('progress', { content, startedAtMs: Date.now(), updatedAtMs: Date.now() }) });
         else await runWithTraexFallback({ dataDir: config.session.dataDir, sessionId: args.sessionId,

@@ -21,6 +21,8 @@
 
 方舟还要求 `ARK_CODEX_HOME` 指向独立配置目录，`ARK_MODELS_FILE` 指向已核验的模型清单；禁止复用全局目录及其软链接。方舟子进程使用该目录，原生 Codex 和 TraeX 继续使用原环境。密钥由所选提供方的标准认证或本地认证命令提供，不放进路由 JSON、仓库、日志或普通消息。接入点与底层模型的映射必须来自平台回读，公共模型目录不能直接当作已授权接入点。
 
+工具网关使用独立的 `gateway` 执行器、`GATEWAY_CODEX_HOME` 和 `GATEWAY_MODELS_FILE`。将需经网关计量的型号放入 `gatewayOnlyModels`，自动候选及旧的固定设置都会遵守该限制。网关授权未就绪时，这些型号保持不可用。其它能力可通过 `modelOrder` 完整指定排序，未配置时沿用 TraeX 原顺序。
+
 方舟清单示例：
 
 ```json
@@ -33,6 +35,6 @@
 
 TraeX 排队只接受当前线程与进程的实际队列事件：短队列最多等 10 秒，长队列或额度低优先级直接降级。其它通道的无活动期限为 60 秒，确认中断后才能重选；无活动不能被称为排队。出现工具执行、正文输出、用户取消或并发选模后，不自动重放。切换通道时迁移最近可见文本，较早历史和工具结果不能假称完整迁移。
 
-真实自测使用 `node --import tsx scripts/verify-mixed-models.ts --allow-model --executor <codex-app|traex|ark> --model <真实模型或接入点>`；`--source` 验源码，其余验证已构建运行器。`--mixed` 使用当前进程显式配置的混合目录。测试在独立目录验证相同的输出、排程推理、工具读取、追问和代码产物，代码由独立断言判分。只有实际 assistant delta 才计首 token，完整耗时另列；未获得后端身份字段时保持 `backendIdentityVerified=false`，小样本答题不能代表通用智力排名。
+真实自测使用 `node --import tsx scripts/verify-mixed-models.ts --allow-model --executor <codex-app|traex|ark|gateway> --model <真实模型或接入点>`；`--source` 验源码，其余验证已构建运行器。`--mixed` 使用当前进程显式配置的混合目录。测试在独立目录验证相同的输出、排程推理、工具读取、追问和代码产物，代码由独立断言判分。只有实际 assistant delta 才计首 token，完整耗时另列；未获得后端身份字段时保持 `backendIdentityVerified=false`，小样本答题不能代表通用智力排名。
 
 部署通过 canonical `dev` 的 `deploy:dev -- --bot <准确 AppID>`，发布后只重载该机器人持久运行器，并回读非目标 PID、配置与全局 Codex 指纹。方舟尚未授权或未经实测的候选应保持未启用。

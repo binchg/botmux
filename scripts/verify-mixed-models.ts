@@ -12,7 +12,7 @@ if (!argv.includes('--allow-model')) throw new Error('真实模型调用需显�
 const value = (key: string) => argv.includes(key) ? argv[argv.indexOf(key) + 1] : undefined;
 const executor = value('--executor') ?? 'codex-app', model = value('--model');
 const mixed = argv.includes('--mixed'), source = argv.includes('--source');
-if (!['codex-app', 'traex', 'ark'].includes(executor) || (!mixed && !model)) throw new Error('--executor / --model required');
+if (!['codex-app', 'traex', 'ark', 'gateway'].includes(executor) || (!mixed && !model)) throw new Error('--executor / --model required');
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const dir = mkdtempSync(join(tmpdir(), 'botmux-model-check-')), sessionId = `model-check-${randomUUID()}`;
 const marker = `MODEL_CHECK_${randomUUID()}`;
@@ -22,7 +22,7 @@ for (const key of ['BOTMUX_SESSION_ID', 'CODEX_THREAD_ID', 'BOTMUX_IM_IPC_PORT',
   'BOT_SHARED_MEMORY_DIR', 'TRAEX_ADAPTIVE_MODELS', 'TRAEX_APP_SERVER_DEFAULT', 'TRAEX_ADAPTIVE_FALLBACK_EXECUTOR']) delete env[key];
 if (!mixed) {
   delete env.MIXED_MODEL_ROUTES_FILE;
-  writeSessionModel(dir, sessionId, { executor: executor as 'codex-app' | 'traex' | 'ark', model: model!,
+  writeSessionModel(dir, sessionId, { executor: executor as 'codex-app' | 'traex' | 'ark' | 'gateway', model: model!,
     effort: value('--effort') ?? 'xhigh', serviceTier: 'default', routingMode: 'fixed', hookTrust: 'always' });
 }
 const runner = spawn(process.execPath, [

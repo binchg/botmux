@@ -7,7 +7,7 @@ export interface ModelInputOptions {
   dataDir: string;
   sessionId: string;
   defaults: () => ModelSelection;
-  models: (executor: 'codex-app' | 'traex' | 'ark') => Promise<AvailableSessionModel[]>;
+  models: (executor: 'codex-app' | 'traex' | 'ark' | 'gateway') => Promise<AvailableSessionModel[]>;
   deliver: (content: string, changed: boolean) => void;
   notice: (content: string, failed?: boolean) => void;
 }

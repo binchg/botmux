@@ -4,9 +4,9 @@ export interface ModelCommandContext { sessionId: string; ipcPort: number }
 export const MODEL_COMMAND_HELP = `botmux model [status|list]
 botmux model route [--json]  # TraeX 负载快照及默认 xhigh 候选
 botmux model route --mixed [--session-id <id>]  # 目标机器人的混合排序、冷却及实测记录
-botmux model list [--executor codex-app|traex|ark]
-botmux model set <model> [effort] [--executor codex-app|traex|ark] [--speed default|priority] [--routing fixed|adaptive] [--session-id <id>]
-botmux model executor <codex-app|traex|ark> [--session-id <id>]
+botmux model list [--executor codex-app|traex|ark|gateway]
+botmux model set <model> [effort] [--executor codex-app|traex|ark|gateway] [--speed default|priority] [--routing fixed|adaptive] [--session-id <id>]
+botmux model executor <codex-app|traex|ark|gateway> [--session-id <id>]
 botmux model effort <effort> [--session-id <id>]
 botmux model speed <default|priority> [--session-id <id>]
 botmux model hooks <always|review> [--session-id <id>]

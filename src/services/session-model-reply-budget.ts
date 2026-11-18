@@ -9,7 +9,7 @@ import { isAgentTeamMachineOutput } from './agent-team-output-filter.js';
 import { withSessionModelDisplay, type SessionModelDisplay } from './session-model-display.js';
 
 interface Budget { epoch: string; count: number }
-const header = /^> \*\*(?:模型：)?((?:TraeX|方舟|Codex) · [^\n]+)\*\*\n\n/u;
+const header = /^> \*\*(?:模型：)?((?:TraeX|方舟|网关|Codex) · [^\n]+)\*\*\n\n/u;
 export function isTraexModelReply(content: string): boolean { return header.test(content); }
 function budgetPath(dir: string, id: string): string {
   if (!id || id.length > 200) throw new Error('invalid_session_id');

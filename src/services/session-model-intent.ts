@@ -4,13 +4,14 @@ export interface SessionModelIntent {
   effort?: string;
   serviceTier?: 'default' | 'priority';
   routingMode?: 'fixed' | 'adaptive';
-  executor?: 'codex-app' | 'traex' | 'ark';
+  executor?: 'codex-app' | 'traex' | 'ark' | 'gateway';
 }
 
 /** 模型别名只做拼写归一，最终是否可用仍以当前执行器目录为准。 */
 export function normalizeModelAlias(value: string): string {
   const normalized = value.toLowerCase().replace(/[\s_-]+/g, '');
   if (normalized === 'gpt6.1') return 'gpt-6.1-sol';
+  if (normalized === 'deepseekpro') return 'deepseekv4pro';
   return normalized;
 }
 
@@ -24,7 +25,7 @@ export function parseSessionModelIntent(content: string): SessionModelIntent | u
     if (/^(?:比如|例如|示例|举例|example)(?:[:：]|\s|$)/iu.test(value)) { example = true; continue; }
     if (!value) { example = false; continue; }
     if (example || /^>/u.test(value)) continue;
-    if (/^(?:请\s*)?(?:(?:本|当前|这个)会话\s*)?(?:不是|不要|不用|关闭|取消|禁用)\s*(?:fast|priority|快速|加速)[。！!]?$/iu.test(value)) {
+    if (/^(?:请\s*)?(?:(?:本|当前|这个)会话\s*)?(?:不是|不要|不用|关闭|取消|禁用|no)\s*(?:fast|priority|快速|加速)[。！!]?$/iu.test(value)) {
       return { serviceTier: 'default' };
     }
     if (/^(?:请\s*)?(?:(?:本|当前|这个)会话\s*)?(?:恢复|开启|使用)自动选(?:模|择模型)[。！!]?$/u.test(value)) {
@@ -36,11 +37,13 @@ export function parseSessionModelIntent(content: string): SessionModelIntent | u
     const body = command ? value.slice(command[0].length) : value.replace(/^模型\s*[:：]\s*/u, '');
     const clause = body.split(/[，,。；;]/u)[0];
     if (/[?？]|哪个|区别|是否|怎么样|会不会|能不能|对比|比较|吗/u.test(clause)) continue;
-    const model = /\bgpt\s*[-_]?\s*\d+(?:\.\d+)?(?:[\s_-]*(?:sol|terra|astra|luna))?(?:[-_][a-z][a-z0-9_.-]*)*\b/iu.exec(body)?.[0];
-    const provider = /\b(traex|codex(?:-app)?|ark)\b|方舟/iu.exec(body)?.[0]?.toLowerCase();
-    const executor = provider === '方舟' || provider === 'ark' ? 'ark' : provider === 'traex' ? 'traex' : provider ? 'codex-app' : undefined;
-    const effort = /\b(xhigh|ultra|max|high|medium|low)\b/iu.exec(body)?.[1]?.toLowerCase();
-    const normalSpeed = /(?:不是|不要|不用|关闭|取消|禁用|非)\s*(?:fast|priority|快速|加速)/iu.test(value);
+    const model = /\b(?:gpt\s*[-_]?\s*\d+(?:\.\d+)?(?:[\s_-]*(?:sol|terra|astra|luna))?(?:[-_][a-z][a-z0-9_.-]*)*|deepseek[\s_-]*(?:v\d+(?:\.\d+)?[\s_-]*)?pro)\b/iu.exec(body)?.[0];
+    const provider = /\b(traex|codex(?:-app)?|ark|gateway|llmbox)\b|方舟|网关/iu.exec(body)?.[0]?.toLowerCase();
+    const executor = provider === '方舟' || provider === 'ark' ? 'ark' : provider === 'traex' ? 'traex'
+      : provider === '网关' || provider === 'gateway' || provider === 'llmbox' ? 'gateway' : provider ? 'codex-app' : undefined;
+    const effort = /\b(xhigh|ultra|max|high|medium|low)\b/iu.exec(clause)?.[1]?.toLowerCase()
+      ?? (model && /^\s+中(?:等)?(?=\s|$)/u.test(clause.slice(clause.indexOf(model) + model.length)) ? 'medium' : undefined);
+    const normalSpeed = /(?:不是|不要|不用|关闭|取消|禁用|非|\bno\b)\s*(?:fast|priority|快速|加速)/iu.test(value);
     const fast = !normalSpeed && /(?:\bfast\b|\bpriority\b|开启快速|开启加速)/iu.test(body);
     if (!model && !effort && !normalSpeed && !fast) continue;
     return { ...(model ? { model, routingMode: 'fixed' } : {}), ...(executor ? { executor } : {}), ...(effort ? { effort } : {}),

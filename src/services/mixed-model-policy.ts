@@ -14,7 +14,10 @@ export interface MixedRoute {
   displayName?: string;
   automatic?: boolean;
 }
-export interface MixedPolicy { routes: MixedRoute[]; maxAttempts: number; cooldownMs: number }
+export interface MixedPolicy {
+  routes: MixedRoute[]; maxAttempts: number; cooldownMs: number;
+  modelOrder?: string[]; gatewayOnlyModels?: string[];
+}
 export const mixedRouteId = (route: Pick<MixedRoute, 'executor' | 'model'>) => `${route.executor}:${route.model}`;
 
 /** 缺少开关时完全不介入；非法配置拒绝运行，不静默回退到全局配置。 */
@@ -25,21 +28,29 @@ export function readMixedPolicy(env = process.env): MixedPolicy | undefined {
   const value = JSON.parse(readFileSync(file, 'utf8'));
   const routes = value.routes as MixedRoute[];
   if (value.version !== 1 || !Array.isArray(routes) || !routes.length || routes.length > 64
-    || routes.some(route => !['traex', 'codex-app', 'ark'].includes(route.executor)
+    || routes.some(route => !['traex', 'codex-app', 'ark', 'gateway'].includes(route.executor)
       || !/^[\w.-]{1,120}$/.test(route.model) || !/^[\w.-]{1,120}$/.test(route.policyModel)
       || (route.automatic !== undefined && typeof route.automatic !== 'boolean')
       || !['xhigh', 'high', 'medium', 'low', 'none'].includes(route.effort))
     || new Set(routes.map(mixedRouteId)).size !== routes.length) throw new Error('invalid_mixed_policy');
   const maxAttempts = value.maxAttempts ?? 3, cooldownMs = value.cooldownMs ?? 120000;
+  for (const field of ['modelOrder', 'gatewayOnlyModels']) {
+    if (value[field] !== undefined && (!Array.isArray(value[field]) || value[field].length > 64
+      || value[field].some((model: unknown) => typeof model !== 'string' || !/^[\w.-]{1,120}$/.test(model)))) throw new Error('invalid_mixed_model_order');
+  }
+  if (routes.some(route => route.executor !== 'gateway'
+    && (value.gatewayOnlyModels ?? []).some((model: string) => [route.model, route.policyModel].includes(model)))) {
+    throw new Error('managed_gateway_required');
+  }
   if (!Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 6
     || !Number.isFinite(cooldownMs) || cooldownMs < 1000 || cooldownMs > 3600000) throw new Error('invalid_mixed_limits');
-  return { routes, maxAttempts, cooldownMs };
+  return { routes, maxAttempts, cooldownMs, modelOrder: value.modelOrder, gatewayOnlyModels: value.gatewayOnlyModels };
 }
 
 /** 不根据测速自评分改变能力顺序；未知负载仅标为待探测，不能称为空闲或排队。 */
 export function rankMixedRoutes(policy: MixedPolicy, catalog: TraexCatalogModel[],
   health: Record<string, { blockedUntil?: number; firstTokenMs?: number }>, now = Date.now()): MixedRoute[] {
-  const order = [...new Set([...TRAEX_MODEL_ORDER, ...policy.routes.map(route => route.policyModel)])];
+  const order = [...new Set([...(policy.modelOrder ?? TRAEX_MODEL_ORDER), ...policy.routes.map(route => route.policyModel)])];
   const traex = rankTraexCandidates(catalog, order, 'xhigh', true);
   return policy.routes.map((route, index) => {
     const state = health[mixedRouteId(route)];

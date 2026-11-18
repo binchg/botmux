@@ -12,7 +12,7 @@ import { isCodexAppRetryLimit429 } from './codex-app-auto-continue.js';
 export interface NotificationContext {
   activeTurn: ActiveTurn | null;
   threadId?: string;
-  activeExecutor: 'traex' | 'codex-app' | 'ark';
+  activeExecutor: 'traex' | 'codex-app' | 'ark' | 'gateway';
   client: AppServerClient;
   flushSteers: (turn: ActiveTurn) => void;
   emitMarker: (kind: string, payload: unknown) => void;

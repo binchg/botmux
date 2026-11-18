@@ -1,3 +1,5 @@
+import { scrubSecrets } from './insight/scrub.js';
+
 /** 只迁移最近的可见对话；工具结果、隐藏推理和旧的迁移前缀不跨执行器复制。 */
 export function executorHandoff(thread: any): string {
   const messages: Array<{ role: string; text: string }> = [];
@@ -12,7 +14,8 @@ export function executorHandoff(thread: any): string {
       } else if (item.type === 'agentMessage') {
         role = 'assistant'; text = item.text ?? '';
       } else continue;
-      if (text.trim()) messages.push({ role, text: text.slice(-6000) });
+      const safeText = scrubSecrets(text.slice(-6400)).replace(/\bark-[A-Za-z0-9-]{24,}\b/g, '<redacted>');
+      if (safeText.trim()) messages.push({ role, text: safeText.slice(-6000) });
     }
   }
   const recent = messages.slice(-24);
