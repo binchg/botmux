@@ -28,6 +28,8 @@ export interface AutoCodexConfig {
   larkAppId: string;
   chatId: string;
   ownerOpenId: string;
+  replySenderOpenIds?: string[];
+  allowGroupMembers?: boolean;
 }
 export class CodexAutoBridge {
   private registry: Registry;
@@ -72,7 +74,8 @@ export class CodexAutoBridge {
   private save(): void { atomicWriteFileSync(this.stateFile, JSON.stringify(this.registry, null, 2), { mode: 0o600 }); }
   private key(home: string, id: string): string { return createHash('sha256').update(`${home}:${id}`).digest('hex'); }
   private observe(key: string, b: AutoCodexBinding, offset?: number): ExternalCodexBridge {
-    const observer = new ExternalCodexBridge([b], join(dirname(this.stateFile), `${key}.json`), {
+    const observer = new ExternalCodexBridge([{ ...b, replySenderOpenIds: this.cfg.replySenderOpenIds,
+      allowGroupMembers: this.cfg.allowGroupMembers }], join(dirname(this.stateFile), `${key}.json`), {
       reply: async (source, text, uuid, kind) => { if (!this.isManaged(b)) await this.deps.reply({ ...b, currentUserMessage: source.currentUserMessage }, text, uuid, kind); },
       received: async (_, messageId, text) => { if (!this.isManaged(b)) await this.deps.received?.(b, messageId, text); },
       turn: async (_, text, checkpoint, clientUserMessageId) => { if (!this.isManaged(b)) await this.deps.turn(b, text, checkpoint, clientUserMessageId); }, error: this.deps.error,
@@ -93,7 +96,8 @@ export class CodexAutoBridge {
     // A recalled erroneous child topic must never fall through to a fresh bot session.
     if (found[1].suppressed || this.subagentThreads.has(found[1].threadId)) return true;
     if (this.isManaged(found[1])) return false;
-    if (sender !== this.cfg.ownerOpenId) return true;
+    if (sender !== this.cfg.ownerOpenId && !this.cfg.replySenderOpenIds?.includes(sender)
+        && !(this.cfg.allowGroupMembers && sender.startsWith('ou_'))) return true;
     const [key, source] = found;
     const previous = this.routes.get(key) ?? Promise.resolve();
     const operation = previous.catch(() => {}).then(async () => {

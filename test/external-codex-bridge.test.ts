@@ -19,6 +19,25 @@ it('posts one immediate status card for an accepted native follow-up', async () 
   } finally { f.cleanup(); }
 });
 
+it('retains an unanswered follow-up while the IDE owner is offline without rapid resubmission', async () => {
+  const f = fixture(); let attempts = 0;
+  const bridge = new ExternalCodexBridge([f.binding], f.stateFile, {
+    reply: async () => {},
+    turn: async () => { attempts++; throw new Error('IDE owner offline'); },
+    error: () => {},
+  });
+  try {
+    await bridge.receive('root', 'app', 'owner', 'offline-question', 'question');
+    await expect(bridge.tick()).rejects.toThrow('IDE owner offline');
+    await bridge.tick();
+    const state = JSON.parse(readFileSync(f.stateFile, 'utf8')).fork;
+    expect(attempts).toBe(1);
+    expect(state.pending.messageId).toBe('offline-question');
+    expect(state.pending.status).toBe('queued');
+    expect(state.retryAfter).toBeGreaterThan(Date.now());
+  } finally { f.cleanup(); }
+});
+
 it('resumes long public output at the failed card after restart, using the same retry UUID', async () => {
   const f = fixture();
   const deliveries: Array<{ text: string; uuid: string }> = [];

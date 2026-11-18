@@ -37,7 +37,11 @@ export function startExternalCodexBridge(selfAppId: string): void {
         buildExternalCodexForwardCard(b, text, kind, nativeConversationHistoryButtons({ ...b, rootMessageId: b.outputRootMessageId ?? b.rootMessageId }, kind === 'user' ? uuid : false)), 'interactive', true, uuid),
       received: (b, messageId, text) => replyMessage(b.larkAppId, b.outputRootMessageId ?? b.rootMessageId,
         buildExternalCodexStatusCard(b, text), 'interactive', true, `codex-status:${messageId}`),
-      turn: (b, text, checkpoint, clientUserMessageId) => runExternalCodexTurn(cfg.codexBin, b.codexHome, b, text, checkpoint, clientUserMessageId),
+      turn: async (b, text, checkpoint, clientUserMessageId) => {
+        if (!await submitToCodexOwner(b.codexHome, b.threadId, text, checkpoint, clientUserMessageId)) {
+          throw new Error(`Codex IDE owner unavailable for ${b.threadId}; follow-up retained`);
+        }
+      },
       excluded: () => collectBotmuxSessionIdentities() ?? new Set(),
       error: e => logger.error(`[codex-auto] ${String(e)}`),
     });

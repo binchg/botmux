@@ -51,6 +51,8 @@ it('submits once to the discovered IDE owner and inherits existing thread settin
     expect(request.version).toBe(2);
     expect(request.params.turnStart.request.input).toEqual([{ type: 'text', text: '只读验收', text_elements: [] }]);
     expect(request.params.turnStart.context.inheritThreadSettings).toBe(true);
+    expect(request.params.turnStart.request).not.toHaveProperty('model');
+    expect(request.params.turnStart.request).not.toHaveProperty('effort');
     expect(checkpoints).toBe(1);
   } finally { await f.cleanup(); }
 });

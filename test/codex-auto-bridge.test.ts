@@ -70,6 +70,32 @@ it('resumes the original topic thread directly across restart without creating a
   } finally { rmSync(f.dir, { recursive: true, force: true }); }
 });
 
+it('routes a group member follow-up to the exact mapped original thread without forking', async () => {
+  const f = fixture();
+  const original = file(f.homes[0], 'imported');
+  const turn = vi.fn(async (b: any, text: string, checkpoint: () => void) => {
+    expect(b.threadId).toBe('imported');
+    expect(b.rolloutPath).toBe(original);
+    expect(text).toBe('question');
+    checkpoint();
+  });
+  const fork = vi.fn(async () => { throw new Error('unexpected fork'); });
+  const bridge = new CodexAutoBridge({ ...f.cfg, writableThreadIds: ['fixed-test-fork'], allowGroupMembers: true }, f.stateFile, {
+    topic: async () => 'root', reply: async () => {}, turn, fork,
+    excluded: () => new Set(), error: e => { throw e; },
+  });
+  try {
+    await bridge.scan();
+    appendFileSync(original, done('historical-turn', 'historical answer'));
+    await bridge.scan();
+    expect(bridge.owns('root', 'app')).toBe(true);
+    expect(await bridge.receive('root', 'app', 'ou_another_member', 'follow-up', 'question')).toBe(true);
+    await bridge.scan();
+    await vi.waitFor(() => expect(turn).toHaveBeenCalledTimes(1));
+    expect(fork).not.toHaveBeenCalled();
+  } finally { bridge.stop(); rmSync(f.dir, { recursive: true, force: true }); }
+});
+
 it('skips botmux origins before their native session identity has been saved', async () => {
   const f = fixture();
   const topic = vi.fn(async (_b: { threadId: string }) => 'root'), reply = vi.fn(async () => {});
