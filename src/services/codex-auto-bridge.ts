@@ -24,7 +24,6 @@ interface Registry {
 }
 export interface AutoCodexConfig {
   codexHomes: string[];
-  writableThreadIds?: string[];
   larkAppId: string;
   chatId: string;
   ownerOpenId: string;
