@@ -7,7 +7,7 @@ export interface ModelInputOptions {
   dataDir: string;
   sessionId: string;
   defaults: () => ModelSelection;
-  models: (executor: 'codex-app' | 'traex') => Promise<AvailableSessionModel[]>;
+  models: (executor: 'codex-app' | 'traex' | 'ark') => Promise<AvailableSessionModel[]>;
   deliver: (content: string, changed: boolean) => void;
   notice: (content: string, failed?: boolean) => void;
 }
@@ -31,18 +31,19 @@ export class SessionModelInput {
       const { dataDir, sessionId } = this.options;
       const before = readSessionModel(dataDir, sessionId);
       const previous = before ?? readSessionModelRuntime(dataDir, sessionId)?.selection ?? this.options.defaults();
-      const executor = previous.executor ?? this.options.defaults().executor ?? 'codex-app';
+      const executor = intent.executor ?? previous.executor ?? this.options.defaults().executor ?? 'codex-app';
       const models = await this.options.models(executor);
       if (generation !== this.generation) return;
       if (readSessionModel(dataDir, sessionId)?.revision !== before?.revision) throw new Error('配置已并发更新，请重新发送本条指令。');
       const wanted = intent.model ? normalizeModelAlias(intent.model) : normalizeModelAlias(previous.model);
-      const selected = models.find(model => [model.configName, model.model, model.id].some(name => name
-        && normalizeModelAlias(name) === normalizeModelAlias(wanted)));
+      const selected = models.find(model => (!intent.executor || !model.executor || model.executor === intent.executor)
+        && [model.configName, model.model, model.id, model.displayName].some(name => name
+          && normalizeModelAlias(name) === normalizeModelAlias(wanted)));
       if (!selected) throw new Error(`当前执行器不支持模型 ${intent.model ?? previous.model}`);
       const effort = intent.effort ?? (selected.supportedReasoningEfforts.some(level => level.reasoningEffort === previous.effort)
         ? previous.effort : selected.defaultReasoningEffort);
-      const selection = validateModelSelection({ ...intent, model: selected.configName ?? selected.model,
-        routingMode: intent.routingMode ?? previous.routingMode ?? (executor === 'traex' ? 'adaptive' : 'fixed'), executor, effort }, models, previous);
+      const selection = validateModelSelection({ ...intent, model: selected.id ?? selected.configName ?? selected.model,
+        routingMode: intent.routingMode ?? previous.routingMode ?? (executor === 'traex' ? 'adaptive' : 'fixed'), executor: selected.executor ?? executor, effort }, models, previous);
       const request = writeSessionModel(dataDir, sessionId, selection);
       const runtime = readSessionModelRuntime(dataDir, sessionId);
       const changed = runtime?.revision !== request.revision;

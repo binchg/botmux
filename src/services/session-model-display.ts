@@ -2,7 +2,7 @@ import { modelRuntimeAlive, readSessionModelRuntime, type SessionModelRuntime } 
 import { isAgentTeamMachineOutput } from './agent-team-output-filter.js';
 
 export interface SessionModelDisplay {
-  executor: 'traex';
+  executor: 'traex' | 'ark' | 'codex-app';
   model: string | null;
   effort: string | null;
   state: string;
@@ -23,7 +23,9 @@ export function modelDisplayName(model: string): string {
 
 /** 只读实际回执，不退回期望配置；选模期间不把上一轮模型显示成本轮模型。 */
 export function sessionModelDisplay(runtime: SessionModelRuntime | undefined, alive = modelRuntimeAlive(runtime)): SessionModelDisplay | null {
-  if (!runtime || (runtime.selection?.executor !== 'traex' && runtime.routing?.executor !== 'traex')) return null;
+  if (!runtime) return null;
+  const executor = runtime.selection?.executor ?? runtime.routing?.executor;
+  if (!executor || (executor !== 'traex' && executor !== 'ark' && !runtime.mixed)) return null;
   let state = runtime.phase === 'failed' ? 'failed' : runtime.routing?.state ?? runtime.phase;
   if (!alive) state = 'stopped';
   const pending = ['selecting', 'waiting'].includes(state);
@@ -35,8 +37,9 @@ export function sessionModelDisplay(runtime: SessionModelRuntime | undefined, al
   const details = [!['requested', 'running', 'completed'].includes(state) ? states[state] ?? '状态未知' : '',
     state === 'queued' && typeof position === 'number' ? `第 ${position} 位` : '',
     typeof loadPercent === 'number' && Number.isFinite(loadPercent) ? `负载 ${loadPercent}%` : ''].filter(Boolean);
-  return { executor: 'traex', model, effort, state, loadPercent,
-    label: ['TraeX', model ? modelDisplayName(model) : '尚未选定模型', effort, details.join(' · ')].filter(Boolean).join(' · ') };
+  return { executor, model, effort, state, loadPercent,
+    label: [executor === 'ark' ? '方舟' : executor === 'traex' ? 'TraeX' : 'Codex',
+      model ? runtime.mixed?.displayName ?? modelDisplayName(model) : '尚未选定模型', effort, details.join(' · ')].filter(Boolean).join(' · ') };
 }
 
 export function readSessionModelDisplay(dir: string, id: string): SessionModelDisplay | null {
@@ -45,6 +48,6 @@ export function readSessionModelDisplay(dir: string, id: string): SessionModelDi
 
 /** 模型信息属于展示，不进入线程上下文或机器 JSON；已标注的消息不得重复追加。 */
 export function withSessionModelDisplay(content: string, display: SessionModelDisplay | null): string {
-  if (!display || !content.trim() || /^> \*\*(?:模型：)?TraeX · /u.test(content) || isAgentTeamMachineOutput(content)) return content;
+  if (!display || !content.trim() || /^> \*\*(?:模型：)?(?:TraeX|方舟|Codex) · /u.test(content) || isAgentTeamMachineOutput(content)) return content;
   return `> **${display.label}**\n\n${content}`;
 }

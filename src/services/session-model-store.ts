@@ -5,7 +5,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
 
 export interface ModelSelection {
-  executor?: 'codex-app' | 'traex';
+  executor?: 'codex-app' | 'traex' | 'ark';
   hookTrust?: 'always' | 'review';
   model: string;
   effort: string;
@@ -27,6 +27,7 @@ export interface SessionModelRuntime {
   selection?: ModelSelection;
   routing?: { executor: 'traex'; state?: 'selecting' | 'waiting' | 'requested' | 'queued'; effort: string; loadPercent?: number; position?: number };
   turnId?: string;
+  mixed?: { displayName?: string };
   updatedAt: string;
 }
 function filename(dir: string, id: string, kind: string): string {
@@ -70,7 +71,7 @@ export function sessionModelStatus(dir: string, sessionId: string) {
 
 export interface SessionExecutorState {
   sessionId: string;
-  executor: 'codex-app' | 'traex';
+  executor: 'codex-app' | 'traex' | 'ark';
   threadId: string;
   handoff?: string;
   hookTrust?: 'always' | 'review';

@@ -5,6 +5,8 @@ import { readSessionModel, readSessionModelRuntime, sessionModelStatus, writeSes
 import { validateModelSelection } from '../../services/session-model-selection.js';
 import { buildSessionModelCard } from './session-model-card.js';
 import { localeForBot } from '../../i18n/index.js';
+import { executorModels } from '../../services/model-executor.js';
+import { mixedModels, readMixedPolicy } from '../../services/mixed-model-policy.js';
 
 export async function handleSessionModelAction(context: SessionCardContext): Promise<any> {
   const { actionType, ds, value, action, sessionReply, rootId } = context;
@@ -14,7 +16,9 @@ export async function handleSessionModelAction(context: SessionCardContext): Pro
   const id = ds.session.sessionId, dir = config.session.dataDir;
   try {
     const previous = readSessionModel(dir, id) ?? readSessionModelRuntime(dir, id)?.selection;
-    const models = await listCodexAppModels({ codexBin: previous?.executor === 'traex' ? 'traex' : ds.initConfig?.cliPathOverride, cwd: ds.session.workingDir });
+    const env = { ...process.env, ...ds.initConfig?.env };
+    const mixed = readMixedPolicy(env);
+    const models = mixed ? mixedModels(mixed) : await executorModels(previous?.executor ?? 'codex-app', ds.session.workingDir, ds.initConfig?.cliPathOverride, env);
     if (ds.session.status !== 'active') return error('会话已关闭');
     if (actionType === 'session_model_set') {
       if (!['model', 'effort', 'serviceTier'].includes(value.field) || typeof action?.option !== 'string') return error('无效的会话配置');
@@ -22,7 +26,7 @@ export async function handleSessionModelAction(context: SessionCardContext): Pro
       const latest = readSessionModel(dir, id) ?? readSessionModelRuntime(dir, id)?.selection;
       const patch: Record<string, string> = { [value.field]: option };
       if (value.field === 'model') {
-        const target = models.find(m => (m.configName ?? m.model) === option);
+        const target = models.find(m => (mixed ? m.id : m.configName ?? m.model) === option);
         if (!target) return error('该模型当前不可用');
         patch.effort = target.supportedReasoningEfforts.some(e => e.reasoningEffort === latest?.effort) ? latest!.effort : target.defaultReasoningEffort;
         patch.serviceTier = latest?.serviceTier === 'priority' && target.serviceTiers?.some(t => t.id === 'priority') ? 'priority' : 'default';

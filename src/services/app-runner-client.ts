@@ -13,10 +13,10 @@ export class AppServerClient {
   private lastStderr = '';
   private fatalError?: Error;
 
-  constructor(private readonly codexBin: string, private readonly cwd: string) {
+  constructor(private readonly codexBin: string, private readonly cwd: string, env: NodeJS.ProcessEnv = process.env) {
     this.child = spawn(codexBin, ['app-server', '--listen', 'stdio://'], {
       cwd,
-      env: process.env,
+      env,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 

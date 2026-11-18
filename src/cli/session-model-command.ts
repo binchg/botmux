@@ -3,9 +3,10 @@ import { runTraexRouteCommand } from './traex-route-command.js';
 export interface ModelCommandContext { sessionId: string; ipcPort: number }
 export const MODEL_COMMAND_HELP = `botmux model [status|list]
 botmux model route [--json]  # TraeX 负载快照及默认 xhigh 候选
-botmux model list [--executor codex-app|traex]
-botmux model set <model> [effort] [--executor codex-app|traex] [--speed default|priority] [--routing fixed|adaptive] [--session-id <id>]
-botmux model executor <codex-app|traex> [--session-id <id>]
+botmux model route --mixed [--session-id <id>]  # 目标机器人的混合排序、冷却及实测记录
+botmux model list [--executor codex-app|traex|ark]
+botmux model set <model> [effort] [--executor codex-app|traex|ark] [--speed default|priority] [--routing fixed|adaptive] [--session-id <id>]
+botmux model executor <codex-app|traex|ark> [--session-id <id>]
 botmux model effort <effort> [--session-id <id>]
 botmux model speed <default|priority> [--session-id <id>]
 botmux model hooks <always|review> [--session-id <id>]
@@ -45,6 +46,13 @@ export function parseModelCommand(args: string[]): { action: string; executor?: 
 export async function runSessionModelCommand(args: string[], ctx?: ModelCommandContext, daemons: { ipcPort: number }[] = []): Promise<number> {
   if (args.some(x => ['help', '--help', '-h'].includes(x))) { console.log(MODEL_COMMAND_HELP); return 0; }
   try {
+    if (args[0] === 'route' && args.includes('--mixed')) {
+      if (!ctx?.sessionId) throw new Error('session_context_required');
+      const response = await fetch(`http://127.0.0.1:${ctx.ipcPort}/api/sessions/${encodeURIComponent(ctx.sessionId)}/model/routes`, { signal: AbortSignal.timeout(15000) });
+      const result = await response.json();
+      if (!response.ok || !result.ok) throw new Error(result.error ?? 'mixed_route_failed');
+      console.log(JSON.stringify(result, null, 2)); return 0;
+    }
     if (args[0] === 'route') return await runTraexRouteCommand(args.slice(1));
     const command = parseModelCommand(args);
     if (command.all) {

@@ -41,7 +41,9 @@ export function sessionModelButton(sessionId: string, actionBase: Record<string,
 export function buildSessionModelCard(sessionId: string, rootId: string, models: AvailableSessionModel[], locale?: Locale): string {
   const state = sessionModelStatus(config.session.dataDir, sessionId);
   const selection = state.desired ?? state.runtime?.selection;
-  const selected = models.find(m => (m.configName ?? m.model) === selection?.model || m.model === selection?.model);
+  const selected = models.find(m => (!m.executor || m.executor === selection?.executor)
+    && ((m.configName ?? m.model) === selection?.model || m.model === selection?.model));
+  const modelKey = (model: AvailableSessionModel) => model.executor && model.id ? model.id : model.configName ?? model.model;
   const base = { session_id: sessionId, root_id: rootId, cli_id: 'codex-app', action: 'session_model_set' };
   const select = (field: string, choices: string[], current?: string) => ({ tag: 'select_static',
     placeholder: { tag: 'plain_text', content: field === 'model' ? '模型' : field === 'effort' ? '推理强度' : 'Fast' },
@@ -50,7 +52,7 @@ export function buildSessionModelCard(sessionId: string, rootId: string, models:
     value: { ...base, field } });
   const elements = [text(`仅修改本会话（${sessionId.slice(0, 8)}）。选择后自动保存，下一轮生效。`),
     ...sessionModelCardElements(sessionId, 'codex-app', locale),
-    { tag: 'action', actions: [select('model', [...new Set(models.map(m => m.configName ?? m.model))], selection?.model)] }];
+    { tag: 'action', actions: [select('model', [...new Set(models.map(modelKey))], selected ? modelKey(selected) : selection?.model)] }];
   if (selected) elements.push({ tag: 'action', actions: [
     select('effort', selected.supportedReasoningEfforts.map(e => e.reasoningEffort), selection?.effort),
     select('serviceTier', ['default', ...(selected.serviceTiers?.some(t => t.id === 'priority') ? ['priority'] : [])], selection?.serviceTier),

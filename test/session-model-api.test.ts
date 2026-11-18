@@ -1,6 +1,6 @@
 import * as globals from '../src/global-config.js';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { config } from '../src/config.js';
@@ -19,6 +19,18 @@ beforeEach(async () => {
 });
 afterEach(async () => { await server?.close(); vi.restoreAllMocks(); sessions.init(); workers.setActiveSessionsRegistry(new Map()); config.session.dataDir = previous; rmSync(dir, { recursive: true, force: true }); });
 function session() { const s = sessions.createSession('chat', 'root', 'synthetic'); Object.assign(s, {larkAppId:'model-test',cliId:'codex-app',workingDir:dir}); sessions.updateSession(s); return s; }
+it('混合目录只从目标会话的机器人环境读取，守护进程无需共享提供方环境', async () => {
+  const a = session(), path = join(dir, 'mixed.json');
+  writeFileSync(path, JSON.stringify({ version: 1, routes: [
+    { executor: 'ark', model: 'ep-real', policyModel: 'gpt-6-astra', effort: 'xhigh' },
+  ] }));
+  vi.spyOn(workers, 'findActiveBySessionId').mockReturnValue({ session: a,
+    initConfig: { env: { MIXED_MODEL_ROUTES_FILE: path } } } as any);
+  const response = await fetch(`http://127.0.0.1:${server.port}/api/sessions/${a.sessionId}/model/list`);
+  expect(response.status).toBe(200);
+  expect((await response.json()).models).toMatchObject([{ model: 'ark:ep-real', executor: 'ark' }]);
+  expect(probe.listCodexAppModels).not.toHaveBeenCalled();
+});
 async function update(id: string, body: unknown) { const r = await fetch(`http://127.0.0.1:${server.port}/api/sessions/${id}/model`, {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}); return { code:r.status, body:await r.json() }; }
 it('only queues the legacy target for safe idle reload, without changing other session records', async () => {
   const a = session(), b = session(), send = vi.fn(); vi.spyOn(workers,'findActiveBySessionId').mockImplementation(id => id===a.sessionId ? {session:a,worker:{send,killed:false}} as any : undefined);

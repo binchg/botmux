@@ -17,6 +17,9 @@ import { join } from 'node:path';
 import { readTraexAdaptivePolicy, TraexAdaptiveRouter } from './services/traex-adaptive-model.js';
 import { TraexAdmission } from './services/traex-admission.js';
 import { runWithTraexFallback } from './services/traex-executor-fallback.js';
+import { modelExecutorEnv, executorModels } from './services/model-executor.js';
+import { readMixedPolicy, mixedModels } from './services/mixed-model-policy.js';
+import { MixedModelRouter } from './services/mixed-model-router.js';
 import { fetchTraexCatalog } from './services/traex-model-catalog.js';
 import { readSessionModelDisplay, sessionModelDisplay, withSessionModelDisplay } from './services/session-model-display.js';
 import { beginSessionModelReplyEpoch } from './services/session-model-reply-budget.js';
@@ -24,7 +27,7 @@ import { Buffer } from 'node:buffer';
 import { config } from './config.js';
 import { invalidateGlobalConfigCache, readGlobalConfig } from './global-config.js';
 import { readSessionModel, readSessionModelRuntime, readSessionExecutor, writeSessionExecutor, writeSessionModelRuntime, type SessionModelRequest } from './services/session-model-store.js';
-import { executorHandoff } from './services/session-executor-handoff.js';
+import { switchAppExecutor } from './services/app-runner-executor-switch.js';
 import { codexAppHookTrustIssue } from './services/codex-app-hook-health.js';
 import { isAgentTeamMachineOutput } from './services/agent-team-output-filter.js';
 
@@ -60,13 +63,19 @@ const adaptivePolicy = readTraexAdaptivePolicy(process.env, true);
 const adaptiveRouter = adaptivePolicy ? new TraexAdaptiveRouter(adaptivePolicy, join(config.session.dataDir, 'traex-adaptive',
   createHash('sha256').update(args.botOpenId || args.botName || args.sessionId).digest('hex') + '.json')) : undefined;
 const admission = adaptiveRouter ? new TraexAdmission(adaptiveRouter, () => fetchTraexCatalog(args.traexBin, args.cwd)) : undefined;
+const mixedPolicy = readMixedPolicy();
+const mixedRouter = mixedPolicy ? new MixedModelRouter(mixedPolicy, process.env.MIXED_MODEL_HEALTH_FILE ?? join(config.session.dataDir, 'mixed-models',
+  createHash('sha256').update(args.botOpenId || args.botName || args.sessionId).digest('hex') + '.json')) : undefined;
+let mixedEffects = false;
+let mixedAttemptStarted = 0;
+let mixedFirstTokenMs: number | undefined;
 let admissionAbort: AbortController | undefined;
 let requestAbort: AbortController | undefined;
 const savedExecutor = readSessionExecutor(config.session.dataDir, args.sessionId);
-let activeExecutor: 'codex-app' | 'traex' = savedExecutor?.executor
+let activeExecutor: 'codex-app' | 'traex' | 'ark' = savedExecutor?.executor
   ?? (process.env.TRAEX_APP_SERVER_DEFAULT === '1' || process.env.TRAEX_ADAPTIVE_MODELS ? 'traex' : 'codex-app');
 let activeHookTrust = readGlobalConfig().hookTrust ?? savedExecutor?.hookTrust ?? readSessionModel(config.session.dataDir, args.sessionId)?.hookTrust ?? 'review';
-let client = new AppServerClient(activeExecutor === 'traex' ? args.traexBin : args.codexBin, args.cwd);
+let client = new AppServerClient(activeExecutor === 'traex' ? args.traexBin : args.codexBin, args.cwd, modelExecutorEnv(activeExecutor));
 let threadId = savedExecutor?.threadId ?? args.threadId;
 let pendingHandoff = savedExecutor?.handoff ?? '';
 let threadReady = false;
@@ -210,6 +219,14 @@ async function interruptActiveTurn(): Promise<void> {
 
 function handleServerRequest(msg: JsonObject): boolean { return handleAppServerRequest(msg, client); }
 function handleNotification(msg: JsonObject): void {
+  if (msg.params?.threadId === threadId && msg.method === 'item/started'
+    && /commandExecution|fileChange|ToolCall/.test(msg.params?.item?.type ?? '')) mixedEffects = true;
+  if (msg.params?.threadId === threadId && msg.method === 'item/completed'
+    && msg.params?.item?.type === 'agentMessage' && msg.params?.item?.text) mixedEffects = true;
+  if (msg.params?.threadId === threadId && /agentMessage\/delta/.test(msg.method)) {
+    mixedEffects = true;
+    mixedFirstTokenMs ??= Date.now() - mixedAttemptStarted;
+  }
   handleAppNotification(msg, { activeTurn, threadId, activeExecutor, client, flushSteers, emitMarker, emitCompletedAssistantMessage });
 }
 
@@ -319,52 +336,26 @@ function persistExecutor(): void {
     executor: activeExecutor, threadId, hookTrust: activeHookTrust, ...(pendingHandoff ? { handoff: pendingHandoff } : {}) });
 }
 
-/** 目标初始化成功后才替换旧进程；失败保留原线程，不把下一轮错误路由到旧执行器。 */
+/** 入口只提交已冻结的当前状态，切换事务由独立模块完成。 */
 async function ensureExecutor(requested?: SessionModelRequest): Promise<void> {
-  const target = requested?.executor ?? activeExecutor;
-  invalidateGlobalConfigCache(); // A persisted global decision applies even to the immediately following turn.
-  const hookTrust = readGlobalConfig().hookTrust ?? requested?.hookTrust ?? activeHookTrust;
-  if (target === activeExecutor && hookTrust === activeHookTrust) return;
-  const changingExecutor = target !== activeExecutor;
-  const bounded = async <T,>(promise: Promise<T>): Promise<T> => {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try { return await Promise.race([promise, new Promise<T>((_, reject) => {
-      timer = setTimeout(() => reject(new Error('executor_switch_timeout')), 15000);
-    })]); } finally { if (timer) clearTimeout(timer); }
-  };
-  const previous = changingExecutor ? await bounded(client.request('thread/read', { threadId, includeTurns: true })) : undefined;
-  const handoff = changingExecutor ? executorHandoff(previous?.thread) : pendingHandoff;
-  const candidate = new AppServerClient(target === 'traex' ? args.traexBin : args.codexBin, args.cwd);
-  try {
-    await bounded(candidate.initialize());
-    const response = await bounded(candidate.request('config/read', { cwd: args.cwd }));
-    const defaults = response?.config ?? {};
-    const started = await bounded(candidate.request(changingExecutor ? 'thread/start' : 'thread/resume', {
-      ...(!changingExecutor ? { threadId } : {}),
-      cwd: args.cwd, model: requested!.model, modelProvider: defaults.model_provider,
-      approvalPolicy: 'never', sandbox: 'danger-full-access',
-      config: { shell_environment_policy: { inherit: 'all' }, bypass_hook_trust: hookTrust === 'always' },
-      serviceTier: requested?.serviceTier ?? 'default',
-      developerInstructions: appDeveloperInstructions(args, sharedContext?.instructions()), ephemeral: false,
-    }));
-    if (!started.thread?.id || (started.model && started.model !== requested!.model)) throw new Error('executor_model_mismatch');
-    // 先持久保存，崩溃恢复时依然找到目标线程和待迁移的可见上下文。
-    writeSessionExecutor(config.session.dataDir, { sessionId: args.sessionId, executor: target,
-      threadId: String(started.thread.id), handoff, hookTrust });
-    const previousClient = client;
-    client = candidate; activeExecutor = target; activeHookTrust = hookTrust; threadId = String(started.thread.id);
-    threadReady = true; pendingHandoff = handoff;
-    defaultThreadModel = defaults.model; defaultThreadModelProvider = defaults.model_provider;
-    defaultThreadEffort = defaults.model_reasoning_effort; defaultServiceTier = defaults.service_tier;
-    client.onRequest(handleServerRequest); client.onNotification(handleNotification);
-    previousClient.close();
-    emitMarker('thread', { threadId });
-    writeLine(changingExecutor ? `[botmux] executor=${target}; 最近可见对话已准备迁移，底层线程已切换。` : `[botmux] hooks=${hookTrust}; 原线程已恢复。`);
-  } catch (error) { candidate.close(); throw error; }
+  await switchAppExecutor({ args, dataDir: config.session.dataDir, requested,
+    current: { client, executor: activeExecutor, hookTrust: activeHookTrust, threadId, handoff: pendingHandoff },
+    instructions: () => appDeveloperInstructions(args, sharedContext?.instructions()),
+    activate: state => {
+      client = state.client; activeExecutor = state.executor; activeHookTrust = state.hookTrust;
+      threadId = state.threadId; threadReady = true; pendingHandoff = state.handoff;
+      defaultThreadModel = state.defaults?.model; defaultThreadModelProvider = state.defaults?.model_provider;
+      defaultThreadEffort = state.defaults?.model_reasoning_effort; defaultServiceTier = state.defaults?.service_tier;
+      client.onRequest(handleServerRequest); client.onNotification(handleNotification);
+      emitMarker('thread', { threadId });
+      writeLine(`[botmux] executor=${activeExecutor}; 最近可见对话与 Hook 策略已保留。`);
+    } });
 }
 
 const turnContext: SingleTurnContext = {
   args, adaptiveRouter, admission, ensureExecutor, currentHookTrustIssue, ensureThread, persistExecutor,
+  mixedEnabled: !!mixedRouter, safeToDegrade: () => !mixedEffects,
+  mixedModelName: (executor, model) => mixedPolicy?.routes.find(row => row.executor === executor && row.model === model)?.displayName,
   emitMarker, sharedContextPrefix, flushSteers, queuePendingSteersAsNextTurns,
   get client() { return client; }, get activeExecutor() { return activeExecutor; },
   get activeHookTrust() { return activeHookTrust; }, get threadId() { return threadId; },
@@ -389,8 +380,20 @@ async function drainQueue(): Promise<void> {
       currentRequestContent = next;
       requestReconfigured = false;
       requestAbort = new AbortController();
+      mixedEffects = false;
       try {
-        await runWithTraexFallback({ dataDir: config.session.dataDir, sessionId: args.sessionId,
+        if (mixedRouter) await mixedRouter.run({ dataDir: config.session.dataDir, sessionId: args.sessionId,
+          signal: requestAbort.signal, catalog: () => fetchTraexCatalog(args.traexBin, args.cwd),
+          safe: () => !mixedEffects, metrics: () => ({ firstTokenMs: mixedFirstTokenMs }),
+          run: async () => {
+            mixedAttemptStarted = Date.now(); mixedFirstTokenMs = undefined;
+            await runTurn(next);
+            if (readSessionModelRuntime(config.session.dataDir, args.sessionId)?.phase === 'failed') {
+              throw new Error('本轮执行失败，保留已输出内容与已完成操作，不自动重放。');
+            }
+          },
+          notice: content => emitMarker('progress', { content, startedAtMs: Date.now(), updatedAtMs: Date.now() }) });
+        else await runWithTraexFallback({ dataDir: config.session.dataDir, sessionId: args.sessionId,
           cwd: args.cwd, codexBin: args.codexBin, executor: () => activeExecutor, run: () => runTurn(next),
           signal: requestAbort.signal,
           notice: content => emitMarker('progress', { content, startedAtMs: Date.now(), updatedAtMs: Date.now() }) });
@@ -428,7 +431,7 @@ const modelSwitch = new SessionModelTurnSwitch({ active: () => activeTurn, proce
   interrupt: turn => client.request('turn/interrupt', { threadId, turnId: turn.turnId }), notice: modelNotice });
 const modelInput = new SessionModelInput({ dataDir: config.session.dataDir, sessionId: args.sessionId,
   defaults: () => ({ executor: activeExecutor, model: defaultThreadModel ?? '', effort: defaultThreadEffort ?? 'xhigh', serviceTier: defaultServiceTier }),
-  models: executor => listCodexAppModels({ codexBin: executor === 'traex' ? args.traexBin : args.codexBin, cwd: args.cwd }),
+  models: executor => mixedPolicy ? Promise.resolve(mixedModels(mixedPolicy)) : executorModels(executor, args.cwd, args.codexBin),
   deliver: (content, changed) => changed ? modelSwitch.schedule(content) : handleUserMessage(content), notice: modelNotice });
 
 async function main(): Promise<void> {

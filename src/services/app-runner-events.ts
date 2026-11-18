@@ -12,7 +12,7 @@ import { isCodexAppRetryLimit429 } from './codex-app-auto-continue.js';
 export interface NotificationContext {
   activeTurn: ActiveTurn | null;
   threadId?: string;
-  activeExecutor: 'traex' | 'codex-app';
+  activeExecutor: 'traex' | 'codex-app' | 'ark';
   client: AppServerClient;
   flushSteers: (turn: ActiveTurn) => void;
   emitMarker: (kind: string, payload: unknown) => void;
@@ -121,6 +121,13 @@ export function handleAppNotification(msg: JsonObject, context: NotificationCont
 
   if (msg.method === 'item/agentMessage/delta') {
     const delta = String(params.delta ?? '');
+    if (delta && !activeTurn.firstTokenAtMs) {
+      activeTurn.firstTokenAtMs = Date.now();
+      if (process.env.BOTMUX_MODEL_METRICS === '1') emitMarker('model_metrics', {
+        threadId, turnId: activeTurn.turnId, firstTokenAtMs: activeTurn.firstTokenAtMs,
+        sinceTurnStartMs: activeTurn.firstTokenAtMs - activeTurn.startedAtMs,
+      });
+    }
     const itemId = String(params.itemId ?? '');
     const itemEpoch = activeTurn.itemEpoch.get(itemId) ?? activeTurn.guidanceEpoch;
     if (!activeTurn.itemEpoch.has(itemId)) activeTurn.itemEpoch.set(itemId, itemEpoch);
@@ -169,6 +176,7 @@ export function handleAppNotification(msg: JsonObject, context: NotificationCont
       activeTurn.adaptiveNextModel = undefined;
     }
     const errorMessage = String(turn?.error?.message ?? '').trim();
+    activeTurn.providerError = errorMessage;
     activeTurn.turnFailed = !!errorMessage || turn?.status === 'failed' || turn?.status === 'interrupted';
     if (activeTurn.criticalHookFailure) {
       activeTurn.finalText = activeTurn.criticalHookFailure;

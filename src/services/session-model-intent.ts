@@ -4,6 +4,7 @@ export interface SessionModelIntent {
   effort?: string;
   serviceTier?: 'default' | 'priority';
   routingMode?: 'fixed' | 'adaptive';
+  executor?: 'codex-app' | 'traex' | 'ark';
 }
 
 /** 模型别名只做拼写归一，最终是否可用仍以当前执行器目录为准。 */
@@ -36,11 +37,13 @@ export function parseSessionModelIntent(content: string): SessionModelIntent | u
     const clause = body.split(/[，,。；;]/u)[0];
     if (/[?？]|哪个|区别|是否|怎么样|会不会|能不能|对比|比较|吗/u.test(clause)) continue;
     const model = /\bgpt\s*[-_]?\s*\d+(?:\.\d+)?(?:[\s_-]*(?:sol|terra|astra|luna))?(?:[-_][a-z][a-z0-9_.-]*)*\b/iu.exec(body)?.[0];
+    const provider = /\b(traex|codex(?:-app)?|ark)\b|方舟/iu.exec(body)?.[0]?.toLowerCase();
+    const executor = provider === '方舟' || provider === 'ark' ? 'ark' : provider === 'traex' ? 'traex' : provider ? 'codex-app' : undefined;
     const effort = /\b(xhigh|ultra|max|high|medium|low)\b/iu.exec(body)?.[1]?.toLowerCase();
     const normalSpeed = /(?:不是|不要|不用|关闭|取消|禁用|非)\s*(?:fast|priority|快速|加速)/iu.test(value);
     const fast = !normalSpeed && /(?:\bfast\b|\bpriority\b|开启快速|开启加速)/iu.test(body);
     if (!model && !effort && !normalSpeed && !fast) continue;
-    return { ...(model ? { model, routingMode: 'fixed' } : {}), ...(effort ? { effort } : {}),
+    return { ...(model ? { model, routingMode: 'fixed' } : {}), ...(executor ? { executor } : {}), ...(effort ? { effort } : {}),
       ...(normalSpeed ? { serviceTier: 'default' } : fast ? { serviceTier: 'priority' } : {}) };
   }
   return undefined;

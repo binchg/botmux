@@ -8,12 +8,14 @@ import { TraexAdaptiveRouter, TraexQueueReader } from './traex-adaptive-model.js
 import type { TraexAdmission } from './traex-admission.js';
 import { TraexQueueWait } from './traex-queue-wait.js';
 import { agentTeamOutputSchema } from './agent-team-result-schema.js';
+import { MixedProviderUnavailable } from './mixed-model-router.js';
+import { waitForMixedTurn } from './mixed-model-admission.js';
 
 /** 单轮执行所需状态；可变字段通过入口的访问器读取，避免切换后使用旧进程。 */
 export interface SingleTurnContext {
   args: Args;
   client: AppServerClient;
-  activeExecutor: 'traex' | 'codex-app';
+  activeExecutor: 'traex' | 'codex-app' | 'ark';
   activeHookTrust: 'always' | 'review';
   threadId?: string;
   defaultThreadModel?: string;
@@ -25,6 +27,9 @@ export interface SingleTurnContext {
   pendingHandoff: string;
   adaptiveRouter?: TraexAdaptiveRouter;
   admission?: TraexAdmission;
+  mixedEnabled?: boolean;
+  safeToDegrade?: () => boolean;
+  mixedModelName?: (executor: string, model?: string) => string | undefined;
   ensureExecutor: (requested?: SessionModelRequest) => Promise<void>;
   currentHookTrustIssue: () => Promise<string | undefined>;
   ensureThread: (model?: string) => Promise<string>;
@@ -52,7 +57,8 @@ export async function runSingleTurn(context: SingleTurnContext, content: string,
   if (hookTrustIssue) throw new Error(hookTrustIssue);
   const { client, activeExecutor, activeHookTrust, defaultThreadModel, defaultThreadEffort, defaultServiceTier } = context;
   const traex = activeExecutor === 'traex' ? adaptiveRouter : undefined;
-  const adaptive = requested?.routingMode === 'fixed' ? undefined : traex;
+  const mixed = context.mixedEnabled && requested?.routingMode !== 'fixed';
+  const adaptive = requested?.routingMode === 'fixed' || mixed ? undefined : traex;
   let selectedModel = requested?.model ?? defaultThreadModel;
   if (adaptive && admission) {
     const pendingReceipt = (state: 'selecting' | 'waiting') => writeSessionModelRuntime(config.session.dataDir, {
@@ -78,6 +84,7 @@ export async function runSingleTurn(context: SingleTurnContext, content: string,
   const selectedRuntime: SessionModelRuntime = {
     sessionId: args.sessionId, pid: process.pid, threadId: tid, phase: 'running', revision: requested?.revision,
     protocol: 4, updatedAt: new Date().toISOString(),
+    ...(context.mixedEnabled ? { mixed: { displayName: context.mixedModelName?.(activeExecutor, selectedModel) } } : {}),
     selection: selection.model && selection.effort ? { ...selection, executor: activeExecutor, hookTrust: activeHookTrust,
       ...(requested?.routingMode ? { routingMode: requested.routingMode } : {}) } as ModelSelection : undefined,
     ...(activeExecutor === 'traex' ? { routing: { executor: 'traex' as const, state: 'requested' as const,
@@ -95,6 +102,7 @@ export async function runSingleTurn(context: SingleTurnContext, content: string,
   context.activeTurn = turn;
   let queueReader: TraexQueueReader | undefined;
   let queueTimer: ReturnType<typeof setInterval> | undefined;
+  let mixedRejection: MixedProviderUnavailable | undefined;
   if (traex && selection.model && client.pid) {
     let fixedQueueNotified = false;
     let waitingNotified = false;
@@ -111,6 +119,18 @@ export async function runSingleTurn(context: SingleTurnContext, content: string,
       if (!evidence) return;
       turn.adaptiveChecking = true;
       modelReceipt('running', turn.turnId, 'queued', evidence.position);
+      if (mixed && context.safeToDegrade?.()) {
+        if (degrade) {
+          mixedRejection = new MixedProviderUnavailable('TraeX 服务端排队超过准入边界', 'provider_queue', evidence.position);
+          try { await client.request('turn/interrupt', { threadId: tid, turnId: turn.turnId }); }
+          catch { mixedRejection = undefined; }
+        } else if (!waitingNotified) {
+          emitMarker('progress', { content: `TraeX 实际排队第 ${evidence.position} 位，最多等待 10 秒后按混合策略降级。` });
+          waitingNotified = true;
+        }
+        turn.adaptiveChecking = false;
+        return;
+      }
       if (!adaptive) {
         if (!fixedQueueNotified) emitMarker('progress', { content: `指定的 ${selection.model} 已应用，但服务端仍在排队。发送“恢复自动选模”可允许自动降级。`,
           turnId: turn.turnId, startedAtMs: turn.startedAtMs, updatedAtMs: Date.now() });
@@ -182,9 +202,20 @@ export async function runSingleTurn(context: SingleTurnContext, content: string,
       }
     }
     flushSteers(turn);
-    await turn.done;
+    if (mixed) await waitForMixedTurn(turn, client, tid, context.safeToDegrade ?? (() => false));
+    else await turn.done;
     await turn.steerChain;
     queuePendingSteersAsNextTurns(turn);
+    if (mixedRejection && !turn.userInterrupted && !turn.modelSwitchPending && context.safeToDegrade?.()) throw mixedRejection;
+    if (mixed && turn.providerError && !turn.userInterrupted && !turn.criticalHookFailure
+      && !turn.modelSwitchPending && context.safeToDegrade?.()
+      && /\b(?:401|403|404|429|502|503|504)\b|quota.{0,30}(?:exhaust|exceed)|overload|rate.limit|too many requests/i.test(turn.providerError)) {
+      throw new MixedProviderUnavailable('上游明确拒绝准入或临时不可用');
+    }
+    if (mixed && turn.providerError) {
+      turn.rateLimitError = undefined;
+      turn.finalText ||= `上游执行失败：${turn.providerError}`;
+    }
 
     if (turn.quotaExhaustedError && adaptive && selection.model && !turn.userInterrupted && !turn.criticalHookFailure && !turn.modelSwitchPending) {
       await adaptive.quotaExhausted(selection.model);
