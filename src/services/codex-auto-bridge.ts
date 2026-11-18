@@ -1,6 +1,6 @@
 import { readCodexTopicSource, isCodexSubagent, isCodexFork } from './codex-topic-source.js';
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, openSync, readSync, closeSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { join, dirname, basename } from 'node:path';
 import { createHash } from 'node:crypto';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { ExternalCodexBridge, type ExternalCodexBinding, type ExternalCodexOutputKind } from './external-codex-bridge.js';
@@ -50,7 +50,17 @@ export class CodexAutoBridge {
   }) {
     mkdirSync(dirname(stateFile), { recursive: true, mode: 0o700 });
     this.registry = existsSync(stateFile) ? JSON.parse(readFileSync(stateFile, 'utf8')) : { initialized: false, startedAt: Date.now(), baselines: {}, bindings: {} };
+    let relocated = false;
     for (const [key, b] of Object.entries(this.registry.bindings)) {
+      if (!existsSync(b.rolloutPath)) {
+        const archived = join(b.codexHome, 'archived_sessions', basename(b.rolloutPath));
+        if (existsSync(archived)) {
+          this.registry.baselines[archived] ??= this.registry.baselines[b.rolloutPath]
+            ?? { offset: this.completeOffset(archived, statSync(archived).size), protected: true };
+          b.rolloutPath = archived;
+          relocated = true;
+        }
+      }
       if (existsSync(b.rolloutPath)) {
         const meta = readCodexTopicSource(b.rolloutPath).meta;
         if (typeof meta?.forked_from_id === 'string') b.sourceThreadId = meta.forked_from_id;
@@ -60,6 +70,7 @@ export class CodexAutoBridge {
       }
       else this.deps.error(new Error(`Codex transcript unavailable for ${b.threadId}; other sessions remain active`));
     }
+    if (relocated) this.save();
   }
   private rememberOrigin(path: string): void {
     const meta = readCodexTopicSource(path).meta;

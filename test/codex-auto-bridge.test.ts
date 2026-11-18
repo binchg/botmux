@@ -1,5 +1,5 @@
 import { it, expect, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, readFileSync, rmSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
@@ -19,6 +19,25 @@ function fixture() {
   const stateFile = join(dir, 'state', 'registry.json');
   return { dir, homes, cfg, stateFile };
 }
+
+it('keeps an existing topic bound when Codex archives its transcript', async () => {
+  const f = fixture(); const original = file(f.homes[0], 'archived');
+  const replies: string[] = [];
+  const deps = { topic: async () => 'root', reply: async (_: unknown, text: string) => { replies.push(text); }, received: async () => {},
+    turn: async () => {}, excluded: () => new Set<string>(), error: (e: unknown) => { throw e; } };
+  try {
+    const bridge = new CodexAutoBridge(f.cfg, f.stateFile, deps);
+    await bridge.scan(); appendFileSync(original, done('new', 'answer')); await bridge.scan();
+    await vi.waitFor(() => expect(replies).toContain('answer'));
+    const archive = join(f.homes[0], 'archived_sessions', 'rollout-archived.jsonl');
+    mkdirSync(join(f.homes[0], 'archived_sessions')); renameSync(original, archive);
+    const restored = new CodexAutoBridge(f.cfg, f.stateFile, deps);
+    expect(restored.owns('root', 'app')).toBe(true);
+    const saved = JSON.parse(readFileSync(f.stateFile, 'utf8'));
+    expect(Object.values(saved.bindings)[0]).toMatchObject({ rolloutPath: archive });
+    restored.stop(); bridge.stop();
+  } finally { rmSync(f.dir, { recursive: true, force: true }); }
+});
 
 it('discovers every active thread across both libraries, skips history and excludes native botmux threads', async () => {
   const f = fixture(); const topics: string[] = [], replies: string[] = [], errors: unknown[] = [];
