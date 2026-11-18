@@ -99,7 +99,7 @@ it('routes a group member follow-up to the exact mapped original thread without 
     checkpoint();
   });
   const fork = vi.fn(async () => { throw new Error('unexpected fork'); });
-  const bridge = new CodexAutoBridge({ ...f.cfg, writableThreadIds: ['fixed-test-fork'], allowGroupMembers: true }, f.stateFile, {
+  const bridge = new CodexAutoBridge({ ...f.cfg, allowGroupMembers: true }, f.stateFile, {
     topic: async () => 'root', reply: async () => {}, turn, fork,
     excluded: () => new Set(), error: e => { throw e; },
   });
@@ -224,9 +224,8 @@ it('deduplicates the same thread copied across Codex libraries without starting 
 });
 
 
-it('preserves an explicitly bound existing test fork and deduplicates repeated follow-up IDs', async () => {
+it('preserves an explicitly bound independent session and deduplicates repeated follow-up IDs', async () => {
   const f = fixture(); let turns = 0; const forkPath = file(f.homes[0], 'explicit-test');
-  const lines = readFileSync(forkPath, 'utf8').split('\n'); const meta = JSON.parse(lines[0]); meta.payload.forked_from_id = 'original'; meta.payload.source = 'vscode'; lines[0] = JSON.stringify(meta); writeFileSync(forkPath, lines.join('\n'));
   const key = createHash('sha256').update(`${f.homes[0]}:explicit-test`).digest('hex');
   mkdirSync(join(f.dir, 'state'), { recursive: true });
   writeFileSync(f.stateFile, JSON.stringify({ initialized: true, startedAt: Date.now(), baselines: {}, bindings: { [key]: { threadId: 'explicit-test', rolloutPath: forkPath, cwd: f.homes[0], codexHome: f.homes[0], larkAppId: 'app', chatId: 'chat', ownerOpenId: 'owner', rootMessageId: 'explicit-root', readOnly: false } } }));
