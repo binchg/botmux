@@ -4,9 +4,9 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, expect, it, vi } from 'vitest';
 import { modelExecutorEnv } from '../src/services/model-executor.js';
-import { mixedModels, rankMixedRoutes, readMixedPolicy, type MixedPolicy } from '../src/services/mixed-model-policy.js';
+import { mixedModels, rankMixedRoutes, readMixedPolicy, reserveMixedFallbacks, type MixedPolicy } from '../src/services/mixed-model-policy.js';
 import { MixedModelRouter, MixedProviderUnavailable } from '../src/services/mixed-model-router.js';
-import { readSessionModel, writeSessionModel } from '../src/services/session-model-store.js';
+import { readSessionModel, writeSessionModel, writeSessionExecutor, writeSessionModelRuntime, rememberSuccessfulRoute } from '../src/services/session-model-store.js';
 import { validateModelSelection } from '../src/services/session-model-selection.js';
 import type { TraexCatalogModel } from '../src/services/traex-model-catalog.js';
 import { parseSessionModelIntent } from '../src/services/session-model-intent.js';
@@ -66,6 +66,32 @@ it('尚未实测的目录候选可以手选，不能自动改变现有排序', (
   const configured = { ...policy, routes: policy.routes.map(route => ({ ...route, automatic: route.executor !== 'traex' })) };
   expect(rankMixedRoutes(configured, catalog, {}).map(route => route.executor)).toEqual(['ark', 'codex-app']);
   expect(mixedModels(configured)).toHaveLength(3);
+});
+
+it('新话题先探测 TraeX，原生 Codex 后降到方舟并保留最后一档机会', () => {
+  const configured: MixedPolicy = { ...policy, executorOrder: ['traex', 'codex-app', 'gateway', 'ark'] };
+  const ranked = rankMixedRoutes(configured, [{ ...catalog[0], loadPercent: 300, queueSize: 12 }], {});
+  expect(ranked.map(route => route.executor)).toEqual(['traex', 'codex-app', 'ark']);
+  expect(reserveMixedFallbacks(ranked, 2).map(route => route.executor)).toEqual(['traex', 'ark']);
+  expect(reserveMixedFallbacks([ranked[0], { ...ranked[0], model: 'second' }, ...ranked.slice(1)], 3))
+    .toEqual(ranked);
+});
+
+it('已有线程追问优先复用成功的通道，恢复后的 TraeX 不触发迁移', async () => {
+  const { options } = fixture();
+  const router = new MixedModelRouter({ ...policy, keepSessionRoute: true,
+    executorOrder: ['traex', 'codex-app', 'gateway', 'ark'] }, join(options.dataDir, 'sticky.json'));
+  const { dataDir, sessionId } = options;
+  const selection = { executor: 'codex-app' as const, model: 'gpt-6.1-sol', effort: 'xhigh', routingMode: 'adaptive' as const };
+  writeSessionExecutor(dataDir, { sessionId, executor: 'codex-app', threadId: 'same' });
+  writeSessionModelRuntime(dataDir, { sessionId, pid: process.pid, phase: 'completed', threadId: 'same', selection });
+  rememberSuccessfulRoute(dataDir, sessionId);
+  writeSessionModelRuntime(dataDir, { sessionId, pid: process.pid, phase: 'ready', threadId: 'same', selection });
+  options.catalog = vi.fn(options.catalog);
+  await router.run(options);
+  expect(options.catalog).not.toHaveBeenCalled();
+  expect(options.run).toHaveBeenCalledTimes(1);
+  expect(readSessionModel(dataDir, sessionId)).toMatchObject(selection);
 });
 
 it('受管型号不允许进入直连目录，且历史固定会话不回退到其它提供方', async () => {

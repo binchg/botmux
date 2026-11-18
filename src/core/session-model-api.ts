@@ -10,7 +10,7 @@ import { rankMixedRoutes, mixedRouteId } from '../services/mixed-model-policy.js
 import { MixedModelRouter } from '../services/mixed-model-router.js';
 import { fetchTraexCatalog } from '../services/traex-model-catalog.js';
 import { normalizeSessionExecutor, validateModelSelection } from '../services/session-model-selection.js';
-import { readSessionModel, readSessionModelRuntime, sessionModelStatus, writeSessionModel } from '../services/session-model-store.js';
+import { readSessionModel, readSessionModelRuntime, readSuccessfulRoute, sessionModelStatus, writeSessionModel } from '../services/session-model-store.js';
 import type { Session } from '../types.js';
 
 export function assertSessionModelScope(session: Session | undefined, appId: string, adopted = false): asserts session is Session {
@@ -60,8 +60,12 @@ export function registerSessionModelApi(appId: string): void {
       try { catalog = await fetchTraexCatalog(); } catch { catalogAvailable = false; }
       const health = new MixedModelRouter(policy, path).read();
       const ranked = rankMixedRoutes(policy, catalog, health);
+      const recent = policy.keepSessionRoute ? readSuccessfulRoute(config.session.dataDir, params.sessionId) : undefined;
       jsonRes(res, 200, { ok: true, strategy: 'original_capability_order_actual_admission_bounded_fallback',
         maxAttempts: policy.maxAttempts, cooldownMs: policy.cooldownMs, queueAdmissionVerified: false, catalogAvailable,
+        executorOrder: policy.executorOrder ?? null,
+        continuation: recent && policy.routes.some(route => mixedRouteId(route) === mixedRouteId(recent))
+          ? { route: mixedRouteId(recent), threadId: recent.threadId } : null,
         selected: ranked[0] ? mixedRouteId(ranked[0]) : null,
         routes: policy.routes.map(route => ({ ...route, id: mixedRouteId(route),
           rank: ranked.indexOf(route) < 0 ? null : ranked.indexOf(route) + 1, health: health[mixedRouteId(route)] ?? null })) });

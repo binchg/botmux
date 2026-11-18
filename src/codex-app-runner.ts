@@ -26,7 +26,7 @@ import { beginSessionModelReplyEpoch } from './services/session-model-reply-budg
 import { Buffer } from 'node:buffer';
 import { config } from './config.js';
 import { invalidateGlobalConfigCache, readGlobalConfig } from './global-config.js';
-import { readSessionModel, readSessionModelRuntime, readSessionExecutor, writeSessionExecutor, writeSessionModelRuntime, type SessionModelRequest } from './services/session-model-store.js';
+import { readSessionModel, readSessionModelRuntime, readSessionExecutor, writeSessionExecutor, writeSessionModelRuntime, rememberSuccessfulRoute, type SessionModelRequest } from './services/session-model-store.js';
 import { switchAppExecutor } from './services/app-runner-executor-switch.js';
 import { codexAppHookTrustIssue } from './services/codex-app-hook-health.js';
 import { isAgentTeamMachineOutput } from './services/agent-team-output-filter.js';
@@ -36,8 +36,9 @@ const OSC_PREFIX = '\x1b]777;botmux:';
 const OSC_END = '\x07';
 
 function emitMarker(kind: string, payload: unknown): void {
-  if (activeExecutor === 'traex' && ['progress', 'final'].includes(kind) && !activeTurn?.structuredOutput) {
-    const message = payload as JsonObject;
+  const message = payload as JsonObject;
+  if (!message?.routingNotice && (activeExecutor === 'traex' || activeTurn?.modelRuntime?.mixed)
+    && ['progress', 'final'].includes(kind) && !activeTurn?.structuredOutput) {
     if (typeof message.content === 'string') payload = { ...message,
       content: withSessionModelDisplay(message.content, activeTurn?.modelRuntime
         ? sessionModelDisplay(activeTurn.modelRuntime) : readSessionModelDisplay(config.session.dataDir, args.sessionId)) };
@@ -390,7 +391,7 @@ async function drainQueue(): Promise<void> {
             mixedAttemptStarted = Date.now(); mixedFirstTokenMs = undefined;
             await runTurn(next);
           },
-          notice: content => emitMarker('progress', { content, startedAtMs: Date.now(), updatedAtMs: Date.now() }) });
+          notice: content => emitMarker('progress', { content, routingNotice: true, startedAtMs: Date.now(), updatedAtMs: Date.now() }) });
         else await runWithTraexFallback({ dataDir: config.session.dataDir, sessionId: args.sessionId,
           cwd: args.cwd, codexBin: args.codexBin, executor: () => activeExecutor, run: () => runTurn(next),
           signal: requestAbort.signal,
@@ -433,11 +434,12 @@ const modelInput = new SessionModelInput({ dataDir: config.session.dataDir, sess
   deliver: (content, changed) => changed ? modelSwitch.schedule(content) : handleUserMessage(content), notice: modelNotice });
 
 async function main(): Promise<void> {
+  if (mixedPolicy?.keepSessionRoute) rememberSuccessfulRoute(config.session.dataDir, args.sessionId);
   client.onRequest(handleServerRequest);
   client.onNotification(handleNotification);
   await client.initialize();
   await loadDefaultThreadModel();
-  if (admission && activeExecutor === 'traex') {
+  if (admission && !mixedPolicy && activeExecutor === 'traex') {
     try { await admission.refresh(); defaultThreadModel = admission.choose() ?? defaultThreadModel; }
     catch { writeLine('[traex-adaptive] 模型目录暂不可用，将在收到请求后自动刷新。'); }
   }

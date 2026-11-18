@@ -12,6 +12,7 @@ export class AppServerClient {
   private requestHandlers: Array<(msg: JsonObject) => boolean> = [];
   private lastStderr = '';
   private fatalError?: Error;
+  private closeHandlers = new Set<() => void>();
 
   constructor(private readonly codexBin: string, private readonly cwd: string, env: NodeJS.ProcessEnv = process.env) {
     this.child = spawn(codexBin, ['app-server', '--listen', 'stdio://'], {
@@ -40,6 +41,14 @@ export class AppServerClient {
   }
 
   get pid(): number | undefined { return this.child.pid; }
+  get connected(): boolean { return !this.fatalError; }
+
+  /** 当前轮可以立即获知连接结束，退出监听不会驻留到后续轮次。 */
+  onClose(handler: () => void): () => void {
+    if (this.fatalError) { handler(); return () => {}; }
+    this.closeHandlers.add(handler);
+    return () => this.closeHandlers.delete(handler);
+  }
 
   onNotification(handler: (msg: JsonObject) => void): void {
     this.notificationHandlers.push(handler);
@@ -90,10 +99,15 @@ export class AppServerClient {
   }
 
   private failAll(err: Error): void {
+    const notify = !this.fatalError;
     this.fatalError = this.fatalError ?? err;
     const fatal = this.fatalError;
     for (const pending of this.pending.values()) pending.reject(fatal);
     this.pending.clear();
+    if (notify) {
+      for (const handler of this.closeHandlers) handler();
+      this.closeHandlers.clear();
+    }
   }
 
   private onStdout(data: string): void {

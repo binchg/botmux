@@ -7,6 +7,9 @@ import { parseModelCommand } from '../src/cli/session-model-command.js';
 import { validateModelSelection } from '../src/services/session-model-selection.js';
 import { executorHandoff } from '../src/services/session-executor-handoff.js';
 import { sessionModelStatus, writeSessionModel, readSessionExecutor } from '../src/services/session-model-store.js';
+import { AppServerClient } from '../src/services/app-runner-client.js';
+import { switchAppExecutor } from '../src/services/app-runner-executor-switch.js';
+import { readGlobalConfig } from '../src/global-config.js';
 
 const dirs: string[] = [];
 afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
@@ -36,6 +39,39 @@ it('bounds handoff to visible messages without copying reasoning, tools, or recu
   ] }] });
   expect(text).toContain('remember apple'); expect(text).toContain('remembered');
   for (const secret of ['hidden-secret','tool-secret','older-secret']) expect(text).not.toContain(secret);
+});
+
+it('旧 app-server 退出后恢复同一个底层线程，且不重新提交已发出的请求', async () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'botmux-reconnect-')); dirs.push(cwd);
+  const bin = join(cwd, 'app-server'), calls = join(cwd, 'calls');
+  writeFileSync(bin, `#!/usr/bin/env node
+const fs=require('node:fs'),rl=require('node:readline'),path=require('node:path');
+rl.createInterface({input:process.stdin}).on('line',line=>{
+const m=JSON.parse(line); if(!m.id)return;
+fs.appendFileSync(path.join(process.cwd(),'calls'),JSON.stringify(m)+'\\n');
+if(m.method==='turn/start'){process.exit(7);}
+const result=m.method==='thread/resume'?{thread:{id:m.params.threadId},model:m.params.model}
+:m.method==='config/read'?{config:{model:'test'}}:{};
+process.stdout.write(JSON.stringify({id:m.id,result})+'\\n');
+});
+`, { mode: 0o700 });
+  const client = new AppServerClient(bin, cwd);
+  const closed = new Promise<void>(resolve => { client.onClose(resolve); });
+  const hookTrust = readGlobalConfig().hookTrust ?? 'review';
+  await client.initialize();
+  await expect(client.request('turn/start', { threadId: 'original-thread' })).rejects.toThrow();
+  await closed;
+  expect(client.connected).toBe(false);
+  let resumed: AppServerClient | undefined;
+  try {
+    await switchAppExecutor({ args: { sessionId: 'session', cwd, codexBin: bin, traexBin: bin },
+      dataDir: cwd, current: { client, executor: 'codex-app', hookTrust, threadId: 'original-thread', handoff: '' },
+      instructions: () => '', activate: state => { resumed = state.client; } });
+    expect(readSessionExecutor(cwd, 'session')?.threadId).toBe('original-thread');
+    const requests = readFileSync(calls, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    expect(requests.filter(message => message.method === 'turn/start')).toHaveLength(1);
+    expect(requests.filter(message => message.method === 'thread/resume').at(-1)?.params.threadId).toBe('original-thread');
+  } finally { resumed?.close(); }
 });
 
 it('switches only after the current turn, preserves visible context and recovers the selected executor after restart', async () => {

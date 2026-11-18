@@ -78,3 +78,21 @@ export interface SessionExecutorState {
 }
 export const readSessionExecutor = (dir: string, id: string) => read<SessionExecutorState>(dir, id, 'executor');
 export const writeSessionExecutor = (dir: string, value: SessionExecutorState) => write(dir, value.sessionId, 'executor', value);
+
+interface SuccessfulRoute { sessionId: string; threadId: string; executor: NonNullable<ModelSelection['executor']>; model: string; effort: string }
+/** 绑定最后一次成功的路径和线程；运行器重载后仍可恢复原选择。 */
+export function rememberSuccessfulRoute(dir: string, sessionId: string): void {
+  const runtime = readSessionModelRuntime(dir, sessionId), selection = runtime?.selection;
+  if (runtime?.phase !== 'completed' || !runtime.threadId || !selection?.executor) return;
+  const next: SuccessfulRoute = { sessionId, threadId: runtime.threadId, executor: selection.executor, model: selection.model, effort: selection.effort };
+  const prior = read<SuccessfulRoute>(dir, sessionId, 'successful-route');
+  if (prior?.threadId === next.threadId && prior.executor === next.executor && prior.model === next.model && prior.effort === next.effort) return;
+  write(dir, sessionId, 'successful-route', next);
+}
+
+/** 当前绑定变更以后，旧线程的成功回执不参与路由。 */
+export function readSuccessfulRoute(dir: string, sessionId: string): SuccessfulRoute | undefined {
+  const prior = read<SuccessfulRoute>(dir, sessionId, 'successful-route');
+  const binding = readSessionExecutor(dir, sessionId);
+  return prior && prior.executor === binding?.executor && prior.threadId === binding.threadId ? prior : undefined;
+}

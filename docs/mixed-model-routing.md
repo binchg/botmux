@@ -23,6 +23,8 @@
 
 工具网关使用独立的 `gateway` 执行器、`GATEWAY_CODEX_HOME` 和 `GATEWAY_MODELS_FILE`。将需经网关计量的型号放入 `gatewayOnlyModels`，自动候选及旧的固定设置都会遵守该限制。网关授权未就绪时，这些型号保持不可用。其它能力可通过 `modelOrder` 完整指定排序，未配置时沿用 TraeX 原顺序。
 
+`executorOrder` 可指定新话题的执行器顺序，包含四个执行器各一次。仍用原有评分为各通道选模型，并给后续通道保留尝试机会。`keepSessionRoute: true` 使追问优先复用此前成功的原线程及模型，跨运行器重载保留该选择。连接终止后停止当前轮，下一条消息尝试恢复同一底层线程，避免重复执行。
+
 方舟接入点若提供 Chat Completions 或 Google Interactions，可在本机回环使用 `node scripts/ark-direct-bridge.mjs <绝对配置路径>`。桥接只服务配置中的接入点，由独立本地令牌鉴权。从私有文件读取上游 Key，Codex 只持有本地令牌。Google Interactions 使用无状态文本及客户端工具接续，回传带签名步骤，当前按整段交付，请以总耗时评估。
 
 方舟清单示例：

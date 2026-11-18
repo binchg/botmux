@@ -80,7 +80,8 @@ try {
     started = Date.now(); firstVisibleMs = undefined;
     runner.stdin.write('::botmux-codex-app:' + Buffer.from(JSON.stringify({ type: 'message', content: prompts[index] })).toString('base64') + '\n');
     await until(() => finals.length > index, 150000, true);
-    const elapsedMs = Date.now() - started, answer = String(finals[index].content ?? '');
+    const elapsedMs = Date.now() - started, answer = String(finals[index].content ?? '')
+      .replace(/^> \*\*(?:模型：)?(?:TraeX|Codex|方舟|网关) · [^\n]+\*\*\n\n/u, '');
     const state = sessionModelStatus(dir, sessionId);
     let passed = state.runtime?.phase === 'completed';
     if (passed && index === 0) passed = JSON.stringify(jsonAnswer(answer)) === JSON.stringify(Array.from({ length: 60 }, (_, i) => i + 1));

@@ -20,7 +20,7 @@ export async function switchAppExecutor(options: {
   const target = requested?.executor ?? current.executor;
   invalidateGlobalConfigCache();
   const hookTrust = readGlobalConfig().hookTrust ?? requested?.hookTrust ?? current.hookTrust;
-  if (target === current.executor && hookTrust === current.hookTrust) return;
+  if (target === current.executor && hookTrust === current.hookTrust && current.client.connected) return;
   const changing = target !== current.executor;
   const bounded = async <T,>(promise: Promise<T>, stage: string, timeout = 15000): Promise<T> => {
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -43,12 +43,14 @@ export async function switchAppExecutor(options: {
     const response = await bounded(candidate.request('config/read', { cwd: args.cwd }), 'config_read');
     const defaults = response?.config ?? {};
     const model = requested?.model ?? defaults.model;
-    const started = await bounded(candidate.request(changing ? 'thread/start' : 'thread/resume', {
-      ...(!changing ? { threadId: current.threadId } : {}), cwd: args.cwd, model, modelProvider: defaults.model_provider,
+    const resume = !changing && !!current.threadId;
+    const started = await bounded(candidate.request(resume ? 'thread/resume' : 'thread/start', {
+      ...(resume ? { threadId: current.threadId } : {}), cwd: args.cwd, model, modelProvider: defaults.model_provider,
       approvalPolicy: 'never', sandbox: 'danger-full-access',
       config: { shell_environment_policy: { inherit: 'all' }, bypass_hook_trust: hookTrust === 'always' },
       serviceTier: requested?.serviceTier ?? 'default', developerInstructions: options.instructions(), ephemeral: false,
-    }), changing ? 'thread_start' : 'thread_resume');
+    }), resume ? 'thread_resume' : 'thread_start');
+    if (resume && started.thread?.id !== current.threadId) throw new Error('executor_thread_mismatch');
     if (!started.thread?.id || (started.model && model && started.model !== model)) throw new Error('executor_model_mismatch');
     const threadId = String(started.thread.id);
     writeSessionExecutor(options.dataDir, { sessionId: args.sessionId, executor: target, threadId, handoff, hookTrust });

@@ -3,9 +3,9 @@ import { mkdirSync, readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { withFileLock } from '../utils/file-lock.js';
-import { readSessionModel, writeSessionModel } from './session-model-store.js';
+import { readSessionModel, writeSessionModel, readSuccessfulRoute, rememberSuccessfulRoute } from './session-model-store.js';
 import { TraexAdmissionStopped } from './traex-admission.js';
-import { mixedRouteId, rankMixedRoutes, type MixedPolicy, type MixedRoute } from './mixed-model-policy.js';
+import { mixedRouteId, rankMixedRoutes, reserveMixedFallbacks, type MixedPolicy, type MixedRoute } from './mixed-model-policy.js';
 import type { TraexCatalogModel } from './traex-model-catalog.js';
 
 export interface MixedHealth {
@@ -57,16 +57,27 @@ export class MixedModelRouter {
         signal.throwIfAborted();
         writeSessionModel(dataDir, sessionId, { ...initial, executor: 'gateway', model: gateway.model, serviceTier: 'default' });
       }
-      return options.run();
+      await options.run();
+      if (this.policy.keepSessionRoute) rememberSuccessfulRoute(dataDir, sessionId);
+      return;
     }
-    let catalog: TraexCatalogModel[] = [];
-    try { catalog = await options.catalog(); } catch { /* 目录不可用不能阻断其他已配置通道。 */ }
     signal.throwIfAborted();
     let expectedRevision = initial?.revision;
     const attempted = new Set<string>();
     let lastError: unknown = new MixedProviderUnavailable('混合模型均处于冷却，已停止本轮请求。');
-    const candidates = rankMixedRoutes(this.policy, catalog, this.read());
-    for (const route of candidates) {
+    const recent = this.policy.keepSessionRoute ? readSuccessfulRoute(dataDir, sessionId) : undefined;
+    const candidates = async function* (router: MixedModelRouter) {
+      const same = recent && router.policy.routes.find(route => route.executor === recent.executor
+        && route.model === recent.model && route.effort === recent.effort);
+      // 同一线程已成功时直接追问，避免每一轮重新请求目录或因他人冷却切走。
+      if (same) yield same;
+      let catalog: TraexCatalogModel[] = [];
+      try { catalog = await options.catalog(); } catch { /* 目录不可用不能阻断其他已配置通道。 */ }
+      const ranked = rankMixedRoutes(router.policy, catalog, router.read()).filter(route => !attempted.has(mixedRouteId(route)));
+      const available = router.policy.executorOrder ? reserveMixedFallbacks(ranked, router.policy.maxAttempts - attempted.size) : ranked;
+      yield* available;
+    };
+    for await (const route of candidates(this)) {
       if (attempted.size >= this.policy.maxAttempts) break;
       signal.throwIfAborted();
       if (attempted.size && !options.safe()) throw new Error('本轮已经出现工具或正文输出，不再切换通道。');
@@ -75,11 +86,14 @@ export class MixedModelRouter {
         effort: route.effort, serviceTier: 'default', routingMode: 'adaptive', hookTrust: initial?.hookTrust });
       expectedRevision = request.revision;
       attempted.add(mixedRouteId(route));
-      options.notice(`本轮选择 ${route.executor} · ${route.displayName ?? route.model} · ${route.effort}；准入状态以实际响应为准。`);
+      if (initial?.revision !== request.revision || attempted.size > 1) {
+        options.notice(`本轮选择 ${route.executor} · ${route.displayName ?? route.model} · ${route.effort}。`);
+      }
       const started = Date.now();
       try {
         await options.run();
         const completed = options.completed?.() ?? true;
+        if (completed && this.policy.keepSessionRoute) rememberSuccessfulRoute(dataDir, sessionId);
         await this.record(route, { ...(completed ? { blockedUntil: 0 } : {}), elapsedMs: Date.now() - started,
           reason: completed ? 'completed' : 'turn_failed_without_replay', ...options.metrics?.() });
         return;

@@ -192,7 +192,7 @@ export async function runSingleTurn(context: SingleTurnContext, content: string,
     turn.modelSwitchCheck?.();
     context.pendingHandoff = ''; persistExecutor();
     modelReceipt('running', turn.turnId, turn.adaptiveActivityAt ? undefined : 'requested');
-    if (activeExecutor === 'traex' && !turn.structuredOutput) {
+    if (activeExecutor === 'traex' && !mixed && !turn.structuredOutput) {
       const notice = readSessionModelDisplay(config.session.dataDir, args.sessionId)?.label;
       if (notice) {
         writeLine(`[模型] ${notice}`);
@@ -202,8 +202,16 @@ export async function runSingleTurn(context: SingleTurnContext, content: string,
       }
     }
     flushSteers(turn);
-    if (mixed) await waitForMixedTurn(turn, client, tid, context.safeToDegrade ?? (() => false));
-    else await turn.done;
+    let detachClose: (() => void) | undefined;
+    const closed = new Promise<never>((_, reject) => {
+      detachClose = client.onClose(() => {
+        reject(new Error('执行器连接已断开，已保留线程。下一次追问会尝试恢复原线程。'));
+        turn.resolveDone();
+      });
+    });
+    try {
+      await Promise.race([mixed ? waitForMixedTurn(turn, client, tid, context.safeToDegrade ?? (() => false)) : turn.done, closed]);
+    } finally { detachClose?.(); }
     await turn.steerChain;
     queuePendingSteersAsNextTurns(turn);
     if (mixedRejection && !turn.userInterrupted && !turn.modelSwitchPending && context.safeToDegrade?.()) throw mixedRejection;
