@@ -128,6 +128,8 @@ function main() {
     'test/conversation-history-lineage.test.ts', 'test/conversation-history-turns.test.ts', 'test/conversation-history-live.test.ts', 'test/conversation-history-window.test.ts',
     'test/persistent-app-runner-reload.test.ts', 'test/session-lifecycle-hooks.test.ts',
     'test/codex-app-hook-health.test.ts', 'test/codex-app-runner.test.ts',
+    'test/codex-app-auth-recovery.test.ts', 'test/app-runner-auth-recovery.test.ts',
+    'test/codex-auth-maintenance.test.ts', 'test/app-runner-proactive-auth-reload.test.ts',
     'test/traex-adaptive-model.test.ts', 'test/traex-process-scope.test.ts', 'test/traex-app-launch.test.ts',
     'test/traex-admission-bounds.test.ts', 'test/traex-executor-fallback.test.ts',
     'test/traex-fallback-runner.test.ts', 'test/session-executor.test.ts',

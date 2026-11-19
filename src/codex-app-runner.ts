@@ -30,6 +30,7 @@ import { readSessionModel, readSessionModelRuntime, readSessionExecutor, writeSe
 import { switchAppExecutor } from './services/app-runner-executor-switch.js';
 import { codexAppHookTrustIssue } from './services/codex-app-hook-health.js';
 import { isAgentTeamMachineOutput } from './services/agent-team-output-filter.js';
+import { readCodexAuthFileStamp, sameCodexAuthFileStamp } from './services/codex-auth-file.js';
 
 
 const OSC_PREFIX = '\x1b]777;botmux:';
@@ -77,6 +78,9 @@ let activeExecutor: 'codex-app' | 'traex' | 'ark' | 'gateway' = savedExecutor?.e
   ?? (process.env.TRAEX_APP_SERVER_DEFAULT === '1' || !mixedPolicy && process.env.TRAEX_ADAPTIVE_MODELS ? 'traex' : 'codex-app');
 let activeHookTrust = readGlobalConfig().hookTrust ?? savedExecutor?.hookTrust ?? readSessionModel(config.session.dataDir, args.sessionId)?.hookTrust ?? 'review';
 let client = new AppServerClient(activeExecutor === 'traex' ? args.traexBin : args.codexBin, args.cwd, modelExecutorEnv(activeExecutor));
+let clientAuthStamp = activeExecutor === 'codex-app' ? readCodexAuthFileStamp() : undefined;
+let authReloadInFlight: Promise<void> | undefined;
+let authReloadTimer: ReturnType<typeof setInterval> | undefined;
 let threadId = savedExecutor?.threadId ?? args.threadId;
 let pendingHandoff = savedExecutor?.handoff ?? '';
 let threadReady = false;
@@ -344,6 +348,7 @@ async function ensureExecutor(requested?: SessionModelRequest): Promise<void> {
     instructions: () => appDeveloperInstructions(args, sharedContext?.instructions()),
     activate: state => {
       client = state.client; activeExecutor = state.executor; activeHookTrust = state.hookTrust;
+      clientAuthStamp = activeExecutor === 'codex-app' ? readCodexAuthFileStamp() : undefined;
       threadId = state.threadId; threadReady = true; pendingHandoff = state.handoff;
       defaultThreadModel = state.defaults?.model; defaultThreadModelProvider = state.defaults?.model_provider;
       defaultThreadEffort = state.defaults?.model_reasoning_effort; defaultServiceTier = state.defaults?.service_tier;
@@ -366,7 +371,8 @@ const turnContext: SingleTurnContext = {
   get admissionAbort() { return admissionAbort; }, set admissionAbort(value) { admissionAbort = value; },
   get pendingHandoff() { return pendingHandoff; }, set pendingHandoff(value) { pendingHandoff = value; },
 };
-function runTurn(content: string): Promise<void> {
+async function runTurn(content: string): Promise<void> {
+  await reloadCodexAuthIfChanged(true);
   return continueTurn(content, { args, emitMarker,
     recoverAuthClient,
     runSingleTurn: (text, autoContinue, attempted, forced) => runSingleTurn(turnContext, text, autoContinue, attempted, forced) });
@@ -377,6 +383,11 @@ function runTurn(content: string): Promise<void> {
  * 失效凭据。关闭并恢复同一 thread，让新进程重新读取磁盘认证；不创建新线程。
  */
 async function recoverAuthClient(): Promise<void> {
+  if (authReloadInFlight) return authReloadInFlight;
+  return replaceCodexAuthClient();
+}
+
+async function replaceCodexAuthClient(): Promise<void> {
   if (activeExecutor !== 'codex-app') throw new Error('当前执行器不是 Codex');
   const stale = client;
   stale.close();
@@ -386,6 +397,41 @@ async function recoverAuthClient(): Promise<void> {
   threadReady = false;
   await client.initialize();
   await loadDefaultThreadModel();
+  clientAuthStamp = readCodexAuthFileStamp();
+}
+
+/**
+ * A proactive overnight refresh atomically replaces auth.json. Idle runners
+ * reload immediately; a turn racing the watcher awaits the same reload before
+ * it starts. Existing threads are resumed, never recreated.
+ */
+async function reloadCodexAuthIfChanged(turnBoundary = false): Promise<void> {
+  if (activeExecutor !== 'codex-app' || activeTurn || !turnBoundary && processing) return;
+  if (authReloadInFlight) return authReloadInFlight;
+  const latest = readCodexAuthFileStamp();
+  if (sameCodexAuthFileStamp(clientAuthStamp, latest)) return;
+  authReloadInFlight = (async () => {
+    await replaceCodexAuthClient();
+    await ensureThread(defaultThreadModel);
+    persistExecutor();
+  })();
+  try {
+    await authReloadInFlight;
+  } finally {
+    authReloadInFlight = undefined;
+  }
+}
+
+function startCodexAuthReloadWatcher(): void {
+  if (authReloadTimer) return;
+  authReloadTimer = setInterval(() => {
+    void reloadCodexAuthIfChanged().catch(error => {
+      if (process.env.BOTMUX_CODEX_APP_DEBUG === '1') {
+        writeLine(`[codex-app] background auth reload unavailable: ${asError(error).message}`);
+      }
+    });
+  }, 60_000);
+  authReloadTimer.unref?.();
 }
 
 async function drainQueue(): Promise<void> {
@@ -456,6 +502,7 @@ async function main(): Promise<void> {
   client.onNotification(handleNotification);
   await client.initialize();
   await loadDefaultThreadModel();
+  clientAuthStamp = activeExecutor === 'codex-app' ? readCodexAuthFileStamp() : undefined;
   if (admission && !mixedPolicy && activeExecutor === 'traex') {
     try { await admission.refresh(); defaultThreadModel = admission.choose() ?? defaultThreadModel; }
     catch { writeLine('[traex-adaptive] 模型目录暂不可用，将在收到请求后自动刷新。'); }
@@ -486,6 +533,7 @@ async function main(): Promise<void> {
   } else {
     writeLine('Codex App connected.');
   }
+  startCodexAuthReloadWatcher();
   if (process.stdin.isTTY) process.stdin.setRawMode(true);
   process.stdin.resume();
   const input = new AppRunnerInput(content => modelInput.receive(content), interruptActiveTurn);
@@ -494,11 +542,13 @@ async function main(): Promise<void> {
 }
 
 process.on('SIGTERM', () => {
+  if (authReloadTimer) clearInterval(authReloadTimer);
   client.close();
   process.exit(0);
 });
 
 process.on('SIGINT', () => {
+  if (authReloadTimer) clearInterval(authReloadTimer);
   client.close();
   process.exit(130);
 });

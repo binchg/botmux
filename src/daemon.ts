@@ -15,6 +15,7 @@ import { buildDashboardUrl } from './core/dashboard-url.js';
 import { writeHeartbeat } from './core/daemon-heartbeat.js';
 import { botmuxWrapperFiles } from './core/botmux-wrapper.js';
 import { startMaintenance, stopMaintenance } from './core/maintenance.js';
+import { startCodexAuthMaintenance, stopCodexAuthMaintenance } from './services/codex-auth-maintenance.js';
 import { sendRestartReportIfPending } from './core/restart-report.js';
 import { statSync } from 'node:fs';
 import { addReaction, getChatMode, listChatMemberOpenIds, replyMessage, resolveAllowedUsersWithMap, sendMessage, sendUserMessage, updateMessage } from './im/lark/client.js';
@@ -4198,6 +4199,14 @@ export async function startDaemon(botIndex?: number): Promise<void> {
   const maintenanceHeartbeat = setInterval(writeBusyHeartbeat, 15_000);
   maintenanceHeartbeat.unref?.();
 
+  // Host-wide Codex OAuth maintenance is safe to start from every Codex App
+  // daemon: a shared cross-process lock elects exactly one refresher. Busy
+  // sessions defer the refresh within the 04:00-07:00 PRC window.
+  if (cfg.cliId === 'codex-app') {
+    const codexBin = createCliAdapterSync(cfg.cliId, cfg.cliPathOverride).resolvedBin;
+    startCodexAuthMaintenance(codexBin, process.cwd());
+  }
+
   // Auto-update / auto-restart and the restart-report DM run only on the
   // primary daemon (bot-0) — a restart is host-wide.
   if (idx === 0) {
@@ -4232,6 +4241,7 @@ export async function startDaemon(botIndex?: number): Promise<void> {
     logger.info(`Daemon shutting down... (active: ${getActiveCount()})`);
     scheduler.stopScheduler();
     stopMaintenance();
+    stopCodexAuthMaintenance();
     clearInterval(maintenanceHeartbeat);
     for (const watcher of workflowEventWatchers.values()) watcher.close();
     workflowEventWatchers.clear();
