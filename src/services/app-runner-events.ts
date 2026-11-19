@@ -7,6 +7,7 @@ import { normalizeCodexAppTimestampMs } from './codex-app-activity.js';
 import { codexAppHookFailure } from './codex-app-hook-health.js';
 import { isTraexDailyQuotaExhausted } from './traex-adaptive-model.js';
 import { isCodexAppRetryLimit429 } from './codex-app-auto-continue.js';
+import { isCodexRefreshTokenRotation } from './codex-app-auth-recovery.js';
 
 /** 每次事件使用当下会话快照，过滤旧线程和已被追问取代的输出。 */
 export interface NotificationContext {
@@ -184,6 +185,13 @@ export function handleAppNotification(msg: JsonObject, context: NotificationCont
       activeTurn.quotaExhaustedError = errorMessage;
     } else if (isCodexAppRetryLimit429(errorMessage)) {
       activeTurn.rateLimitError = errorMessage;
+    } else if (isCodexRefreshTokenRotation(errorMessage)
+      && !activeTurn.firstTokenAtMs
+      && !activeTurn.toolItems?.size
+      && !activeTurn.allAgentText.trim()
+      && !activeTurn.finalText.trim()) {
+      // 仅零副作用鉴权失败可自动重载；已有输出或工具执行时绝不重放用户请求。
+      activeTurn.authRotationError = errorMessage;
     } else if (errorMessage && !activeTurn.finalText) {
       activeTurn.finalText = `Codex App turn failed: ${errorMessage}`;
     }

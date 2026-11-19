@@ -129,6 +129,14 @@ describe('codex-app runner steering', () => {
     expect(source).toContain("writeLine(autoContinue ? '[auto continue]' : '[user]')");
   });
 
+  it('reloads a stale Codex auth owner only for a zero-side-effect refresh-token rotation', () => {
+    expect(source).toContain('isCodexRefreshTokenRotation(errorMessage)');
+    expect(source).toContain('!activeTurn.firstTokenAtMs');
+    expect(source).toContain('!activeTurn.toolItems?.size');
+    expect(source).toContain('await context.recoverAuthClient()');
+    expect(source).toContain('authRecoveryCount >= 1');
+  });
+
   it('overrides resumed legacy threads with the current default provider', () => {
     expect(source).toContain("client.request('config/read', { cwd: args.cwd })");
     expect(source).toContain('defaultThreadModel =');

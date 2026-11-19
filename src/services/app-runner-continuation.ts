@@ -3,12 +3,14 @@ import type { Args, TurnOutcome } from './app-runner-types.js';
 import { writeLine } from './app-runner-protocol.js';
 import { beginSessionModelReplyEpoch } from './session-model-reply-budget.js';
 import { CODEX_APP_RATE_LIMIT_MAX_CONTINUES, codexAppAutoContinueDelayMs, codexAppAutoContinuePrompt } from './codex-app-auto-continue.js';
+import { codexAuthRecoveryFailed, codexAuthRecoveryNotice } from './codex-app-auth-recovery.js';
 
 /** 一个用户请求的有限续跑；已尝试模型集合跨所有续轮保留。 */
 export interface RunContext {
   args: Args;
   emitMarker: (kind: string, payload: unknown) => void;
   runSingleTurn: (content: string, autoContinue: boolean, attempted: Set<string>, forcedModel?: string) => Promise<TurnOutcome>;
+  recoverAuthClient: () => Promise<void>;
 }
 
 export async function runTurn(content: string, context: RunContext): Promise<void> {
@@ -16,11 +18,53 @@ export async function runTurn(content: string, context: RunContext): Promise<voi
   beginSessionModelReplyEpoch(config.session.dataDir, args.sessionId);
   let nextContent = content;
   let autoContinueCount = 0;
+  let authRecoveryCount = 0;
+  let silentRetry = false;
   const attempted = new Set<string>();
   let forcedModel: string | undefined;
 
   while (true) {
-    const outcome = await runSingleTurn(nextContent, autoContinueCount > 0 || !!forcedModel, attempted, forcedModel);
+    const outcome = await runSingleTurn(nextContent, autoContinueCount > 0 || !!forcedModel || silentRetry, attempted, forcedModel);
+    silentRetry = false;
+    if (outcome.authRotationError) {
+      if (authRecoveryCount >= 1) {
+        const message = codexAuthRecoveryFailed(args.locale, outcome.authRotationError);
+        writeLine(`[codex-app] ${message}`);
+        const completedAtMs = Date.now();
+        emitMarker('final', {
+          turnId: outcome.turnId ?? `codex-app-auth-${completedAtMs}`,
+          content: message,
+          startedAtMs: outcome.startedAtMs,
+          completedAtMs,
+        });
+        return;
+      }
+      authRecoveryCount += 1;
+      const notice = codexAuthRecoveryNotice(args.locale);
+      writeLine(`[codex-app] ${notice}`);
+      emitMarker('progress', {
+        content: notice,
+        turnId: outcome.turnId,
+        startedAtMs: outcome.startedAtMs,
+        updatedAtMs: Date.now(),
+      });
+      try {
+        await context.recoverAuthClient();
+      } catch (error) {
+        const message = codexAuthRecoveryFailed(args.locale, error instanceof Error ? error.message : String(error));
+        writeLine(`[codex-app] ${message}`);
+        const completedAtMs = Date.now();
+        emitMarker('final', {
+          turnId: outcome.turnId ?? `codex-app-auth-${completedAtMs}`,
+          content: message,
+          startedAtMs: outcome.startedAtMs,
+          completedAtMs,
+        });
+        return;
+      }
+      silentRetry = true;
+      continue;
+    }
     if (outcome.adaptiveNextModel) {
       forcedModel = outcome.adaptiveNextModel;
       nextContent = '上一轮因服务端排队或额度准入限制已中断，模型已自动重选。请沿当前线程继续完成用户最新请求；保留所有追问、已完成操作和工具结果，不要重放已完成的操作。';

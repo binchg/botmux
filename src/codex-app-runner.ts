@@ -368,7 +368,24 @@ const turnContext: SingleTurnContext = {
 };
 function runTurn(content: string): Promise<void> {
   return continueTurn(content, { args, emitMarker,
+    recoverAuthClient,
     runSingleTurn: (text, autoContinue, attempted, forced) => runSingleTurn(turnContext, text, autoContinue, attempted, forced) });
+}
+
+/**
+ * refresh token 被其它长期进程轮换后，旧 app-server 只会继续使用内存中的
+ * 失效凭据。关闭并恢复同一 thread，让新进程重新读取磁盘认证；不创建新线程。
+ */
+async function recoverAuthClient(): Promise<void> {
+  if (activeExecutor !== 'codex-app') throw new Error('当前执行器不是 Codex');
+  const stale = client;
+  stale.close();
+  client = new AppServerClient(args.codexBin, args.cwd, modelExecutorEnv(activeExecutor));
+  client.onRequest(handleServerRequest);
+  client.onNotification(handleNotification);
+  threadReady = false;
+  await client.initialize();
+  await loadDefaultThreadModel();
 }
 
 async function drainQueue(): Promise<void> {

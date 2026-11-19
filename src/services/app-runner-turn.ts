@@ -237,11 +237,11 @@ export async function runSingleTurn(context: SingleTurnContext, content: string,
       turn.adaptiveNextModel = next ?? 'reselect';
     }
 
-    modelReceipt(turn.turnFailed || turn.rateLimitError || turn.quotaExhaustedError || turn.criticalHookFailure ? 'failed' : 'completed', turn.turnId);
+    modelReceipt(turn.turnFailed || turn.rateLimitError || turn.quotaExhaustedError || turn.authRotationError || turn.criticalHookFailure ? 'failed' : 'completed', turn.turnId);
 
     const finalText = (turn.finalText || turn.allAgentText).trim();
     const completedAtMs = Date.now();
-    if (!turn.rateLimitError && !turn.adaptiveNextModel && !turn.modelSwitchPending && finalText) {
+    if (!turn.rateLimitError && !turn.authRotationError && !turn.adaptiveNextModel && !turn.modelSwitchPending && finalText) {
       emitMarker('final', {
         turnId: turn.turnId ?? `codex-app-${completedAtMs}`,
         content: finalText,
@@ -254,6 +254,7 @@ export async function runSingleTurn(context: SingleTurnContext, content: string,
       turnId: turn.turnId,
       startedAtMs: turn.startedAtMs,
       rateLimitError: turn.modelSwitchPending ? undefined : turn.rateLimitError,
+      authRotationError: turn.modelSwitchPending ? undefined : turn.authRotationError,
       adaptiveNextModel: turn.userInterrupted || turn.modelSwitchPending ? undefined : turn.adaptiveNextModel,
     };
   } catch (error) {

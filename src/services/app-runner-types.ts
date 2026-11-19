@@ -43,6 +43,8 @@ export interface ActiveTurn {
   firstTokenAtMs?: number;
   rateLimitError?: string;
   quotaExhaustedError?: string;
+  /** refresh token 已被同机其它 app-server 轮换，且本轮尚无任何模型或工具副作用。 */
+  authRotationError?: string;
   /** 结构化 Team JSON 仅供机器使用，聚合到终态标记，不向终端或进度转发流式片段。 */
   structuredOutput: boolean;
   modelRuntime?: SessionModelRuntime;
@@ -65,4 +67,5 @@ export interface TurnOutcome {
   turnId?: string;
   startedAtMs: number;
   rateLimitError?: string;
+  authRotationError?: string;
 }
