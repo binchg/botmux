@@ -13,6 +13,9 @@ import { CodexAppServerProbe } from './codex-app-threads.js';
 import { collectBotmuxSessionIdentities } from './session-store.js';
 import { submitToCodexOwner } from './codex-owner-ipc.js';
 import { readCodexSessionStatistics, codexStatisticsText } from './codex-session-statistics.js';
+import { recoverCodexTopic } from './codex-topic-recovery.js';
+import { getMessageDetail } from '../im/lark/client.js';
+import { config } from '../config.js';
 
 export let externalCodexBridge: ExternalCodexBridge | CodexAutoBridge | undefined;
 
@@ -33,6 +36,8 @@ export function startExternalCodexBridge(selfAppId: string): void {
         if (!b.firstUserMessage) throw new Error('Automatic topic requires the original user message');
         return sendMessage(b.larkAppId, b.chatId, b.firstUserMessage, 'text', uuid);
       },
+      findTopic: b => recoverCodexTopic(join(config.session.dataDir, 'conversation-history'),
+        b.threadId, b.larkAppId, b.chatId, root => getMessageDetail(b.larkAppId, root)),
       reply: async (b, text, uuid, kind) => replyMessage(b.larkAppId, b.outputRootMessageId ?? b.rootMessageId,
         buildExternalCodexForwardCard(b, text, kind, nativeConversationHistoryButtons({ ...b, rootMessageId: b.outputRootMessageId ?? b.rootMessageId }, kind === 'user' ? uuid : false)), 'interactive', true, uuid),
       received: (b, messageId, text) => replyMessage(b.larkAppId, b.outputRootMessageId ?? b.rootMessageId,

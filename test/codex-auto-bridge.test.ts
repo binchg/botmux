@@ -44,6 +44,39 @@ it('routes the repaired topic and consumes its superseded root', async () => {
   } finally { rmSync(f.dir, { recursive: true, force: true }); }
 });
 
+it('recovers an existing topic for an old session before creating a new one', async () => {
+  const f = fixture(); const transcript = file(f.homes[0], 'old-session');
+  const topic = vi.fn(async () => 'new-root');
+  const findTopic = vi.fn(async () => 'existing-root');
+  const reply = vi.fn(async () => {});
+  const bridge = new CodexAutoBridge(f.cfg, f.stateFile, { topic, findTopic, reply,
+    turn: async () => {}, excluded: () => new Set(), error: e => { throw e; } });
+  try {
+    await bridge.scan(); appendFileSync(transcript, done('next', 'response')); await bridge.scan();
+    await vi.waitFor(() => expect(reply).toHaveBeenCalledTimes(1));
+    expect(bridge.owns('existing-root', 'app')).toBe(true);
+    expect(findTopic).toHaveBeenCalledTimes(1);
+    expect(topic).not.toHaveBeenCalled();
+  } finally { bridge.stop(); rmSync(f.dir, { recursive: true, force: true }); }
+});
+
+it('retries an unavailable topic lookup without creating a duplicate', async () => {
+  const f = fixture(); const transcript = file(f.homes[0], 'old-session');
+  const topic = vi.fn(async () => 'duplicate-root');
+  const findTopic = vi.fn().mockRejectedValueOnce(Error('lookup unavailable')).mockResolvedValue('existing-root');
+  const error = vi.fn(); const reply = vi.fn(async () => {});
+  const bridge = new CodexAutoBridge(f.cfg, f.stateFile, { topic, findTopic, reply,
+    turn: async () => {}, excluded: () => new Set(), error });
+  try {
+    await bridge.scan(); appendFileSync(transcript, done('next', 'response')); await bridge.scan();
+    expect(topic).not.toHaveBeenCalled(); expect(error).toHaveBeenCalledTimes(1);
+    await bridge.scan();
+    await vi.waitFor(() => expect(reply).toHaveBeenCalledTimes(1));
+    expect(bridge.owns('existing-root', 'app')).toBe(true);
+    expect(topic).not.toHaveBeenCalled();
+  } finally { bridge.stop(); rmSync(f.dir, { recursive: true, force: true }); }
+});
+
 it('keeps an existing topic bound when Codex archives its transcript', async () => {
   const f = fixture(); const original = file(f.homes[0], 'archived');
   const replies: string[] = [];

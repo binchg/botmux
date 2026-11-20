@@ -42,6 +42,7 @@ export class CodexAutoBridge {
   private timer?: NodeJS.Timeout;
   constructor(private cfg: AutoCodexConfig, private stateFile: string, private deps: {
     topic: (b: Omit<AutoCodexBinding, 'rootMessageId'>, uuid: string) => Promise<string>;
+    findTopic?: (b: Omit<AutoCodexBinding, 'rootMessageId'>) => Promise<string | undefined>;
     reply: (b: AutoCodexBinding, text: string, uuid: string, kind?: ExternalCodexOutputKind) => Promise<unknown>;
     received?: (b: AutoCodexBinding, messageId: string, text: string) => Promise<unknown>;
     turn: (b: AutoCodexBinding, text: string, checkpoint: (submitted?: boolean) => void, clientUserMessageId?: string) => Promise<void>;
@@ -223,7 +224,14 @@ export class CodexAutoBridge {
             ...(typeof meta.forked_from_id === 'string' ? { sourceThreadId: meta.forked_from_id } : {}),
           };
           if (typeof candidate.cwd !== 'string') continue;
-          const rootMessageId = priorBinding?.rootMessageId ?? await this.deps.topic(candidate, key.slice(0, 32));
+          let recoveredRoot: string | undefined;
+          if (!priorBinding && this.deps.findTopic) {
+            try { recoveredRoot = await this.deps.findTopic(candidate); }
+            catch (error) { this.deps.error(error); continue; }
+          }
+          const rootMessageId = priorBinding?.rootMessageId
+            ?? recoveredRoot
+            ?? await this.deps.topic(candidate, key.slice(0, 32));
           const binding = { ...candidate, ...priorBinding, rolloutPath: path, rootMessageId };
           this.registry.bindings[key] = binding;
           this.save();
