@@ -6,7 +6,6 @@ import { buildNewSessionSetupCard } from '../im/lark/new-session-setup.js';
 import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join, resolve, basename } from 'node:path';
 import { config } from '../config.js';
-import { buildTerminalUrl } from './terminal-url.js';
 import { getBot, getAllBots, getBotOpenId } from '../bot-registry.js';
 import { repoPickerScanOptions } from '../global-config.js';
 import * as sessionStore from '../services/session-store.js';
@@ -24,7 +23,7 @@ import { deleteMessage, sendMessage, sendUserMessage, listChatBotMembers, resolv
 import { chatAppLink, normalizeBrand } from '../im/lark/lark-hosts.js';
 import { claimPairing } from '../services/pairing-store.js';
 import { logger } from '../utils/logger.js';
-import { killWorker, forkWorker, forkAdoptWorker, getCurrentCliVersion, postFreshStreamingCard, postPrivateSnapshotCard, resolvePrivateCardAudience, deliverEphemeralOrReply, deliverWritableTerminalCardTo } from './worker-pool.js';
+import { killWorker, forkWorker, forkAdoptWorker, postFreshStreamingCard, postPrivateSnapshotCard, resolvePrivateCardAudience, deliverEphemeralOrReply, deliverWritableTerminalCardTo } from './worker-pool.js';
 import { expandHome, getSessionWorkingDir, getProjectScanDir, getProjectScanDirs, rememberLastCliInput } from './session-manager.js';
 import { discoverSlashCommandsForAdapter, listMcpServerNames, supportsFilesystemCommandDiscovery } from './command-discovery.js';
 import { validateWorkingDir } from './working-dir.js';
@@ -70,6 +69,7 @@ import { sessionKey, sessionAnchorId } from './types.js';
 import type { DaemonSession } from './types.js';
 import { t, localeForBot, type Locale } from '../i18n/index.js';
 import { runSkillsImCommand } from './skills/im-command.js';
+import { buildSessionStatus } from './session-status.js';
 
 // ─── Exported constants ──────────────────────────────────────────────────────
 
@@ -89,7 +89,7 @@ export { DAEMON_COMMANDS, PASSTHROUGH_COMMANDS };
  * card buttons routable, but for these that record is a phantom conversation
  * that pollutes the dashboard's session list. Handle them without a session.
  */
-export const SESSIONLESS_DAEMON_COMMANDS = new Set(['/group', '/g', '/list-slash-command', '/slash', '/botconfig', '/dashboard', '/skills']);
+export const SESSIONLESS_DAEMON_COMMANDS = new Set(['/group', '/g', '/list-slash-command', '/slash', '/botconfig', '/dashboard', '/skills', '/status']);
 
 export function resolveAdapterDefaultPassthroughCommands(larkAppId?: string): string[] {
   if (!larkAppId) return [];
@@ -296,15 +296,6 @@ function botDisplayName(larkAppId: string): string {
   } catch {
     return larkAppId;
   }
-}
-
-function formatUptime(ms: number): string {
-  const s = Math.floor(ms / 1000);
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m${s % 60}s`;
-  const h = Math.floor(m / 60);
-  return `${h}h${m % 60}m`;
 }
 
 function codexAppThreadTitle(thread: CodexAppThreadSummary): string {
@@ -1619,29 +1610,11 @@ export async function handleCommand(
       }
 
       case '/status': {
-        if (ds) {
-          const alive = ds.worker && !ds.worker.killed;
-          const idle = formatUptime(Date.now() - ds.lastMessageAt);
-          const termUrl = ds.workerPort ? buildTerminalUrl(ds) : '-';
-          const lines = [
-            `Session: ${ds.session.sessionId}`,
-            `Status: ${alive ? t('cmd.status.running', undefined, loc) : t('cmd.status.waiting', undefined, loc)}`,
-            `Terminal: ${termUrl}`,
-            `CWD: ${getSessionWorkingDir(ds)}`,
-            `${getCliDisplayName(getBot(ds.larkAppId).config.cliId)}: v${ds.cliVersion}${ds.cliVersion !== getCurrentCliVersion() ? ` (latest: v${getCurrentCliVersion()})` : ''}`,
-            ...(alive ? [`Uptime: ${formatUptime(Date.now() - ds.spawnedAt)}`] : []),
-            `Last message: ${idle} ago`,
-            `Active sessions: ${getActiveCount()}`,
-          ];
-          await sessionReply(rootId, lines.join('\n'));
-        } else {
-          const fallbackCliName = larkAppId ? getCliDisplayName(getBot(larkAppId).config.cliId) : 'CLI';
-          await sessionReply(rootId, t('cmd.status.fallback_no_session', {
-            count: getActiveCount(),
-            cliName: fallbackCliName,
-            version: getCurrentCliVersion(),
-          }, loc));
-        }
+        const status = await buildSessionStatus({
+          appId: ds?.larkAppId ?? larkAppId, session: ds, senderId: message.senderId,
+          activeCount: getActiveCount(), locale: loc,
+        });
+        await sessionReply(rootId, status);
         break;
       }
 
