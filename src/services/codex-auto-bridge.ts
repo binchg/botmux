@@ -61,7 +61,14 @@ export class CodexAutoBridge {
         }
       }
       if (existsSync(b.rolloutPath)) {
-        const meta = readCodexTopicSource(b.rolloutPath).meta;
+        const source = readCodexTopicSource(b.rolloutPath);
+        const meta = source.meta;
+        // Repair titles persisted by older readers that mistook injected
+        // plugin/context records for the first human message.
+        if (source.firstUserMessage && b.firstUserMessage !== source.firstUserMessage) {
+          b.firstUserMessage = source.firstUserMessage;
+          relocated = true;
+        }
         if (typeof meta?.forked_from_id === 'string') b.sourceThreadId = meta.forked_from_id;
         if (isCodexSubagent(meta)) { this.subagentThreads.add(b.threadId); b.suppressed = true; }
         this.rememberOrigin(b.rolloutPath);

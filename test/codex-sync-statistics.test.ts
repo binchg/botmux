@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { readCodexSessionStatistics, codexStatisticsText } from '../src/services/codex-session-statistics.js';
 import { readCodexSyncEvents } from '../src/services/codex-sync-reader.js';
 import { publicCodexEvent } from '../src/services/codex-sync-events.js';
+import { readCodexTopicSource } from '../src/services/codex-topic-source.js';
 
 beforeEach(() => vi.stubEnv('BOTMUX_BOT_INDEX', '2'));
 afterEach(() => vi.unstubAllEnvs());
@@ -85,10 +86,18 @@ it('serves shared incremental public events without reasoning, developer prompts
 
 it('does not expose other response_item messages',()=>{
   expect(publicCodexEvent({type:'response_item',payload:{type:'message',role:'developer',content:'secret'}},'0')).toBeUndefined();
-  for(const text of ['<external_codex_apps_open_page>{"page_id":null}</external_codex_apps_open_page>','<external_codex_apps_selected_page_part_1_of_1>private page snapshot</external_codex_apps_selected_page_part_1_of_1>','<environment_context>private context</environment_context>']){
+  for(const text of ['<external_codex_apps_open_page>{"page_id":null}</external_codex_apps_open_page>','<external_codex_apps_selected_page_part_1_of_1>private page snapshot</external_codex_apps_selected_page_part_1_of_1>','<environment_context>private context</environment_context>','<recommended_plugins>plugin catalog</recommended_plugins><environment_context>private context</environment_context>','<skills_instructions>private skills</skills_instructions>']){
     expect(publicCodexEvent({type:'response_item',payload:{type:'message',role:'user',content:[{type:'input_text',text}]}},'0')).toBeUndefined();
     expect(publicCodexEvent({type:'event_msg',payload:{type:'user_message',message:text}},'0')).toBeUndefined();
   }
+});
+
+it('uses the first human prompt after injected plugin metadata for the topic',()=>{
+  const path=fixture();
+  writeFileSync(path,event('session_meta',{id:'thread'})+
+    event('response_item',{type:'message',role:'user',content:[{type:'input_text',text:'<recommended_plugins>catalog</recommended_plugins><environment_context>machine</environment_context>'}]})+
+    event('response_item',{type:'message',role:'user',content:[{type:'input_text',text:'真正的问题'}]}));
+  expect(readCodexTopicSource(path).firstUserMessage).toBe('真正的问题');
 });
 
 it('supports canonical-only messages, deduplicates event copies and detects a larger in-place rewrite',()=>{

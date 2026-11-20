@@ -21,7 +21,7 @@ export function publicCodexUserText(text: string): string | undefined {
   }
   // These are host-injected context records stored with role=user, not a
   // human question. In particular, selected Pages must never be mirrored.
-  if (/^\s*(?:# AGENTS\.md instructions|<(?:environment_context|permissions instructions|collaboration_mode|external_codex_apps_[\w]+|user_instructions|system_reminder)(?:\s|>))/.test(text)) return;
+  if (/^\s*(?:# AGENTS\.md instructions|<(?:environment_context|permissions instructions|collaboration_mode|external_codex_apps_[\w]+|user_instructions|system_reminder|recommended_plugins|skills_instructions)(?:\s|>))/.test(text)) return;
   const match = /<user_message>\s*([\s\S]*?)\s*<\/user_message>/.exec(text);
   if (!match && /^\s*<botmux_reminder>/.test(text)) return;
   return match?.[1] ?? text;
