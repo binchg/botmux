@@ -20,6 +20,30 @@ function fixture() {
   return { dir, homes, cfg, stateFile };
 }
 
+it('routes the repaired topic and consumes its superseded root', async () => {
+  const f = fixture(); const transcript = file(f.homes[0], 'repaired');
+  const turn = vi.fn(async () => {});
+  const deps = { topic: async () => 'old-root', reply: async () => {}, turn,
+    excluded: () => new Set<string>(), error: (e: unknown) => { throw e; } };
+  try {
+    const original = new CodexAutoBridge(f.cfg, f.stateFile, deps);
+    await original.scan(); appendFileSync(transcript, done('new', 'answer')); await original.scan(); original.stop();
+    const registry = JSON.parse(readFileSync(f.stateFile, 'utf8'));
+    const binding = Object.values(registry.bindings)[0] as Record<string, unknown>;
+    binding.rootMessageId = 'correct-root';
+    binding.supersededRootMessageIds = ['old-root'];
+    writeFileSync(f.stateFile, JSON.stringify(registry));
+    const repaired = new CodexAutoBridge(f.cfg, f.stateFile, deps);
+    expect(repaired.owns('old-root', 'app')).toBe(true);
+    expect(await repaired.receive('old-root', 'app', 'owner', 'old-followup', 'wrong topic')).toBe(true);
+    expect(turn).not.toHaveBeenCalled();
+    expect(await repaired.receive('correct-root', 'app', 'owner', 'new-followup', 'right topic')).toBe(true);
+    await repaired.scan();
+    await vi.waitFor(() => expect(turn).toHaveBeenCalledTimes(1));
+    repaired.stop();
+  } finally { rmSync(f.dir, { recursive: true, force: true }); }
+});
+
 it('keeps an existing topic bound when Codex archives its transcript', async () => {
   const f = fixture(); const original = file(f.homes[0], 'archived');
   const replies: string[] = [];

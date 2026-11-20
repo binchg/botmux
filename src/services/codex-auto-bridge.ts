@@ -14,6 +14,8 @@ export interface AutoCodexBinding extends ExternalCodexBinding {
   firstUserMessage?: string;
   /** Auto-discovered child-agent bindings are retained only as routing tombstones. */
   suppressed?: boolean;
+  /** Previous invalid topic roots are consumed so they cannot start a new bot session. */
+  supersededRootMessageIds?: string[];
 }
 interface Baseline { offset: number; protected: boolean }
 interface Registry {
@@ -101,15 +103,16 @@ export class CodexAutoBridge {
     return observer;
   }
   owns(root: string, app: string): boolean {
-    return Object.values(this.registry.bindings).some(b => b.rootMessageId === root && b.larkAppId === app && !this.isManaged(b));
+    return Object.values(this.registry.bindings).some(b => (b.rootMessageId === root || b.supersededRootMessageIds?.includes(root)) && b.larkAppId === app && !this.isManaged(b));
   }
   isBusy(root: string, app: string): boolean {
     for (const observer of this.observers.values()) if (observer.owns(root, app)) return observer.isBusy(root, app);
     return false;
   }
   async receive(root: string, app: string, sender: string, messageId: string, text: string): Promise<boolean> {
-    const found = Object.entries(this.registry.bindings).find(([, b]) => b.rootMessageId === root && b.larkAppId === app);
+    const found = Object.entries(this.registry.bindings).find(([, b]) => (b.rootMessageId === root || b.supersededRootMessageIds?.includes(root)) && b.larkAppId === app);
     if (!found) return false;
+    if (found[1].rootMessageId !== root) return true;
     // A recalled erroneous child topic must never fall through to a fresh bot session.
     if (found[1].suppressed || this.subagentThreads.has(found[1].threadId)) return true;
     if (this.isManaged(found[1])) return false;
