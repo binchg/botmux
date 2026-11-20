@@ -19,6 +19,9 @@ export function publicCodexUserText(text: string): string | undefined {
     const request = /\n#{1,3}\s*My request:\s*([\s\S]*)$/i.exec(text)?.[1]?.trim();
     return request || undefined;
   }
+  if (/^\s*# Files mentioned by the user:\s*/.test(text)) {
+    return /\n#{1,3}\s*My request:\s*([\s\S]*)$/i.exec(text)?.[1]?.trim() || undefined;
+  }
   // These are host-injected context records stored with role=user, not a
   // human question. In particular, selected Pages must never be mirrored.
   if (/^\s*(?:# AGENTS\.md instructions|<(?:environment_context|permissions instructions|collaboration_mode|external_codex_apps_[\w]+|user_instructions|system_reminder|recommended_plugins|skills_instructions)(?:\s|>))/.test(text)) return;
