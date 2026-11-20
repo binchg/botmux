@@ -1,6 +1,7 @@
 /** 卡片补齐必须隔离机器人、绕过正在发出的卡片，并限制单批请求数。 */
 import { beforeEach, expect, it, vi } from 'vitest';
 const f = vi.hoisted(() => ({ sessions: [] as any[], prefs: {} as any, patch: vi.fn(), needs: vi.fn(() => true), statsNeeds: vi.fn(() => false) }));
+const quota = vi.hoisted(() => ({ needs: vi.fn(() => false) }));
 vi.mock('../src/config.js', () => ({ config: { session: { dataDir: '/data' } } }));
 vi.mock('../src/bot-registry.js', () => ({ getBot: () => ({ config: { cliId: 'codex-app', ...f.prefs } }) }));
 vi.mock('../src/i18n/index.js', () => ({ localeForBot: () => 'zh' }));
@@ -11,6 +12,7 @@ vi.mock('../src/core/terminal-url.js', () => ({ buildTerminalUrl: () => 'http://
 vi.mock('../src/services/session-model-card-status.js', () => ({ sessionModelCardNeedsRefresh: f.needs }));
 vi.mock('../src/services/session-card-statistics.js', () => ({ sessionCardStatisticsNeedsRefresh: f.statsNeeds }));
 vi.mock('../src/services/session-card-task-context.js', () => ({ sessionCardTaskContextNeedsRefresh: () => false }));
+vi.mock('../src/services/session-card-codex-quota.js', () => ({ sessionCardCodexQuotaNeedsRefresh: quota.needs }));
 import { refreshSessionModelCards } from '../src/services/session-model-card-refresh.js';
 
 /** 模拟已发出的普通会话卡，不包含实际用户输入或飞书凭据。 */
@@ -22,6 +24,15 @@ beforeEach(() => { f.sessions = []; f.prefs = {}; f.patch.mockClear(); f.needs.m
 it('模型不变时仍可补齐刚出现的真实统计', () => {
   f.sessions = [live('statistics')]; f.needs.mockReturnValue(false); f.statsNeeds.mockReturnValue(true);
   expect(refreshSessionModelCards('selected')).toBe(1);
+});
+
+it('额度出现时通过相同的串行队列补刷新卡片', () => {
+  f.sessions = [live('quota')];
+  f.needs.mockReturnValue(false);
+  quota.needs.mockReturnValueOnce(true);
+  expect(refreshSessionModelCards('selected')).toBe(1);
+  expect(f.patch).toHaveBeenCalledTimes(1);
+  expect(refreshSessionModelCards('selected')).toBe(0);
 });
 
 it('每批最多补三张，未变化时不发 PATCH', () => {

@@ -1,5 +1,6 @@
 // 通过 Codex app-server 读取订阅额度，只向调用方返回额度窗口和剩余百分比。
 import { resolveCommand } from '../adapters/cli/registry.js';
+import type { Locale } from '../i18n/types.js';
 import { AppServerClient } from './app-runner-client.js';
 
 interface RateLimitWindow {
@@ -23,6 +24,26 @@ export interface CodexQuotaWindow {
   window: 'primary' | 'secondary';
   durationMinutes?: number;
   remainingPercent: number;
+}
+
+/** 按实际时长命名窗口；当协议未提供时长时显示主、次窗口。 */
+function windowLabel(quota: CodexQuotaWindow, locale: Locale): string {
+  const minutes = quota.durationMinutes;
+  if (!minutes) {
+    if (locale === 'en') return quota.window === 'primary' ? 'Primary' : 'Secondary';
+    return quota.window === 'primary' ? '主窗口' : '次窗口';
+  }
+  if (minutes % 1440 === 0) return locale === 'en' ? `${minutes / 1440}d` : `${minutes / 1440} 天`;
+  if (minutes % 60 === 0) return locale === 'en' ? `${minutes / 60}h` : `${minutes / 60} 小时`;
+  return locale === 'en' ? `${minutes}m` : `${minutes} 分钟`;
+}
+
+/** 生成命令与卡片共用的额度行，没有有效窗口时省略。 */
+export function formatCodexQuota(windows: CodexQuotaWindow[], locale: Locale): string | undefined {
+  if (!windows.length) return undefined;
+  const label = locale === 'en' ? 'Codex remaining quota' : 'Codex 剩余额度';
+  const percent = new Intl.NumberFormat(locale, { maximumFractionDigits: 2 });
+  return `${label} · ${windows.map(quota => `${windowLabel(quota, locale)} ${percent.format(quota.remainingPercent)}%`).join(' / ')}`;
 }
 
 /** 同时兼容新旧协议，只接受 Codex 订阅的额度桶。 */

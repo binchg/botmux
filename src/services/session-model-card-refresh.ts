@@ -10,6 +10,7 @@ import { sessionModelCardNeedsRefresh } from './session-model-card-status.js';
 import { logger } from '../utils/logger.js';
 import { sessionCardStatisticsNeedsRefresh } from './session-card-statistics.js';
 import { sessionCardTaskContextNeedsRefresh } from './session-card-task-context.js';
+import { sessionCardCodexQuotaNeedsRefresh } from './session-card-codex-quota.js';
 
 const started = new Set<string>();
 
@@ -28,7 +29,8 @@ export function refreshSessionModelCards(appId: string): number {
     const locale = localeForBot(appId);
     if (!sessionModelCardNeedsRefresh(config.session.dataDir, ds.session.sessionId, key)
       && !sessionCardStatisticsNeedsRefresh(config.session.dataDir, ds.session.sessionId, locale, key)
-      && !sessionCardTaskContextNeedsRefresh(config.session.dataDir, ds.session.sessionId, key)) continue;
+      && !sessionCardTaskContextNeedsRefresh(config.session.dataDir, ds.session.sessionId, key)
+      && !sessionCardCodexQuotaNeedsRefresh(config.session.dataDir, ds.session.sessionId, locale, key)) continue;
     const card = buildStreamingCard(ds.session.sessionId, sessionAnchorId(ds), buildTerminalUrl(ds),
       ds.currentTurnTitle || ds.session.title || getCliDisplayName('codex-app'), ds.lastScreenContent ?? '',
       ds.lastScreenStatus ?? 'idle', 'codex-app', ds.displayMode ?? 'hidden', ds.streamCardNonce,

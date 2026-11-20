@@ -4,23 +4,11 @@ import type { BotState } from '../bot-registry.js';
 import { config } from '../config.js';
 import { t, type Locale } from '../i18n/index.js';
 import { getCliDisplayName } from '../im/lark/card-builder.js';
-import { readCodexQuota, type CodexQuotaWindow } from '../services/codex-quota.js';
+import { formatCodexQuota, readCodexQuota } from '../services/codex-quota.js';
 import { expandHome, getSessionWorkingDir } from './session-manager.js';
 import { buildTerminalUrl } from './terminal-url.js';
 import type { DaemonSession } from './types.js';
 import { getCurrentCliVersion } from './worker-pool.js';
-
-/** 依据真实窗口时长命名，缺少时长时保留协议中的主、次窗口称呼。 */
-function windowLabel(quota: CodexQuotaWindow, locale: Locale): string {
-  const minutes = quota.durationMinutes;
-  if (!minutes) {
-    if (locale === 'en') return quota.window === 'primary' ? 'Primary' : 'Secondary';
-    return quota.window === 'primary' ? '主窗口' : '次窗口';
-  }
-  if (minutes % 1440 === 0) return locale === 'en' ? `${minutes / 1440}d` : `${minutes / 1440} 天`;
-  if (minutes % 60 === 0) return locale === 'en' ? `${minutes / 60}h` : `${minutes / 60} 小时`;
-  return locale === 'en' ? `${minutes}m` : `${minutes} 分钟`;
-}
 
 /** 使用会话冻结的 Codex 启动入口；仅向本机器人配置的操作人展示订阅额度。 */
 async function codexQuotaStatus(
@@ -46,10 +34,7 @@ async function codexQuotaStatus(
       cwd: session?.initConfig?.workingDir ?? cwd,
       env: { ...process.env, ...(session?.initConfig ? session.initConfig.env : bot.config.env) },
     });
-    if (!windows.length) return unavailable;
-    const label = locale === 'en' ? 'Codex remaining quota' : 'Codex 剩余额度';
-    const percent = new Intl.NumberFormat(locale, { maximumFractionDigits: 2 });
-    return `${label} · ${windows.map(quota => `${windowLabel(quota, locale)} ${percent.format(quota.remainingPercent)}%`).join(' / ')}`;
+    return formatCodexQuota(windows, locale) ?? unavailable;
   } catch {
     // 额度查询失败也保留会话状态，不回传可能包含账号信息的 RPC 错误。
     return unavailable;

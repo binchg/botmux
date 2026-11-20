@@ -6,6 +6,7 @@ import { getSession } from '../../services/session-store.js';
 import { sessionModelCardStatus } from '../../services/session-model-card-status.js';
 import { sessionCardStatistics } from '../../services/session-card-statistics.js';
 import { sessionCardTaskLocation } from '../../services/session-card-task-context.js';
+import { sessionCardCodexQuota } from '../../services/session-card-codex-quota.js';
 
 const text = (content: string) => ({ tag: 'div', text: { tag: 'lark_md', content } });
 const safe = (value?: string) => value?.replace(/[^\w.:-]/g, '') || '未知';
@@ -26,6 +27,8 @@ export function sessionModelCardElements(sessionId: string, cliId?: string, loca
     const pending = state.desired && state.desired.revision !== state.runtime?.revision
       ? ` → ${compact(state.desired)}${en ? ' next' : ' 待生效'}` : '';
     const rows = [{ tag: 'div', text: { tag: 'plain_text', content: `📁 ${workingDir} · ${status}${pending}` } }];
+    const quota = snapshotKey ? sessionCardCodexQuota(config.session.dataDir, sessionId, locale ?? 'zh', snapshotKey) : undefined;
+    if (quota) rows.push({ tag: 'div', text: { tag: 'plain_text', content: quota } });
     const lines = sessionCardStatistics(config.session.dataDir, sessionId, state, locale, snapshotKey);
     for (const content of lines) rows.push({ tag: 'div', text: { tag: 'plain_text', content } });
     return rows;

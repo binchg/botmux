@@ -3,7 +3,13 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { sessionCardTaskTag } from './session-card-task-context.js';
 
-export interface SessionCardCustomization { compactButtons?: boolean; modelInCard?: boolean; taskContext?: boolean }
+/** 机器人级卡片展示偏好；额度开启后会出现在该机器人符合条件的即时卡中。 */
+export interface SessionCardCustomization {
+  compactButtons?: boolean;
+  modelInCard?: boolean;
+  taskContext?: boolean;
+  codexQuota?: boolean;
+}
 
 /** 未配置、损坏或未命中的机器人沿用原布局。 */
 export function readSessionCardCustomization(dir: string, appId?: string): SessionCardCustomization {
