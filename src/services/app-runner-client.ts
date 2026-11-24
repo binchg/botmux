@@ -113,6 +113,22 @@ export class AppServerClient {
     try { this.child.kill(); } catch { /* 子进程已退出 */ }
   }
 
+  /** 等待旧进程退出并释放线程写锁，随后新连接才能恢复原线程。 */
+  async closeAndWait(): Promise<boolean> {
+    if (this.child.exitCode !== null || this.child.signalCode !== null) return true;
+    return new Promise(resolve => {
+      const finish = (exited: boolean) => {
+        clearTimeout(timer);
+        this.child.off('exit', onExit);
+        resolve(exited);
+      };
+      const onExit = () => finish(true);
+      const timer = setTimeout(() => finish(false), 5_000);
+      this.child.once('exit', onExit);
+      this.close();
+    });
+  }
+
   private write(msg: JsonObject): void {
     if (this.fatalError) throw this.fatalError;
     this.child.stdin.write(JSON.stringify(msg) + '\n');

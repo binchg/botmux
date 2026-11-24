@@ -308,6 +308,7 @@ async function runTurn(content: string): Promise<void> {
     recoverUpdatedClient: async () => {
       const next = await client.openUpdated(modelExecutorEnv(activeExecutor));
       if (!next) return false;
+      if (!await client.closeAndWait()) { next.close(); return false; }
       await replaceCodexAuthClient(next);
       return true;
     },
@@ -326,7 +327,7 @@ async function recoverAuthClient(): Promise<void> {
 async function replaceCodexAuthClient(initialized?: AppServerClient): Promise<void> {
   if (activeExecutor !== 'codex-app') throw new Error('当前执行器不是 Codex');
   const stale = client;
-  stale.close();
+  if (!initialized) stale.close();
   client = initialized ?? new AppServerClient(args.codexBin, args.cwd, modelExecutorEnv(activeExecutor));
   client.onRequest(handleServerRequest);
   client.onNotification(handleNotification);

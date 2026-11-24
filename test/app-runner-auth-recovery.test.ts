@@ -21,6 +21,11 @@ const fs=require('node:fs'),rl=require('node:readline');
 const generation=fs.existsSync(process.env.GENERATION_FILE)
  ? Number(fs.readFileSync(process.env.GENERATION_FILE,'utf8'))+1 : 1;
 fs.writeFileSync(process.env.GENERATION_FILE,String(generation));
+const writer=process.env.GENERATION_FILE+'.writer';
+if(generation===1 && process.env.UPGRADE==='true'){
+ fs.writeFileSync(writer,'active');
+ process.on('SIGTERM',()=>setTimeout(()=>{fs.unlinkSync(writer);process.exit(0);},100));
+}
 const send=value=>console.log(JSON.stringify(value));
 rl.createInterface({input:process.stdin}).on('line',line=>{
  const m=JSON.parse(line);if(!m.id)return;
@@ -29,6 +34,9 @@ rl.createInterface({input:process.stdin}).on('line',line=>{
  if(m.method==='initialize')result={userAgent:'botmux-codex-app/'+(generation>1 && process.env.UPGRADE==='true'?'0.169.1':'0.159.1')+' (Linux Unknown; x86_64)'};
  if(m.method==='config/read')result={config:{model:'gpt-test',model_reasoning_effort:'high'}};
  if(m.method==='hooks/list')result={data:[]};
+ if(m.method==='thread/resume' && fs.existsSync(writer)){
+  send({id:m.id,error:{code:-32600,message:'thread already has an active writer'}});return;
+ }
  if(m.method==='thread/start'||m.method==='thread/resume')result={thread:{id:'original-thread'}};
  if(m.method==='turn/start'){
   const id='turn-'+generation;
