@@ -68,4 +68,5 @@ export interface TurnOutcome {
   startedAtMs: number;
   rateLimitError?: string;
   authRotationError?: string;
+  unavailableModelReply?: string;
 }

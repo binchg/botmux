@@ -3,7 +3,7 @@ import type { Args, ActiveTurn, JsonObject } from './services/app-runner-types.j
 import { AppServerClient } from './services/app-runner-client.js';
 import { resumeStoredAppThread } from './services/app-runner-thread-resume.js';
 import { prefixCodexAppThreadTitle } from './services/codex-app-thread-title.js';
-import { asError, parseArgs, b64Json, writeLine, displayUserContent, prompt, appDeveloperInstructions, userTextInput } from './services/app-runner-protocol.js';
+import { asError, parseArgs, b64Json, writeLine, prompt, appDeveloperInstructions } from './services/app-runner-protocol.js';
 import { handleAppServerRequest, handleAppNotification } from './services/app-runner-events.js';
 import { runSingleTurn, type SingleTurnContext } from './services/app-runner-turn.js';
 import { runTurn as continueTurn } from './services/app-runner-continuation.js';
@@ -22,7 +22,7 @@ import { readMixedPolicy, mixedModels } from './services/mixed-model-policy.js';
 import { MixedModelRouter } from './services/mixed-model-router.js';
 import { fetchTraexCatalog } from './services/traex-model-catalog.js';
 import { readSessionModelDisplay, sessionModelDisplay, withSessionModelDisplay } from './services/session-model-display.js';
-import { beginSessionModelReplyEpoch } from './services/session-model-reply-budget.js';
+import { createAppRunnerSteering } from './services/app-runner-steering.js';
 import { Buffer } from 'node:buffer';
 import { config } from './config.js';
 import { invalidateGlobalConfigCache, readGlobalConfig } from './global-config.js';
@@ -113,81 +113,11 @@ function enqueueNextTurn(content: string): void {
   void drainQueue();
 }
 
-function queuePendingSteersAsNextTurns(turn: ActiveTurn): void {
-  const pending = turn.pendingSteers.splice(0);
-  for (const content of pending) enqueueNextTurn(content);
-}
-
-function flushSteers(turn: ActiveTurn): void {
-  turn.steerChain = turn.steerChain.then(async () => {
-    if (activeTurn !== turn) {
-      queuePendingSteersAsNextTurns(turn);
-      return;
-    }
-    if (!threadId || !turn.turnId) return;
-
-    while (turn.pendingSteers.length > 0) {
-      if (activeTurn !== turn) {
-        queuePendingSteersAsNextTurns(turn);
-        return;
-      }
-      const expectedTurnId = turn.turnId;
-      if (!threadId || !expectedTurnId) return;
-
-      const content = turn.pendingSteers.shift()!;
-      try {
-        const result = await client.request('turn/steer', {
-          threadId,
-          input: userTextInput(sharedContextPrefix() + content),
-          expectedTurnId,
-        });
-        if (result?.turnId) turn.turnId = String(result.turnId);
-        writeLine();
-        writeLine('[user guidance]');
-        writeLine(content);
-        emitMarker('user', {
-          kind: 'guidance',
-          content: displayUserContent(content),
-          at: Date.now(),
-          turnId: turn.turnId ?? expectedTurnId,
-        });
-        if (activeExecutor === 'traex' && !turn.structuredOutput) emitMarker('progress', {
-          content: '已接收追问，沿当前线程继续；如实际排队会自动重选模型。',
-          turnId: turn.turnId, startedAtMs: turn.startedAtMs, updatedAtMs: Date.now(), complete: true,
-        });
-        writeLine();
-      } catch (err: any) {
-        writeLine(`[codex-app] steer failed, queued as next turn: ${err?.message ?? err}`);
-        enqueueNextTurn(content);
-        queuePendingSteersAsNextTurns(turn);
-        return;
-      }
-    }
-  }).catch((err: any) => {
-    writeLine(`[codex-app] steer flush failed: ${err?.message ?? err}`);
-    queuePendingSteersAsNextTurns(turn);
-  });
-}
-
-function handleUserMessage(content: string): void {
-  if (!activeTurn || activeTurn.modelSwitchPending) {
-    enqueueNextTurn(content);
-    return;
-  }
-  // 用户可能在 final_answer 已生成、turn/completed 尚未到达时继续追问。
-  // 清除上一答案的终态闩锁，确保新阶段消息继续进入飞书进度卡，最终回包也采用新答案。
-  beginSessionModelReplyEpoch(config.session.dataDir, args.sessionId);
-  activeTurn.adaptiveCheck?.();
-  activeTurn.guidanceEpoch += 1;
-  activeTurn.finalText = '';
-  activeTurn.finalItemId = undefined;
-  activeTurn.allAgentText = '';
-  // A busy follow-up is a new visible progress epoch even though app-server
-  // keeps it inside the same turn/steer lifecycle. Do not let the previous
-  // assistant text cursor suppress commentary produced for this guidance.
-  activeTurn.pendingSteers.push(content);
-  flushSteers(activeTurn);
-}
+const { queuePendingSteersAsNextTurns, flushSteers, handleUserMessage } = createAppRunnerSteering({
+  dataDir: config.session.dataDir, sessionId: args.sessionId, enqueueNextTurn, sharedContextPrefix, emitMarker,
+  get activeTurn() { return activeTurn; }, get activeExecutor() { return activeExecutor; },
+  get threadId() { return threadId; }, get client() { return client; },
+});
 
 /** 通过 app-server 真正中断当前 turn；线程本身保留，可继续发新指令。 */
 async function interruptActiveTurn(): Promise<void> {
@@ -375,6 +305,12 @@ async function runTurn(content: string): Promise<void> {
   await reloadCodexAuthIfChanged(true);
   return continueTurn(content, { args, emitMarker,
     recoverAuthClient,
+    recoverUpdatedClient: async () => {
+      const next = await client.openUpdated(modelExecutorEnv(activeExecutor));
+      if (!next) return false;
+      await replaceCodexAuthClient(next);
+      return true;
+    },
     runSingleTurn: (text, autoContinue, attempted, forced) => runSingleTurn(turnContext, text, autoContinue, attempted, forced) });
 }
 
@@ -387,15 +323,15 @@ async function recoverAuthClient(): Promise<void> {
   return replaceCodexAuthClient();
 }
 
-async function replaceCodexAuthClient(): Promise<void> {
+async function replaceCodexAuthClient(initialized?: AppServerClient): Promise<void> {
   if (activeExecutor !== 'codex-app') throw new Error('当前执行器不是 Codex');
   const stale = client;
   stale.close();
-  client = new AppServerClient(args.codexBin, args.cwd, modelExecutorEnv(activeExecutor));
+  client = initialized ?? new AppServerClient(args.codexBin, args.cwd, modelExecutorEnv(activeExecutor));
   client.onRequest(handleServerRequest);
   client.onNotification(handleNotification);
   threadReady = false;
-  await client.initialize();
+  if (!initialized) await client.initialize();
   await loadDefaultThreadModel();
   clientAuthStamp = readCodexAuthFileStamp();
 }

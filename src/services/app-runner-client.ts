@@ -12,6 +12,7 @@ export class AppServerClient {
   private requestHandlers: Array<(msg: JsonObject) => boolean> = [];
   private lastStderr = '';
   private fatalError?: Error;
+  private serverVersion?: string;
   private closeHandlers = new Set<() => void>();
 
   constructor(private readonly codexBin: string, private readonly cwd: string, env: NodeJS.ProcessEnv = process.env) {
@@ -59,11 +60,30 @@ export class AppServerClient {
   }
 
   async initialize(): Promise<void> {
-    await this.request('initialize', {
+    const initialized = await this.request('initialize', {
       clientInfo: { name: 'botmux-codex-app', version: '0.0.0' },
       capabilities: { experimentalApi: true },
     });
+    if (typeof initialized?.userAgent === 'string') {
+      this.serverVersion = /^[^/\s]+\/(\d+\.\d+\.\d+[^\s]*)/.exec(initialized.userAgent)?.[1];
+    }
     this.notify('initialized');
+  }
+
+  /** 只有启动器确实加载了不同版本，才交接现有线程。 */
+  async openUpdated(env: NodeJS.ProcessEnv): Promise<AppServerClient | undefined> {
+    if (!this.serverVersion) return undefined;
+    const next = new AppServerClient(this.codexBin, this.cwd, env);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([next.initialize(), new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Codex app-server initialize timed out')), 5_000);
+      })]);
+      if (next.serverVersion && next.serverVersion !== this.serverVersion) return next;
+    } catch { /* 保留原连接，由原失败信息反馈。 */ }
+    finally { clearTimeout(timer); }
+    next.close();
+    return undefined;
   }
 
   request(method: string, params: unknown): Promise<any> {

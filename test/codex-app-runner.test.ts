@@ -3,20 +3,21 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 describe('codex-app runner steering', () => {
+  const steering = readFileSync(join(process.cwd(), 'src/services/app-runner-steering.ts'), 'utf8');
   const source = ['src/codex-app-runner.ts', ...['types', 'client', 'protocol', 'events', 'turn', 'continuation', 'input']
     .map(name => `src/services/app-runner-${name}.ts`)]
     .map(path => readFileSync(join(process.cwd(), path), 'utf8')).join('\n');
 
   it('uses app-server turn/steer for busy follow-up guidance', () => {
-    expect(source).toContain("client.request('turn/steer'");
-    expect(source).toContain('expectedTurnId');
-    expect(source).toContain('input: userTextInput(sharedContextPrefix() + content)');
+    expect(steering).toContain("client.request('turn/steer'");
+    expect(steering).toContain('expectedTurnId');
+    expect(steering).toContain('input: userTextInput(sharedContextPrefix() + content)');
   });
 
   it('falls back to next-turn queueing when steering is unavailable', () => {
-    expect(source).toContain('pendingSteers');
-    expect(source).toContain('steer failed, queued as next turn');
-    expect(source).toContain('queuePendingSteersAsNextTurns(turn)');
+    expect(steering).toContain('pendingSteers');
+    expect(steering).toContain('steer failed, queued as next turn');
+    expect(steering).toContain('queuePendingSteersAsNextTurns(turn)');
   });
 
   it('完整 assistant 消息才投递，不按定时器逐句发卡', () => {
@@ -51,19 +52,16 @@ describe('codex-app runner steering', () => {
   });
 
   it('starts a new progress epoch when busy follow-up guidance arrives', () => {
-    expect(source).toContain('activeTurn.guidanceEpoch += 1');
+    expect(steering).toContain('turn.guidanceEpoch += 1');
   });
 
   it('reopens progress when guidance races with a completed final answer item', () => {
-    const handler = source.slice(
-      source.indexOf('function handleUserMessage'),
-      source.indexOf('function handleServerRequest'),
-    );
-    expect(handler).toContain('activeTurn.guidanceEpoch += 1');
-    expect(handler).toContain("activeTurn.finalText = ''");
-    expect(handler).toContain("activeTurn.allAgentText = ''");
-    expect(handler.indexOf("activeTurn.finalText = ''"))
-      .toBeLessThan(handler.indexOf('activeTurn.pendingSteers.push(content)'));
+    const handler = steering.slice(steering.indexOf('function handleUserMessage'));
+    expect(handler).toContain('turn.guidanceEpoch += 1');
+    expect(handler).toContain("turn.finalText = ''");
+    expect(handler).toContain("turn.allAgentText = ''");
+    expect(handler.indexOf("turn.finalText = ''"))
+      .toBeLessThan(handler.indexOf('turn.pendingSteers.push(content)'));
   });
 
   it('ignores an old agent item that completes after newer guidance', () => {

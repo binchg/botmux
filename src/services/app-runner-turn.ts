@@ -11,6 +11,12 @@ import { agentTeamOutputSchema } from './agent-team-result-schema.js';
 import { MixedProviderUnavailable } from './mixed-model-router.js';
 import { waitForMixedTurn } from './mixed-model-admission.js';
 
+function isModelNotFound(message?: string): boolean {
+  if (!message) return false;
+  try { return JSON.parse(message)?.error?.code === 'model_not_found'; }
+  catch { return false; }
+}
+
 /** 单轮执行所需状态；可变字段通过入口的访问器读取，避免切换后使用旧进程。 */
 export interface SingleTurnContext {
   args: Args;
@@ -80,6 +86,7 @@ export async function runSingleTurn(context: SingleTurnContext, content: string,
   persistExecutor();
   const selection = { model: selectedModel, effort: requested?.effort ?? (adaptive ? 'xhigh' : defaultThreadEffort),
     serviceTier: requested?.serviceTier ?? defaultServiceTier };
+  const handoff = context.pendingHandoff;
   const loadPercent = adaptive ? admission?.catalog.find(model => model.model === selectedModel)?.loadPercent : undefined;
   const selectedRuntime: SessionModelRuntime = {
     sessionId: args.sessionId, pid: process.pid, threadId: tid, phase: 'running', revision: requested?.revision,
@@ -181,7 +188,7 @@ export async function runSingleTurn(context: SingleTurnContext, content: string,
 
     const result = await client.request('turn/start', {
       threadId: tid,
-      input: userTextInput(sharedContextPrefix() + context.pendingHandoff + content),
+      input: userTextInput(sharedContextPrefix() + handoff + content),
       cwd: args.cwd,
       approvalPolicy: 'never',
       sandboxPolicy: { type: 'dangerFullAccess' },
@@ -240,8 +247,12 @@ export async function runSingleTurn(context: SingleTurnContext, content: string,
     modelReceipt(turn.turnFailed || turn.rateLimitError || turn.quotaExhaustedError || turn.authRotationError || turn.criticalHookFailure ? 'failed' : 'completed', turn.turnId);
 
     const finalText = (turn.finalText || turn.allAgentText).trim();
+    // 已执行的工具、助手输出或追问都不能随原请求重放。
+    const unavailableModelReply = activeExecutor === 'codex-app' && !mixed && !handoff && !turn.adaptiveActivityAt
+      && !turn.guidanceEpoch && !turn.userInterrupted && !turn.modelSwitchPending && !turn.criticalHookFailure
+      && isModelNotFound(turn.providerError) ? finalText : undefined;
     const completedAtMs = Date.now();
-    if (!turn.rateLimitError && !turn.authRotationError && !turn.adaptiveNextModel && !turn.modelSwitchPending && finalText) {
+    if (!turn.rateLimitError && !turn.authRotationError && !turn.adaptiveNextModel && !turn.modelSwitchPending && !unavailableModelReply && finalText) {
       emitMarker('final', {
         turnId: turn.turnId ?? `codex-app-${completedAtMs}`,
         content: finalText,
@@ -255,6 +266,7 @@ export async function runSingleTurn(context: SingleTurnContext, content: string,
       startedAtMs: turn.startedAtMs,
       rateLimitError: turn.modelSwitchPending ? undefined : turn.rateLimitError,
       authRotationError: turn.modelSwitchPending ? undefined : turn.authRotationError,
+      unavailableModelReply,
       adaptiveNextModel: turn.userInterrupted || turn.modelSwitchPending ? undefined : turn.adaptiveNextModel,
     };
   } catch (error) {

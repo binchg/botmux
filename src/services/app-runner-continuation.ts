@@ -11,6 +11,7 @@ export interface RunContext {
   emitMarker: (kind: string, payload: unknown) => void;
   runSingleTurn: (content: string, autoContinue: boolean, attempted: Set<string>, forcedModel?: string) => Promise<TurnOutcome>;
   recoverAuthClient: () => Promise<void>;
+  recoverUpdatedClient: () => Promise<boolean>;
 }
 
 export async function runTurn(content: string, context: RunContext): Promise<void> {
@@ -19,6 +20,7 @@ export async function runTurn(content: string, context: RunContext): Promise<voi
   let nextContent = content;
   let autoContinueCount = 0;
   let authRecoveryCount = 0;
+  let checkedClientVersion = false;
   let silentRetry = false;
   const attempted = new Set<string>();
   let forcedModel: string | undefined;
@@ -26,6 +28,17 @@ export async function runTurn(content: string, context: RunContext): Promise<voi
   while (true) {
     const outcome = await runSingleTurn(nextContent, autoContinueCount > 0 || !!forcedModel || silentRetry, attempted, forcedModel);
     silentRetry = false;
+    if (outcome.unavailableModelReply) {
+      if (!checkedClientVersion && await context.recoverUpdatedClient()) {
+        checkedClientVersion = true;
+        silentRetry = true;
+        continue;
+      }
+      const completedAtMs = Date.now();
+      emitMarker('final', { turnId: outcome.turnId ?? `codex-app-${completedAtMs}`, content: outcome.unavailableModelReply,
+        startedAtMs: outcome.startedAtMs, completedAtMs });
+      return;
+    }
     if (outcome.authRotationError) {
       if (authRecoveryCount >= 1) {
         const message = codexAuthRecoveryFailed(args.locale, outcome.authRotationError);
