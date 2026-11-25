@@ -7,6 +7,7 @@ import { buildMarkdownCard, buildTitledMarkdownCard } from '../im/lark/md-card.j
 import { nativeConversationHistoryButtons } from '../im/lark/conversation-history-button.js';
 import { codexSessionCardRows, compactCodexModel } from '../im/lark/session-model-card.js';
 import { localeForBot } from '../i18n/index.js';
+import { resolveBrandLabel } from '../bot-registry.js';
 import { formatMathForLark } from './outbound-math.js';
 import { replyMessage, sendMessage, updateMessage } from '../im/lark/client.js';
 import { logger } from '../utils/logger.js';
@@ -52,8 +53,7 @@ export function startExternalCodexBridge(selfAppId: string): void {
       },
       findTopic: b => recoverCodexTopic(join(config.session.dataDir, 'conversation-history'),
         b.threadId, b.larkAppId, b.chatId, root => getMessageDetail(b.larkAppId, root)),
-      reply: async (b, text, uuid, kind) => replyMessage(b.larkAppId, b.outputRootMessageId ?? b.rootMessageId,
-        buildExternalCodexForwardCard(b, text, kind, nativeConversationHistoryButtons({ ...b, rootMessageId: b.outputRootMessageId ?? b.rootMessageId }, kind === 'user' ? uuid : false)), 'interactive', true, uuid),
+      reply: deliverExternalCodexOutput,
       status: async (b, status) => {
         const card = buildFollowupStatusCard(b, status);
         if (status.cardId) {
@@ -106,8 +106,7 @@ export function startExternalCodexBridge(selfAppId: string): void {
   const statePath = join(homedir(), '.local/state/botmux/external-codex.json');
   mkdirSync(dirname(statePath), { recursive: true, mode: 0o700 });
   externalCodexBridge = new ExternalCodexBridge(cfg.bindings, statePath, {
-    reply: async (b, text, uuid, kind) => replyMessage(b.larkAppId, b.outputRootMessageId ?? b.rootMessageId,
-        buildExternalCodexForwardCard(b, text, kind, nativeConversationHistoryButtons({ ...b, rootMessageId: b.outputRootMessageId ?? b.rootMessageId }, kind === 'user' ? uuid : false)), 'interactive', true, uuid),
+    reply: deliverExternalCodexOutput,
     received: (b, messageId, text) => replyMessage(b.larkAppId, b.outputRootMessageId ?? b.rootMessageId,
       buildExternalCodexStatusCard(b, text), 'interactive', true, `codex-status:${messageId}`),
     turn: (b, text, checkpoint, clientUserMessageId) => runExternalCodexTurn(cfg.codexBin, cfg.codexHome, b, text, checkpoint, clientUserMessageId),
@@ -117,13 +116,27 @@ export function startExternalCodexBridge(selfAppId: string): void {
   logger.info(`[external-codex] observing ${cfg.bindings.length} explicitly bound thread(s)`);
 }
 
-/** Mirror public content without repeating bridge metadata or statistics. */
+async function deliverExternalCodexOutput(binding: ExternalCodexBinding, text: string, uuid: string, kind?: ExternalCodexOutputKind) {
+  const rootMessageId = binding.outputRootMessageId ?? binding.rootMessageId;
+  const historyButtons = kind === 'user' || kind === 'progress'
+    ? nativeConversationHistoryButtons({ ...binding, rootMessageId }, kind === 'user' ? uuid : false)
+    : [];
+  return replyMessage(binding.larkAppId, rootMessageId, buildExternalCodexForwardCard(binding, text, kind, historyButtons),
+    'interactive', true, uuid);
+}
+
+/** Use the standard Botmux result card for native final replies. */
 export function buildExternalCodexForwardCard(binding: ExternalCodexBinding, text: string, kind?: ExternalCodexOutputKind, historyButtons: any[] = []): string {
   const md = formatMathForLark(text);
+  if (kind === 'final' || kind === undefined) {
+    const recipient = /^ou_[A-Za-z0-9]+$/.test(binding.ownerOpenId) ? binding.ownerOpenId : undefined;
+    return buildMarkdownCard(md, recipient, resolveBrandLabel(binding.larkAppId), localeForBot(binding.larkAppId));
+  }
   const question = binding.currentUserMessage?.trim() || binding.firstUserMessage?.trim();
   // The question itself already occupies the whole user card; never quote it twice.
-  const card = JSON.parse(kind === 'user' || !question ? buildMarkdownCard(md, undefined, '')
-    : buildTitledMarkdownCard({ title: question, md, brand: '', template: kind === 'progress' ? 'turquoise' : 'green' }));
+  const card = JSON.parse(kind === 'progress' && question
+    ? buildTitledMarkdownCard({ title: question, md, brand: '', template: 'turquoise' })
+    : buildMarkdownCard(md, undefined, ''));
   if (historyButtons.length) card.body.elements.push(...historyButtons);
   return JSON.stringify(card);
 }

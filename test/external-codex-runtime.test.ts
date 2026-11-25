@@ -3,6 +3,7 @@ import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runExternalCodexTurn, buildExternalCodexForwardCard, buildExternalCodexStatusCard, buildFollowupStatusCard } from '../src/services/external-codex-runtime.js';
+import { buildMarkdownCard } from '../src/im/lark/md-card.js';
 
 it('renders the three native-session lines and two read-only links immediately', () => {
   const dir = mkdtempSync(join(tmpdir(), 'external-codex-status-'));
@@ -68,14 +69,18 @@ rl.on('line', l => {
 });
 
 
-it('titles replies with the current question and omits bridge metadata and statistics', () => {
-  const text = 'VS Code 原始结果\n第二行保留';
-  const card = buildExternalCodexForwardCard({ threadId: 'main-session-123', rolloutPath: '', cwd: '/repo', chatId: 'chat', larkAppId: 'app', ownerOpenId: 'owner', rootMessageId: 'root', firstUserMessage: '旧问题', currentUserMessage: '第二次追问测试' }, text, 'final');
+it('renders a native final with the same Markdown and footer as the ordinary result card', () => {
+  const text = '**VS Code 原始结果**\n\n- 第二行保留\n- `inline-code`';
+  const binding = { threadId: 'main-session-123', rolloutPath: '', cwd: '/repo', chatId: 'chat', larkAppId: 'app',
+    ownerOpenId: 'ou_owner', rootMessageId: 'root', firstUserMessage: '旧问题', currentUserMessage: '第二次追问测试' };
+  const card = buildExternalCodexForwardCard(binding, text, 'final', [{ tag: 'button', text: { content: '对话历史' } }]);
   const parsed = JSON.parse(card);
-  expect(parsed.header.title.content).toBe('第二次追问测试');
-  expect(card).toContain('VS Code 原始结果'); expect(card).toContain('第二行保留');
-  for (const redundant of ['原会话转发', '追问原文', 'main-ses', 'botmux', 'Token', '累计运行', '/repo', '旧问题']) expect(card).not.toContain(redundant);
-  expect(parsed.body.elements.map((e: any) => e.tag)).toEqual(['markdown']);
+  expect(card).toBe(buildMarkdownCard(text, 'ou_owner', undefined, 'zh'));
+  expect(buildExternalCodexForwardCard(binding, text)).toBe(card);
+  expect(parsed.header).toBeUndefined();
+  expect(parsed.body.elements.map((e: any) => e.tag)).toEqual(['markdown', 'hr', 'markdown']);
+  expect(card).toContain('发送给');
+  for (const redundant of ['第二次追问测试', '旧问题', '原会话转发', 'Token', '累计运行', '对话历史']) expect(card).not.toContain(redundant);
 });
 
 it('shows a question once and uses its original text for progress titles', () => {
@@ -86,6 +91,7 @@ it('shows a question once and uses its original text for progress titles', () =>
   expect(user.body.elements[0].content).toContain('第二次追问测试');
   const progress = JSON.parse(buildExternalCodexForwardCard(binding, '检查通过。', 'progress'));
   expect(progress.header.title.content).toBe('第二次追问测试');
+  expect(progress.header.template).toBe('turquoise');
   expect(progress.body.elements).toHaveLength(1);
   expect(progress.body.elements[0].content).toContain('检查通过。');
 });
