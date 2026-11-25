@@ -13,6 +13,7 @@ import { CodexAutoBridge, type AutoCodexBinding } from './codex-auto-bridge.js';
 import { CodexAppServerProbe } from './codex-app-threads.js';
 import { collectBotmuxSessionIdentities } from './session-store.js';
 import { submitToCodexOwner } from './codex-owner-ipc.js';
+import { submitToVscodeSsh, type CodexVscodeSshTarget } from './codex-vscode-ssh.js';
 import { readCodexSessionStatistics, codexStatisticsText } from './codex-session-statistics.js';
 import { recoverCodexTopic } from './codex-topic-recovery.js';
 import { getMessageDetail } from '../im/lark/client.js';
@@ -32,6 +33,7 @@ export function startExternalCodexBridge(selfAppId: string): void {
   if (ownerApps.some((app: string) => app !== selfAppId)) throw new Error('External Codex bindings must belong to one bot');
   if (cfg.mode === 'auto') {
     if (!Array.isArray(cfg.codexHomes) || !cfg.codexHomes.length || !cfg.larkAppId || !cfg.chatId || !cfg.ownerOpenId || !cfg.codexBin) throw new Error('Invalid automatic Codex bridge config');
+    const vscodeTargets: Record<string, CodexVscodeSshTarget> = cfg.vscodeSshThreads ?? {};
     const auto = new CodexAutoBridge(cfg, join(homedir(), '.local/state/botmux/codex-auto/registry.json'), {
       topic: (b, uuid) => {
         if (!b.firstUserMessage) throw new Error('Automatic topic requires the original user message');
@@ -51,9 +53,11 @@ export function startExternalCodexBridge(selfAppId: string): void {
         return replyMessage(b.larkAppId, b.outputRootMessageId ?? b.rootMessageId, card, 'interactive', true, uuid);
       },
       turn: async (b, text, checkpoint, clientUserMessageId) => {
-        if (!await submitToCodexOwner(b.codexHome, b.threadId, text, checkpoint, clientUserMessageId)) {
-          throw new NativeOwnerUnavailable(`Codex IDE owner unavailable for ${b.threadId}; follow-up retained`);
-        }
+        const target = Object.hasOwn(vscodeTargets, b.threadId) ? vscodeTargets[b.threadId] : undefined;
+        const submitted = target
+          ? await submitToVscodeSsh(target, b.threadId, b.rolloutPath, text, checkpoint, clientUserMessageId)
+          : await submitToCodexOwner(b.codexHome, b.threadId, text, checkpoint, clientUserMessageId);
+        if (!submitted) throw new NativeOwnerUnavailable(`Codex IDE owner unavailable for ${b.threadId}; follow-up retained`);
       },
       excluded: () => collectBotmuxSessionIdentities() ?? new Set(),
       error: e => logger.error(`[codex-auto] ${String(e)}`),
