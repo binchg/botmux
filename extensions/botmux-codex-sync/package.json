@@ -3,11 +3,11 @@
   "displayName": "Botmux Codex 会话同步",
   "description": "在 Remote SSH 的 VS Code 中发现、跟随和追问 Botmux 与原生 Codex 会话。",
   "publisher": "botmux-local",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "engines": { "vscode": "^1.90.0" },
   "main": "./extension.cjs",
   "extensionKind": ["workspace"],
-  "activationEvents": ["onStartupFinished"],
+  "activationEvents": ["onStartupFinished", "onWebviewPanel:botmuxSync.chat"],
   "contributes": {
     "commands": [
       { "command": "botmuxSync.refresh", "title": "Botmux: 刷新会话", "icon": "$(refresh)" },

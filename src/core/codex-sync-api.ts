@@ -45,6 +45,8 @@ export function registerCodexSyncApi(appId: string, route: Route,
   json: (res: ServerResponse, status: number, value: unknown) => void,
   body: (req: IncomingMessage) => Promise<any>): void {
   const receiptDir = join(config.session.dataDir, 'codex-sync-receipts');
+  const receiptPath = (key: string, id: string) => join(receiptDir,
+    createHash('sha256').update(`${appId}:${key}:${id}`).digest('hex') + '.json');
   const mirrors = new Set<string>(), mirroring = new Set<string>();
   const flushMirror = async (file: string) => {
     if (mirroring.has(file)) return;
@@ -75,10 +77,24 @@ export function registerCodexSyncApi(appId: string, route: Route,
       const running = thread.kind === 'bot' ? modelRuntimeAlive(runtime) && runtime?.phase === 'running' : externalCodexBridge?.isBusy(thread.rootMessageId, appId);
       const cursor = Number(new URL(req.url!, 'http://localhost').searchParams.get('cursor') ?? '0');
       if (!Number.isSafeInteger(cursor) || cursor < 0) return json(res, 400, { error: 'invalid_cursor' });
-      if (!thread.path) return json(res, 200, { events: [], cursor: 0, source: thread.threadId, waiting: true });
-      json(res, 200, { ...readCodexSyncEvents(thread.path, cursor), source: thread.threadId,
+      const sync = thread.kind === 'native' ? externalCodexBridge?.followupStatus(thread.rootMessageId, appId) :
+        { phase: running ? 'running' : 'idle', running: !!running, queued: 0 };
+      if (!thread.path) return json(res, 200, { events: [], cursor: 0, source: thread.threadId, waiting: true, sync });
+      json(res, 200, { ...readCodexSyncEvents(thread.path, cursor), source: thread.threadId, sync,
         statistics: readCodexSessionStatistics(thread.path, Date.now(), running), createdAt: thread.createdAt });
     } catch (e) { json(res, 503, { error: e instanceof Error ? e.message : String(e) }); }
+  });
+  route('GET', '/api/codex-sync/:key/receipt', (req, res, params) => {
+    const requestId = new URL(req.url!, 'http://localhost').searchParams.get('requestId') ?? '';
+    if (!/^[\w-]{8,100}$/.test(requestId)) return json(res, 400, { error: 'invalid_request_id' });
+    const thread = codexSyncThreads(appId).find(t => t.key === params.key);
+    if (!thread) return json(res, 404, { error: 'thread_not_found' });
+    const file = receiptPath(params.key, requestId);
+    if (!existsSync(file)) return json(res, 200, { status: 'missing' });
+    const saved = JSON.parse(readFileSync(file, 'utf8'));
+    const accepted = saved.status === 'accepted' || (thread.kind === 'native' &&
+      externalCodexBridge?.hasReceived(thread.rootMessageId, appId, `ide-${requestId}`));
+    json(res, 200, { status: accepted ? 'accepted' : 'uncertain', mirrored: saved.mirrored === true });
   });
   const queues = new Map<string, Promise<void>>();
   route('POST', '/api/codex-sync/:key/input', async (req, res, params) => {
@@ -90,11 +106,18 @@ export function registerCodexSyncApi(appId: string, route: Route,
       const thread = codexSyncThreads(appId).find(t => t.key === params.key);
       if (!thread) return json(res, 404, { error: 'thread_not_found' });
       const dir = receiptDir; mkdirSync(dir, { recursive: true, mode: 0o700 });
-      const file = join(dir, createHash('sha256').update(`${appId}:${params.key}:${input.requestId}`).digest('hex') + '.json');
+      const file = receiptPath(params.key, input.requestId);
       const fingerprint = createHash('sha256').update(input.text).digest('hex');
       if (existsSync(file)) {
         const saved = JSON.parse(readFileSync(file, 'utf8'));
-        return json(res, saved.fingerprint === fingerprint && saved.status === 'accepted' ? 200 : 409, { ok: saved.fingerprint === fingerprint && saved.status === 'accepted', status: saved.status, duplicate: true });
+        if (saved.fingerprint !== fingerprint) return json(res, 409, { ok: false, status: 'conflict', duplicate: true });
+        if (saved.status !== 'accepted' && thread.kind === 'native' &&
+            externalCodexBridge?.hasReceived(thread.rootMessageId, appId, `ide-${input.requestId}`)) {
+          atomicWriteFileSync(file, JSON.stringify({ ...saved, status: 'accepted' }), { mode: 0o600 });
+          mirrors.add(file); void flushMirror(file);
+          return json(res, 200, { ok: true, status: 'accepted', duplicate: true });
+        }
+        return json(res, saved.status === 'accepted' ? 200 : 409, { ok: saved.status === 'accepted', status: saved.status, duplicate: true });
       }
       const uuid = createHash('sha256').update(`${appId}:${params.key}:${input.requestId}`).digest('hex').slice(0, 32);
       const save = (status: string) => atomicWriteFileSync(file, JSON.stringify({ status, fingerprint, appId, mirror: { rootMessageId: thread.rootMessageId, text: input.text, uuid }, mirrored: false }), { mode: 0o600 });

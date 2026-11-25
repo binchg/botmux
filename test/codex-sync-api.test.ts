@@ -40,6 +40,21 @@ it('submits to the original live session, mirrors the question once and persists
  expect(ctx.send).toHaveBeenCalledTimes(1);expect(ctx.reply).toHaveBeenCalledTimes(1);
  expect((await call('POST /api/codex-sync/:key/input',{...body,text:'different'})).status).toBe(409);
 });
+it('returns a receipt for the same session and never discloses the original question in it',async()=>{
+ const route='GET /api/codex-sync/:key/receipt';
+ async function receipt(key:string,requestId:string){
+   const res:any={};
+   await routes[route]({url:`/api/codex-sync/x/receipt?requestId=${requestId}`},res,{key});
+   return res;
+ }
+ expect((await receipt('same-session','check-receipt')).value).toEqual({status:'missing'});
+ await call('POST /api/codex-sync/:key/input',{text:'private test text',requestId:'check-receipt'});
+ const data=await receipt('same-session','check-receipt');
+ expect(data.value.status).toBe('accepted');
+ expect(JSON.stringify(data.value)).not.toContain('private test text');
+ expect((await receipt('another','check-receipt')).status).toBe(404);
+ expect((await receipt('same-session','!')).status).toBe(400);
+});
 it('cold-restores the same session and never creates or forks a new thread',async()=>{
  const ds=ctx.live;ctx.live=undefined;ctx.reconcile.mockResolvedValue({ok:true,ds});
  const r=await call('POST /api/codex-sync/:key/input',{text:'followup',requestId:'request-b'});

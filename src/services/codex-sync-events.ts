@@ -36,6 +36,8 @@ export function publicCodexEvent(row: any, id: string): CodexSyncEvent | undefin
   if (row?.type === 'response_item' && p.type === 'message') {
     const text = (Array.isArray(p.content) ? p.content : []).filter((c: any) => ['input_text', 'output_text'].includes(c.type)).map((c: any) => c.text ?? '').join('');
     if (p.role === 'user') {
+      const origin = p.internal_chat_message_metadata_passthrough?.content_item_metadata;
+      if (Array.isArray(origin) && origin.length && origin.every((item: any) => item?.provenance?.type === 'harness')) return;
       const question = publicCodexUserText(text);
       if (question?.trim()) return { id, kind: 'user', text: question, at: row.timestamp };
     }

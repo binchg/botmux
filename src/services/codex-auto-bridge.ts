@@ -116,6 +116,16 @@ export class CodexAutoBridge {
     for (const observer of this.observers.values()) if (observer.owns(root, app)) return observer.isBusy(root, app);
     return false;
   }
+  followupStatus(root: string, app: string) {
+    if (!this.owns(root, app)) return undefined;
+    for (const observer of this.observers.values()) if (observer.owns(root, app)) return observer.followupStatus(root, app);
+    return undefined;
+  }
+  hasReceived(root: string, app: string, messageId: string): boolean {
+    if (!this.owns(root, app)) return false;
+    for (const observer of this.observers.values()) if (observer.owns(root, app)) return observer.hasReceived(root, app, messageId);
+    return false;
+  }
   async receive(root: string, app: string, sender: string, messageId: string, text: string): Promise<boolean> {
     const found = Object.entries(this.registry.bindings).find(([, b]) => (b.rootMessageId === root || b.supersededRootMessageIds?.includes(root)) && b.larkAppId === app);
     if (!found) return false;

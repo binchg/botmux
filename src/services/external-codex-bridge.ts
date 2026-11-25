@@ -236,6 +236,24 @@ export class ExternalCodexBridge {
     const b = this.bindings.find(b => b.rootMessageId === rootId && b.larkAppId === appId);
     return !!b && (!!this.states.get(b.threadId)?.busy || this.submitting.has(b.threadId));
   }
+  followupStatus(rootId: string, appId: string) {
+    const b = this.bindings.find(b => b.rootMessageId === rootId && b.larkAppId === appId);
+    const state = b && this.states.get(b.threadId);
+    if (!state) return undefined;
+    const pending = state.pending;
+    const relevant = (pending && state.followupCards?.[pending.messageId]) ??
+      Object.values(state.followupCards ?? {}).find(card => ['accepted', 'sending', 'uncertain'].includes(card.phase));
+    return {
+      phase: relevant?.phase ?? (pending ? 'queued' : state.busy ? 'running' : 'idle'),
+      queued: (state.queued?.length ?? 0) + (pending?.status === 'queued' ? 1 : 0),
+      running: state.busy,
+      checkedAt: relevant?.checkedAt,
+    };
+  }
+  hasReceived(rootId: string, appId: string, messageId: string): boolean {
+    const b = this.bindings.find(b => b.rootMessageId === rootId && b.larkAppId === appId);
+    return !!b && !!this.states.get(b.threadId)?.received.includes(messageId);
+  }
   async receive(rootId: string, appId: string, sender: string, messageId: string, text: string): Promise<boolean> {
     const b = this.bindings.find(b => b.rootMessageId === rootId && b.larkAppId === appId);
     if (!b) return false;
