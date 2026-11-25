@@ -2,7 +2,7 @@ import { it, expect, vi } from 'vitest';
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runExternalCodexTurn, buildExternalCodexForwardCard, buildExternalCodexStatusCard } from '../src/services/external-codex-runtime.js';
+import { runExternalCodexTurn, buildExternalCodexForwardCard, buildExternalCodexStatusCard, buildFollowupStatusCard } from '../src/services/external-codex-runtime.js';
 
 it('renders the three native-session lines and two read-only links immediately', () => {
   const dir = mkdtempSync(join(tmpdir(), 'external-codex-status-'));
@@ -23,6 +23,18 @@ it('renders the three native-session lines and two read-only links immediately',
     expect(actions.map((action: any) => action.text.content)).toEqual(['🖥️ 打开 Web 终端', '🔗 对话历史']);
     expect(actions[0].multi_url.url).toContain('view=terminal');
     expect(actions[1].multi_url.url).not.toContain('view=terminal');
+    const followup = JSON.parse(buildFollowupStatusCard({
+      threadId: 'native-status', rolloutPath, cwd: '/full/workspace', chatId: 'chat',
+      larkAppId: 'app', ownerOpenId: 'owner', rootMessageId: 'root',
+    }, {
+      messageId: 'question', text: '立即追问', phase: 'running', checkedAt: Date.now(), quotaLabel: 'Codex 剩余额度 · 7 天 63%',
+    }));
+    expect(followup.config.update_multi).toBe(true);
+    expect(followup.elements.slice(0, 2).map((row: any) => row.text.content)).toEqual([
+      '📁 /full/workspace · 6-astra U F×', 'Codex 剩余额度 · 7 天 63%',
+    ]);
+    expect(followup.elements.at(-1).actions.map((action: any) => action.text.content)).toEqual(['🖥️ 打开 Web 终端', '🔗 对话历史']);
+    expect(followup.elements[4].text.content).toContain('执行中');
   } finally { vi.unstubAllEnvs(); rmSync(dir, { recursive: true, force: true }); }
 });
 

@@ -8,6 +8,7 @@ const f = vi.hoisted(() => ({
   allSessions: false,
   grants: {} as Record<string, string>,
   read: vi.fn(),
+  readOriginal: vi.fn(),
 }));
 vi.mock('../src/config.js', () => ({ config: { daemon: { workingDir: '/bot/cwd' }, session: { dataDir: '/data' } } }));
 vi.mock('../src/bot-registry.js', () => ({ getBot: () => f.bot }));
@@ -18,9 +19,10 @@ vi.mock('../src/services/session-card-customization.js', () => ({
 vi.mock('../src/services/codex-quota.js', async importOriginal => ({
   ...await importOriginal<typeof import('../src/services/codex-quota.js')>(), readCodexQuota: f.read,
 }));
+vi.mock('../src/services/codex-original-daemon.js', () => ({ readOriginalCodexQuota: f.readOriginal }));
 
 import { sessionModelCardElements } from '../src/im/lark/session-model-card.js';
-import { sessionCardCodexQuota, sessionCardCodexQuotaNeedsRefresh } from '../src/services/session-card-codex-quota.js';
+import { nativeSessionCardQuota, sessionCardCodexQuota, sessionCardCodexQuotaNeedsRefresh } from '../src/services/session-card-codex-quota.js';
 
 let scenario = 0;
 beforeEach(() => {
@@ -30,6 +32,7 @@ beforeEach(() => {
   f.grants = {};
   f.allSessions = false;
   f.read.mockReset();
+  f.readOriginal.mockReset();
 });
 
 /** 等待已排队的额度查询与其微任务更新快照。 */
@@ -102,7 +105,7 @@ it('机器人开启全会话展示后覆盖普通成员和无所有者会话', a
   f.session.ownerOpenId = 'ou_guest';
   f.read.mockResolvedValue([{ window: 'primary', remainingPercent: 42, durationMinutes: 300 }]);
   const label = () => sessionCardCodexQuota('/data', 's', 'zh', 'card-a');
-  expect(label()).toBeUndefined();
+  expect(label()).toBe('Codex 剩余额度 · 读取中');
   await settleRead();
   expect(label()).toContain('42%');
   delete f.session.ownerOpenId;
@@ -110,4 +113,22 @@ it('机器人开启全会话展示后覆盖普通成员和无所有者会话', a
   f.session.adoptedFrom = { source: 'tmux' };
   expect(label()).toBeUndefined();
   expect(f.read).toHaveBeenCalledOnce();
+});
+
+it('外部会话按实际库共享缓存，库与库之间不复用额度', async () => {
+  f.allSessions = true;
+  f.readOriginal.mockResolvedValueOnce([{ window: 'primary', remainingPercent: 63, durationMinutes: 10080 }])
+    .mockResolvedValueOnce(undefined);
+  f.read.mockResolvedValue([{ window: 'secondary', remainingPercent: 24, durationMinutes: 300 }]);
+  const q = (home: string, thread = 't') =>
+    nativeSessionCardQuota('/data', f.session.larkAppId, thread, 'ou_guest', home, '/bin/codex', '/workspace', 'zh');
+  expect(q('/native')).toEqual({ label: 'Codex 剩余额度 · 读取中', pending: true });
+  expect(q('/native', 't2')?.pending).toBe(true);
+  await settleRead();
+  expect(q('/native', 't2')?.label).toContain('63%');
+  expect(q('/isolated')?.pending).toBe(true);
+  await settleRead();
+  expect(q('/isolated')?.label).toContain('24%');
+  expect(f.readOriginal.mock.calls).toEqual([['/native'], ['/isolated']]);
+  expect(f.read).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ env: expect.objectContaining({ CODEX_HOME: '/isolated' }) }));
 });

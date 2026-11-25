@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { createServer } from 'node:http';
 import { WebSocketServer } from 'ws';
 import { expect, it, vi } from 'vitest';
-import { submitToOriginalCodexDaemon } from '../src/services/codex-original-daemon.js';
+import { readOriginalCodexQuota, submitToOriginalCodexDaemon } from '../src/services/codex-original-daemon.js';
 
 it('submits only the verified original and leaves it queued while the daemon reports active', async () => {
   const home = mkdtempSync(join(tmpdir(), 'codex-durable-'));
@@ -34,6 +34,7 @@ it('submits only the verified original and leaves it queued while the daemon rep
     const result = req.method === 'turn/start' ? { turn: { id: 'new-turn' } } :
       req.method === 'thread/turns/list' ? { data: [{ id: 'active-turn', status: 'inProgress' }] } :
       req.method === 'turn/steer' ? { turnId: 'active-turn' } :
+      req.method === 'account/rateLimits/read' ? { rateLimits: { primary: { usedPercent: 7, windowDurationMins: 300 } } } :
       { thread: { id: 'original', path: actualPath, status: { type: status } } };
     socket.send(JSON.stringify({ id: req.id, result }));
   }));
@@ -63,6 +64,9 @@ it('submits only the verified original and leaves it queued while the daemon rep
     expect(checkpoint.mock.calls).toEqual([[], [false, undefined]]);
     expect(await submitToOriginalCodexDaemon(home, 'original', original, 'ended', checkpoint, 'raced-receipt', true)).toBe(true);
     expect(requests.at(-1)).toMatchObject({ method: 'turn/start', params: { clientUserMessageId: 'raced-receipt' } });
+    const beforeQuota = requests.length;
+    expect(await readOriginalCodexQuota(home)).toEqual([{ window: 'primary', durationMinutes: 300, remainingPercent: 93 }]);
+    expect(requests.slice(beforeQuota).map(r => r.method)).toEqual(['initialize', 'account/rateLimits/read']);
     expect(requests.some(row => row.method === 'thread/fork')).toBe(false);
   } finally {
     for (const socket of transport.clients) socket.terminate();

@@ -32,11 +32,15 @@ export interface FollowupCard {
   phase: FollowupPhase;
   checkedAt: number;
   publishedAt?: number;
+  publishedQuota?: string;
+  quotaLabel?: string;
   cardId?: string;
   clientId?: string;
   turnId?: string;
   retryAt?: number;
 }
+
+export interface FollowupQuota { label: string; pending?: boolean }
 
 function setPhase(card: FollowupCard | undefined, phase: FollowupPhase): void {
   if (!card || card.phase === 'finished' || card.phase === 'aborted') return;
@@ -163,6 +167,7 @@ export class ExternalCodexBridge {
     proxyEnqueue?: (binding: ExternalCodexBinding, text: string, clientId: string) => Promise<void>;
     isProtected?: (binding: ExternalCodexBinding) => boolean;
     status?: (binding: ExternalCodexBinding, card: Readonly<FollowupCard>) => Promise<string | undefined>;
+    statusQuota?: (binding: ExternalCodexBinding) => FollowupQuota | undefined;
     turn: (binding: ExternalCodexBinding, text: string, checkpoint: FollowupCheckpoint, clientUserMessageId?: string) => Promise<void>;
     error: (error: unknown) => void;
   }, initialOffsets?: Record<string, number>, notBefore?: number) {
@@ -273,9 +278,17 @@ export class ExternalCodexBridge {
     if (state.pending) (state.queued ??= []).push(input);
     else state.pending = { ...input, status: 'queued' };
     if (this.deps.status) (state.followupCards ??= {})[messageId] = {
-      messageId, text, phase: 'queued', checkedAt: Date.now(), clientId: clientUserMessageId,
+      messageId, text, phase: this.deps.isProtected?.(b) ? 'protected' : 'queued', checkedAt: Date.now(), clientId: clientUserMessageId,
     };
     this.save();
+    if (this.deps.statusQuota) {
+      setImmediate(() => {
+        try {
+          const card = state.followupCards?.[messageId];
+          if (card) void this.scheduleFollowupCard(b, state, card)?.().catch(this.deps.error);
+        } catch (error) { this.deps.error(error); }
+      });
+    }
     if (clientUserMessageId && this.deps.proxyEnqueue) {
       try { await this.deps.proxyEnqueue(b, text, clientUserMessageId); }
       catch (error) { this.deps.error(error); }
@@ -291,6 +304,37 @@ export class ExternalCodexBridge {
     this.timer.unref();
   }
   stop(): void { if (this.timer) clearInterval(this.timer); }
+
+  private scheduleFollowupCard(b: ExternalCodexBinding, state: ExternalCodexCursor, card: FollowupCard): (() => Promise<void>) | undefined {
+    if (!this.deps.status || this.publishing.has(card.messageId) || (card.retryAt ?? 0) > Date.now()) return;
+    const quota = this.deps.statusQuota?.(b);
+    if (card.cardId && card.checkedAt <= (card.publishedAt ?? 0) && card.publishedQuota === quota?.label) return;
+    const snapshot = { ...card, quotaLabel: quota?.label };
+    this.publishing.add(card.messageId);
+    return async () => {
+      try {
+        const cardId = await this.deps.status!(b, snapshot);
+        if (!cardId) return;
+        card.cardId = cardId;
+        card.publishedAt = snapshot.checkedAt;
+        card.publishedQuota = quota?.label;
+        if (!quota?.pending && card.phase === snapshot.phase && ['finished', 'aborted'].includes(card.phase)) {
+          delete state.followupCards![card.messageId];
+        }
+      } catch (error) {
+        if ((error as Error)?.name === 'MessageWithdrawnError') {
+          delete state.followupCards![card.messageId];
+        } else {
+          card.retryAt = Date.now() + 60_000;
+          this.deps.error(error);
+        }
+      } finally {
+        this.publishing.delete(card.messageId);
+        this.save();
+      }
+    };
+  }
+
   async tick(): Promise<void> {
     if (this.running) return;
     this.running = true;
@@ -328,30 +372,8 @@ export class ExternalCodexBridge {
           if (phase !== card.phase) setPhase(card, phase);
         }
         for (const card of Object.values(state.followupCards ?? {})) {
-          if (this.deps.status && !this.publishing.has(card.messageId) && (card.retryAt ?? 0) <= Date.now()
-              && (!card.cardId || card.checkedAt > (card.publishedAt ?? 0))) {
-            const snapshot = { ...card };
-            this.publishing.add(card.messageId);
-            dispatches.push(async () => {
-              try {
-                const cardId = await this.deps.status!(b, snapshot);
-                if (!cardId) return;
-                card.cardId = cardId;
-                card.publishedAt = snapshot.checkedAt;
-                if (card.phase === snapshot.phase && ['finished', 'aborted'].includes(card.phase)) delete state.followupCards![card.messageId];
-              } catch (error) {
-                if ((error as Error)?.name === 'MessageWithdrawnError') {
-                  delete state.followupCards![card.messageId];
-                } else {
-                  card.retryAt = Date.now() + 60_000;
-                  this.deps.error(error);
-                }
-              } finally {
-                this.publishing.delete(card.messageId);
-                this.save();
-              }
-            });
-          }
+          const publish = this.scheduleFollowupCard(b, state, card);
+          if (publish) dispatches.push(publish);
         }
         const outputRoot = b.outputRootMessageId ?? b.rootMessageId;
         if (state.deliveryBlockedRoot && state.deliveryBlockedRoot !== outputRoot) delete state.deliveryBlockedRoot;

@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, openSync, r
 import { join, dirname, basename } from 'node:path';
 import { createHash } from 'node:crypto';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
-import { ExternalCodexBridge, type ExternalCodexBinding, type ExternalCodexOutputKind, type FollowupCard, type FollowupCheckpoint } from './external-codex-bridge.js';
+import { ExternalCodexBridge, type ExternalCodexBinding, type ExternalCodexOutputKind, type FollowupCard, type FollowupCheckpoint, type FollowupQuota } from './external-codex-bridge.js';
 
 export interface AutoCodexBinding extends ExternalCodexBinding {
   codexHome: string;
@@ -47,6 +47,7 @@ export class CodexAutoBridge {
     findTopic?: (b: Omit<AutoCodexBinding, 'rootMessageId'>) => Promise<string | undefined>;
     reply: (b: AutoCodexBinding, text: string, uuid: string, kind?: ExternalCodexOutputKind) => Promise<unknown>;
     status?: (b: AutoCodexBinding, card: Readonly<FollowupCard>) => Promise<string | undefined>;
+    statusQuota?: (b: AutoCodexBinding) => FollowupQuota | undefined;
     canProxy?: (b: AutoCodexBinding) => boolean;
     proxyEnqueue?: (b: AutoCodexBinding, text: string, clientId: string) => Promise<void>;
     received?: (b: AutoCodexBinding, messageId: string, text: string) => Promise<unknown>;
@@ -107,6 +108,7 @@ export class CodexAutoBridge {
       proxyEnqueue: async (_, text, clientId) => { if (!this.isManaged(b)) await this.deps.proxyEnqueue?.(b, text, clientId); },
       isProtected: () => this.protectedThreadIds.has(b.threadId),
       status: this.deps.status && (async (_, card) => !this.isManaged(b) ? this.deps.status!(b, card) : undefined),
+      statusQuota: this.deps.statusQuota && (() => !this.isManaged(b) ? this.deps.statusQuota!(b) : undefined),
       received: async (_, messageId, text) => { if (!this.isManaged(b)) await this.deps.received?.(b, messageId, text); },
       turn: async (_, text, checkpoint, clientUserMessageId) => { if (!this.isManaged(b)) await this.deps.turn(b, text, checkpoint, clientUserMessageId); }, error: this.deps.error,
     }, offset === undefined ? undefined : { [b.threadId]: offset }, this.registry.startedAt);

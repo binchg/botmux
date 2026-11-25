@@ -10,7 +10,7 @@ import { sessionModelCardNeedsRefresh } from './session-model-card-status.js';
 import { logger } from '../utils/logger.js';
 import { sessionCardStatisticsNeedsRefresh } from './session-card-statistics.js';
 import { sessionCardTaskContextNeedsRefresh } from './session-card-task-context.js';
-import { sessionCardCodexQuotaNeedsRefresh } from './session-card-codex-quota.js';
+import { prewarmSessionCardCodexQuota, sessionCardCodexQuotaNeedsRefresh } from './session-card-codex-quota.js';
 
 const started = new Set<string>();
 
@@ -45,6 +45,10 @@ export function refreshSessionModelCards(appId: string): number {
 export function startSessionModelCardRefresh(appId: string): void {
   if (started.has(appId)) return;
   started.add(appId);
+  setImmediate(() => {
+    try { prewarmSessionCardCodexQuota(config.session.dataDir, appId); }
+    catch (error) { logger.debug(`Quota prewarm deferred: ${error}`); }
+  }).unref();
   setInterval(() => {
     try { refreshSessionModelCards(appId); }
     catch (error) { logger.debug(`Model card refresh deferred: ${error}`); }

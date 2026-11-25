@@ -4,6 +4,7 @@ import { config } from '../config.js';
 import type { Locale } from '../i18n/types.js';
 import { expandHomePath } from '../utils/working-dir.js';
 import { formatCodexQuota, readCodexQuota, type CodexQuotaWindow } from './codex-quota.js';
+import { readOriginalCodexQuota } from './codex-original-daemon.js';
 import { readSessionCardCustomization } from './session-card-customization.js';
 import { getSession } from './session-store.js';
 
@@ -17,10 +18,71 @@ interface QuotaSnapshot {
   env?: Record<string, string>;
   nextReadAt: number;
   windows: CodexQuotaWindow[];
+  pending?: boolean;
 }
 
 const botSnapshots = new Map<string, QuotaSnapshot>();
+const nativeSnapshots = new Map<string, QuotaSnapshot>();
 const cardLabels = new Map<string, string>();
+
+function refreshQuota(snapshot: QuotaSnapshot, now: number, read: () => Promise<CodexQuotaWindow[]>): void {
+  if (now < snapshot.nextReadAt) return;
+  snapshot.nextReadAt = now + REFRESH_MS;
+  snapshot.pending = true;
+  setImmediate(() => {
+    void read().then(windows => { snapshot.windows = windows; }, () => { snapshot.windows = []; })
+      .finally(() => { snapshot.pending = false; });
+  });
+}
+
+function quotaStatus(snapshot: QuotaSnapshot, locale: Locale) {
+  const label = formatCodexQuota(snapshot.windows, locale);
+  if (label) return { label };
+  const pending = snapshot.pending === true;
+  return { pending, label: locale === 'en'
+    ? `Codex remaining quota · ${pending ? 'Reading' : 'Unavailable'}`
+    : `Codex 剩余额度 · ${pending ? '读取中' : '暂不可用'}` };
+}
+
+function botQuota(appId: string, now: number): QuotaSnapshot {
+  const { config: bot } = getBot(appId);
+  const codexBin = bot.cliPathOverride;
+  const cwd = expandHomePath(bot.workingDir ?? config.daemon.workingDir);
+  const env = bot.env;
+  let snapshot = botSnapshots.get(appId);
+  if (!snapshot || snapshot.codexBin !== codexBin || snapshot.cwd !== cwd || snapshot.env !== env) {
+    snapshot = { codexBin, cwd, env, nextReadAt: 0, windows: [] };
+    botSnapshots.set(appId, snapshot);
+  }
+  refreshQuota(snapshot, now, () => readCodexQuota({ codexBin, cwd, env: { ...process.env, ...env } }));
+  return snapshot;
+}
+
+export function prewarmSessionCardCodexQuota(dir: string, appId: string): void {
+  const prefs = readSessionCardCustomization(dir, appId);
+  if (!prefs.codexQuota || !prefs.codexQuotaAllSessions) return;
+  const { config: bot } = getBot(appId);
+  if (bot.cliId === 'codex-app' && !bot.wrapperCli) botQuota(appId, Date.now());
+}
+
+/** External sessions query their own Codex library, independently of the bot's account. */
+export function nativeSessionCardQuota(dir: string, appId: string, threadId: string, owner: string, codexHome: string,
+  codexBin: string, cwd: string, locale: Locale, now = Date.now()): { label: string; pending?: boolean } | undefined {
+  const prefs = readSessionCardCustomization(dir, appId);
+  if (!prefs.codexQuota) return;
+  if (!prefs.codexQuotaAllSessions && prefs.codexQuotaSessionOwners?.[threadId] !== owner
+    && !getBot(appId).resolvedAllowedUsers.includes(owner)) return;
+  const key = JSON.stringify([codexHome, codexBin]);
+  let snapshot = nativeSnapshots.get(key);
+  if (!snapshot) {
+    snapshot = { codexBin, cwd, nextReadAt: 0, windows: [] };
+    if (nativeSnapshots.size >= 32) nativeSnapshots.delete(nativeSnapshots.keys().next().value!);
+    nativeSnapshots.set(key, snapshot);
+  }
+  refreshQuota(snapshot, now, async () => (await readOriginalCodexQuota(codexHome)) ??
+    readCodexQuota({ codexBin, cwd, env: { ...process.env, CODEX_HOME: codexHome } }));
+  return quotaStatus(snapshot, locale);
+}
 
 /** 只有启用该能力的 Codex App 机器人和所属操作者会话才能显示机器人订阅额度。 */
 function quotaLabel(dir: string, id: string, locale: Locale, now: number): string | undefined {
@@ -38,26 +100,8 @@ function quotaLabel(dir: string, id: string, locale: Locale, now: number): strin
     || bot.config.wrapperCli || session.wrapperCli || !canDisplay
     || (session.agentFrozen && session.cliPathOverride !== bot.config.cliPathOverride)) return;
 
-  const codexBin = bot.config.cliPathOverride;
-  const cwd = expandHomePath(bot.config.workingDir ?? config.daemon.workingDir);
-  const env = bot.config.env;
-  let snapshot = botSnapshots.get(appId);
-  if (!snapshot || snapshot.codexBin !== codexBin || snapshot.cwd !== cwd || snapshot.env !== env) {
-    snapshot = { codexBin, cwd, env, nextReadAt: 0, windows: [] };
-    botSnapshots.set(appId, snapshot);
-  }
-  if (now >= snapshot.nextReadAt) {
-    const target = snapshot;
-    target.nextReadAt = now + REFRESH_MS;
-    // 首张卡和终端状态更新只走同步快照，不等待 app-server 启动或网络回包。
-    setImmediate(() => {
-      void readCodexQuota({ codexBin, cwd, env: { ...process.env, ...env } }).then(
-        windows => { target.windows = windows; },
-        () => { target.windows = []; },
-      );
-    });
-  }
-  return formatCodexQuota(snapshot.windows, locale);
+  const snapshot = botQuota(appId, now);
+  return prefs.codexQuotaAllSessions ? quotaStatus(snapshot, locale).label : formatCodexQuota(snapshot.windows, locale);
 }
 
 /** 记下本次渲染的额度行，以便后台只在内容变化后补刷。 */

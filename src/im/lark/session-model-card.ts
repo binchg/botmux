@@ -1,5 +1,5 @@
 import { config } from '../../config.js';
-import { sessionModelStatus, type ModelSelection } from '../../services/session-model-store.js';
+import { sessionModelStatus } from '../../services/session-model-store.js';
 import type { AvailableSessionModel } from '../../services/session-model-selection.js';
 import type { Locale } from '../../i18n/index.js';
 import { getSession } from '../../services/session-store.js';
@@ -11,6 +11,21 @@ import { sessionCardCodexQuota } from '../../services/session-card-codex-quota.j
 const text = (content: string) => ({ tag: 'div', text: { tag: 'lark_md', content } });
 const safe = (value?: string) => value?.replace(/[^\w.:-]/g, '') || '未知';
 
+export function compactCodexModel(value: { model?: string; effort?: string; serviceTier?: string }): string {
+  const model = safe(value.model).replace(/^gpt-/, '');
+  const effort = value.effort
+    ? ` ${safe(value.effort).replace('medium', 'M').replace('ultra', 'U').replace('xhigh', 'XH').replace('high', 'H').replace('low', 'L')}`
+    : '';
+  const fast = value.serviceTier === 'priority' ? '√' : value.serviceTier === 'default' ? '×' : '?';
+  return `${model}${effort} F${fast}`;
+}
+
+/** Shared ordering for the compact Botmux and native Codex cards. */
+export function codexSessionCardRows(workingDir: string, model: string, statistics: string[], quota?: string) {
+  const rows = [`📁 ${workingDir} · ${model}`, ...(quota ? [quota] : []), ...statistics];
+  return rows.map(content => ({ tag: 'div', text: { tag: 'plain_text', content } }));
+}
+
 /** 实际回执与待生效配置分别展示；即时卡中的模型信息按窗口限频。 */
 export function sessionModelCardElements(sessionId: string, cliId?: string, locale?: Locale, snapshotKey?: string): any[] {
   if (cliId !== 'codex-app') return [];
@@ -21,17 +36,13 @@ export function sessionModelCardElements(sessionId: string, cliId?: string, loca
     const session = getSession(sessionId);
     const workingDir = sessionCardTaskLocation(config.session.dataDir, sessionId, state, snapshotKey)
       ?? session?.workingDir ?? (en ? 'Unknown directory' : '目录未知');
-    const compact = (v: ModelSelection) => `${safe(v.model).replace(/^gpt-/, '')} ${safe(v.effort).replace('medium', 'M').replace('xhigh', 'XH').replace('high', 'H').replace('low', 'L')} F${v.serviceTier === 'priority' ? '√' : v.serviceTier === 'default' ? '×' : '?'}`;
     const status = sessionModelCardStatus(config.session.dataDir, sessionId, state, snapshotKey)
-      ?? (current ? `${state.runnerAlive ? '' : (en ? 'last ' : '上次 ')}${compact(current)}` : (en ? 'awaiting receipt' : '待回执'));
+      ?? (current ? `${state.runnerAlive ? '' : (en ? 'last ' : '上次 ')}${compactCodexModel(current)}` : (en ? 'awaiting receipt' : '待回执'));
     const pending = state.desired && state.desired.revision !== state.runtime?.revision
-      ? ` → ${compact(state.desired)}${en ? ' next' : ' 待生效'}` : '';
-    const rows = [{ tag: 'div', text: { tag: 'plain_text', content: `📁 ${workingDir} · ${status}${pending}` } }];
+      ? ` → ${compactCodexModel(state.desired)}${en ? ' next' : ' 待生效'}` : '';
     const quota = snapshotKey ? sessionCardCodexQuota(config.session.dataDir, sessionId, locale ?? 'zh', snapshotKey) : undefined;
-    if (quota) rows.push({ tag: 'div', text: { tag: 'plain_text', content: quota } });
     const lines = sessionCardStatistics(config.session.dataDir, sessionId, state, locale, snapshotKey);
-    for (const content of lines) rows.push({ tag: 'div', text: { tag: 'plain_text', content } });
-    return rows;
+    return codexSessionCardRows(workingDir, status + pending, lines, quota);
   } catch { return [text(en ? 'Model status unavailable' : '模型状态暂不可用')]; }
 }
 

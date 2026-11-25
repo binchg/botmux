@@ -5,6 +5,8 @@ import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { buildMarkdownCard, buildTitledMarkdownCard } from '../im/lark/md-card.js';
 import { nativeConversationHistoryButtons } from '../im/lark/conversation-history-button.js';
+import { codexSessionCardRows, compactCodexModel } from '../im/lark/session-model-card.js';
+import { localeForBot } from '../i18n/index.js';
 import { formatMathForLark } from './outbound-math.js';
 import { replyMessage, sendMessage, updateMessage } from '../im/lark/client.js';
 import { logger } from '../utils/logger.js';
@@ -17,6 +19,7 @@ import { submitToOriginalCodexDaemon } from './codex-original-daemon.js';
 import { codexThreadProxySocket, requestCodexThreadProxy } from './codex-thread-proxy-client.js';
 import { submitToVscodeSsh, type CodexVscodeSshTarget } from './codex-vscode-ssh.js';
 import { readCodexSessionStatistics, codexStatisticsText } from './codex-session-statistics.js';
+import { nativeSessionCardQuota } from './session-card-codex-quota.js';
 import { recoverCodexTopic } from './codex-topic-recovery.js';
 import { getMessageDetail } from '../im/lark/client.js';
 import { config } from '../config.js';
@@ -40,6 +43,8 @@ export function startExternalCodexBridge(selfAppId: string): void {
     const vscodeTargets: Record<string, CodexVscodeSshTarget> = cfg.vscodeSshThreads ?? {};
     const enqueue = (b: ExternalCodexBinding, text: string, requestId: string) =>
       requestCodexThreadProxy(codexThreadProxySocket(), `/api/codex-sync/${b.threadId}/input`, { requestId, text });
+    const statusQuota = (b: AutoCodexBinding) => nativeSessionCardQuota(config.session.dataDir, b.larkAppId, b.threadId,
+      b.ownerOpenId, b.codexHome, cfg.codexBin, b.cwd, localeForBot(b.larkAppId));
     const auto = new CodexAutoBridge(cfg, join(homedir(), '.local/state/botmux/codex-auto/registry.json'), {
       topic: (b, uuid) => {
         if (!b.firstUserMessage) throw new Error('Automatic topic requires the original user message');
@@ -58,6 +63,7 @@ export function startExternalCodexBridge(selfAppId: string): void {
         const uuid = createHash('sha256').update(`native-followup-v2:${status.messageId}`).digest('hex').slice(0, 32);
         return replyMessage(b.larkAppId, b.outputRootMessageId ?? b.rootMessageId, card, 'interactive', true, uuid);
       },
+      statusQuota,
       canProxy: b => proxiedThreadIds.has(b.threadId),
       proxyEnqueue: async (b, text, clientId) => { await enqueue(b, text, clientId); },
       turn: async (b, text, checkpoint, clientUserMessageId) => {
@@ -81,6 +87,12 @@ export function startExternalCodexBridge(selfAppId: string): void {
       excluded: () => collectBotmuxSessionIdentities() ?? new Set(),
       error: e => logger.error(`[codex-auto] ${String(e)}`),
     });
+    setImmediate(() => {
+      try {
+        nativeSessionCardQuota(config.session.dataDir, cfg.larkAppId, '', cfg.ownerOpenId,
+          cfg.codexHomes[0], cfg.codexBin, config.daemon.workingDir, localeForBot(cfg.larkAppId));
+      } catch (error) { logger.debug(`Native Codex quota prewarm deferred: ${error}`); }
+    }).unref();
     externalCodexBridge = auto;
     void auto.start().then(() => logger.info(`[codex-auto] watching all sessions in ${cfg.codexHomes.length} libraries`)).catch(e => logger.error(`[codex-auto] startup failed: ${String(e)}`));
     return;
@@ -133,7 +145,11 @@ export function buildFollowupStatusCard(binding: ExternalCodexBinding, status: R
   const checked = new Intl.DateTimeFormat('zh-CN', {
     timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
   }).format(status.checkedAt);
-  const buttons = nativeConversationHistoryButtons({ ...binding, rootMessageId: binding.outputRootMessageId ?? binding.rootMessageId });
+  const now = Date.now();
+  const stats = readCodexSessionStatistics(binding.rolloutPath, now, status.phase === 'running');
+  const rows = codexSessionCardRows(binding.cwd, readNativeModelStatus(binding.rolloutPath),
+    codexStatisticsText(stats, undefined, now).split('\n'), status.quotaLabel);
+  const buttons = nativeCardActions(binding);
   return JSON.stringify({
     config: { wide_screen_mode: true, update_multi: true },
     header: {
@@ -141,6 +157,7 @@ export function buildFollowupStatusCard(binding: ExternalCodexBinding, status: R
       title: { tag: 'plain_text', content: Array.from(status.text.replace(/\s+/g, ' ').trim()).slice(0, 40).join('') || 'Codex 追问' },
     },
     elements: [
+      ...rows,
       { tag: 'div', text: { tag: 'plain_text', content: labels[status.phase] } },
       { tag: 'note', elements: [{ tag: 'plain_text', content: `最近确认 ${checked}（北京时间）` }] },
       ...(buttons.length ? [{ tag: 'action', actions: buttons }] : []),
@@ -154,11 +171,15 @@ export function buildExternalCodexStatusCard(binding: ExternalCodexBinding, titl
   const lines = codexStatisticsText(stats, undefined, Date.now(), false).split('\n');
   const model = readNativeModelStatus(binding.rolloutPath);
   const cwd = binding.cwd.length > 36 ? `…/${basename(binding.cwd)}` : binding.cwd;
-  const compactLines = [
-    `📁 ${cwd} · ${model}`,
-    lines[0] ?? '',
-    lines[1] ?? '',
-  ];
+  const actions = nativeCardActions(binding);
+  return JSON.stringify({
+    config: { wide_screen_mode: true },
+    header: { template: 'green', title: { tag: 'plain_text', content: Array.from(title.replace(/\s+/g, ' ').trim()).slice(0, 18).join('') || 'Codex' } },
+    elements: [...codexSessionCardRows(cwd, model, lines), ...(actions.length ? [{ tag: 'action', actions }] : [])],
+  });
+}
+
+function nativeCardActions(binding: ExternalCodexBinding) {
   const historyButtons = nativeConversationHistoryButtons({ ...binding, rootMessageId: binding.outputRootMessageId ?? binding.rootMessageId });
   const terminalButtons = historyButtons.map(button => {
     const url = new URL(button.multi_url.url);
@@ -167,14 +188,7 @@ export function buildExternalCodexStatusCard(binding: ExternalCodexBinding, titl
     return { ...button, type: 'primary', text: { tag: 'plain_text', content: '🖥️ 打开 Web 终端' },
       multi_url: { url: href, pc_url: href, android_url: href, ios_url: href } };
   });
-  return JSON.stringify({
-    config: { wide_screen_mode: true },
-    header: { template: 'green', title: { tag: 'plain_text', content: Array.from(title.replace(/\s+/g, ' ').trim()).slice(0, 18).join('') || 'Codex' } },
-    elements: [
-      ...compactLines.map(content => ({ tag: 'div', text: { tag: 'plain_text', content } })),
-      { tag: 'action', actions: [...terminalButtons, ...historyButtons] },
-    ],
-  });
+  return [...terminalButtons, ...historyButtons];
 }
 
 /** Read only a bounded JSONL tail to show the native thread's actual model. */
@@ -194,6 +208,7 @@ function readNativeModelStatus(path: string): string {
       if (row.type === 'turn_context') {
         model ??= row.payload?.model;
         effort ??= row.payload?.effort;
+        tier ??= row.payload?.service_tier;
       } else if (row.payload?.type === 'thread_settings_applied') {
         const settings = row.payload?.thread_settings;
         model ??= settings?.model;
@@ -202,11 +217,10 @@ function readNativeModelStatus(path: string): string {
       }
       if (model && effort && tier) break;
     }
-    if (!model) return 'Codex';
-    const shortModel = String(model).replace(/^gpt-/, '');
-    const shortEffort = effort ? ` ${String(effort).replace('medium', 'M').replace('ultra', 'U').replace('xhigh', 'XH').replace('high', 'H').replace('low', 'L')}` : '';
-    return `${shortModel}${shortEffort}${tier ? ` F${tier === 'priority' ? '√' : '×'}` : ''}`;
-  } catch { return 'Codex'; }
+    if (typeof model !== 'string') return 'Codex 待模型回执';
+    return compactCodexModel({ model, effort: typeof effort === 'string' ? effort : undefined,
+      serviceTier: tier === 'priority' || tier === 'default' ? tier : undefined });
+  } catch { return 'Codex 待模型回执'; }
   finally { if (fd !== undefined) closeSync(fd); }
 }
 

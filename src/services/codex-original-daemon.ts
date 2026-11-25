@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import WebSocket from 'ws';
 import type { FollowupCheckpoint } from './external-codex-bridge.js';
+import { parseCodexQuota } from './codex-quota.js';
 
 interface OriginalThread {
   id?: string;
@@ -22,7 +23,7 @@ class DurableCodexConnection {
 
   constructor(private socket: WebSocket) {}
 
-  request(method: string, params: object, timeoutMs = 8000): Promise<any> {
+  request(method: string, params?: object, timeoutMs = 8000): Promise<any> {
     return new Promise((resolve, reject) => {
       const id = this.nextId++;
       const dispose = () => {
@@ -61,16 +62,14 @@ export async function submitToOriginalCodexDaemon(home: string, threadId: string
     (submitted, turnId) => submitted === undefined ? checkpoint() : checkpoint(submitted, turnId), steer);
 }
 
-export async function submitNativeTurnToOriginalCodexDaemon(home: string, threadId: string, rolloutPath: string,
-  params: Record<string, unknown>, checkpoint: (submitted?: boolean, turnId?: string, result?: unknown) => void, steer = false): Promise<boolean> {
-  if (params.threadId !== threadId || !Array.isArray(params.input) || typeof params.clientUserMessageId !== 'string') return false;
+async function withOriginalCodex<T>(home: string, run: (client: DurableCodexConnection) => Promise<T>): Promise<T | undefined> {
   let path: string;
   try {
     path = realpathSync(join(home, 'app-server-control', 'app-server-control.sock'));
     const stat = statSync(path);
-    if (!stat.isSocket() || stat.uid !== process.getuid?.() || (stat.mode & 0o077)) return false;
+    if (!stat.isSocket() || stat.uid !== process.getuid?.() || (stat.mode & 0o077)) return;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
     throw error;
   }
   const socket = new WebSocket(`ws+unix://${path}:/`, { handshakeTimeout: 4000 });
@@ -86,6 +85,20 @@ export async function submitNativeTurnToOriginalCodexDaemon(home: string, thread
       capabilities: { experimentalApi: true },
     });
     client.notify('initialized');
+    return await run(client);
+  } finally { socket.close(); }
+}
+
+/** Query only quota windows from the same desktop account as the original thread. */
+export function readOriginalCodexQuota(home: string) {
+  return withOriginalCodex(home, async client =>
+    parseCodexQuota(await client.request('account/rateLimits/read', undefined, 5000)));
+}
+
+export async function submitNativeTurnToOriginalCodexDaemon(home: string, threadId: string, rolloutPath: string,
+  params: Record<string, unknown>, checkpoint: (submitted?: boolean, turnId?: string, result?: unknown) => void, steer = false): Promise<boolean> {
+  if (params.threadId !== threadId || !Array.isArray(params.input) || typeof params.clientUserMessageId !== 'string') return false;
+  return (await withOriginalCodex(home, async client => {
     const read = await client.request('thread/read', { threadId, includeTurns: false });
     if (!sameOriginalThread(read?.thread, threadId, rolloutPath)) return false;
     let status = read.thread.status?.type;
@@ -121,5 +134,5 @@ export async function submitNativeTurnToOriginalCodexDaemon(home: string, thread
     if (typeof started?.turn?.id !== 'string') throw new Error('Codex did not confirm the original turn; follow-up retained');
     checkpoint(true, started.turn.id, started);
     return true;
-  } finally { socket.close(); }
+  })) ?? false;
 }

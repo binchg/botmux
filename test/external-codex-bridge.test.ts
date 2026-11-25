@@ -138,6 +138,31 @@ it('gives concurrent Feishu inputs stable IDs in the shared proxy while the orig
   } finally { f.cleanup(); }
 });
 
+it('shows the card immediately and patches its quota even after a short turn ends', async () => {
+  const f = fixture();
+  let quota = { label: '读取中', pending: true };
+  const status = vi.fn(async (_binding, _card) => 'same-card');
+  try {
+    const bridge = new ExternalCodexBridge([f.binding], f.stateFile, {
+      reply: async () => {}, status, statusQuota: () => quota,
+      turn: async (_b, _text, checkpoint) => checkpoint(true, 'fast-turn'), error: error => { throw error; },
+    });
+    await bridge.receive('root', 'app', 'owner', 'question-id', 'short follow-up');
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(status.mock.calls.map(([, card]) => [card.phase, card.quotaLabel])).toEqual([['queued', '读取中']]);
+    await bridge.tick();
+    appendFileSync(f.rolloutPath, event({ type: 'task_complete', turn_id: 'fast-turn', last_agent_message: 'done' }));
+    await bridge.tick();
+    expect(status.mock.calls.at(-1)?.[1]).toMatchObject({ phase: 'finished', cardId: 'same-card', quotaLabel: '读取中' });
+    quota = { label: '7 天 63%', pending: false };
+    await bridge.tick();
+    expect(status.mock.calls.at(-1)?.[1]).toMatchObject({ phase: 'finished', cardId: 'same-card', quotaLabel: '7 天 63%' });
+    const count = status.mock.calls.length;
+    await bridge.tick();
+    expect(status).toHaveBeenCalledTimes(count);
+  } finally { f.cleanup(); }
+});
+
 it('keeps a protected original read only and shows the block on the queued follow-up', async () => {
   const f = fixture();
   const original = readFileSync(f.rolloutPath);
