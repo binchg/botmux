@@ -23,16 +23,22 @@ export async function recoverCodexTopic(
     const root = history.nativeSource.rootMessageId;
     if (typeof root === 'string' && /^om_[a-zA-Z0-9]+$/.test(root)) candidates.add(root);
   }
+  const verified: string[] = [];
   for (const root of candidates) {
     // An API failure is retried on the next scan; do not create a duplicate
     // topic while the existing root's status is unknown.
     const detail = await getMessage(root);
     const item = detail?.items?.[0];
-    if (!item || item.chat_id !== chatId || item.parent_id || (item.root_id && item.root_id !== root)) continue;
+    if (!item || item.deleted) throw new Error('Existing Codex topic could not be verified');
+    if (item.chat_id !== chatId) continue;
+    if ((item.message_id && item.message_id !== root) || item.parent_id || (item.root_id && item.root_id !== root)) {
+      throw new Error('Stored Codex topic does not match its Feishu root');
+    }
     let text = '';
     try { text = JSON.parse(item.body?.content ?? '{}').text ?? ''; } catch {}
     if (/^\s*<(?:recommended_plugins|environment_context|skills_instructions)(?:\s|>)/.test(text)) continue;
-    return root;
+    verified.push(root);
   }
-  return undefined;
+  if (verified.length > 1) throw new Error('Multiple verified Feishu roots for the same Codex session');
+  return verified[0];
 }

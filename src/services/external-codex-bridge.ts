@@ -4,6 +4,7 @@ import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { publicCodexEvent, codexSyncEventKey } from './codex-sync-events.js';
 import { jsonlFrontierAnchor } from './jsonl-cursor.js';
 import { splitMobileReply } from './mobile-reply.js';
+import { readCodexTopicSource } from './codex-topic-source.js';
 
 export type ExternalCodexOutputKind = 'user' | 'progress' | 'tool' | 'final';
 
@@ -264,9 +265,10 @@ export class ExternalCodexBridge {
     const b = this.bindings.find(b => b.rootMessageId === rootId && b.larkAppId === appId);
     return !!b && !!this.states.get(b.threadId)?.received.includes(messageId);
   }
-  async receive(rootId: string, appId: string, sender: string, messageId: string, text: string): Promise<boolean> {
+  async receive(rootId: string, appId: string, sender: string, messageId: string, text: string, chatId?: string): Promise<boolean> {
     const b = this.bindings.find(b => b.rootMessageId === rootId && b.larkAppId === appId);
     if (!b) return false;
+    if (chatId !== undefined && b.chatId !== chatId) return true;
     if (sender !== b.ownerOpenId && !b.replySenderOpenIds?.includes(sender)
         && !(b.allowGroupMembers && sender.startsWith('ou_'))) return true;
     const state = this.states.get(b.threadId)!;
@@ -344,6 +346,7 @@ export class ExternalCodexBridge {
         const state = this.states.get(b.threadId)!;
         const st = statSync(b.rolloutPath), size = st.size;
         if (size < state.offset || state.inode !== st.ino || jsonlFrontierAnchor(b.rolloutPath, state.offset) !== state.frontierAnchor) {
+          if (readCodexTopicSource(b.rolloutPath).meta?.id !== b.threadId) continue;
           // Codex rewrites canonical history on resume. Rebuild lifecycle from
           // the log; stable event keys keep previously delivered output silent.
           state.offset = 0; state.carry = ''; state.busy = false; state.turnId = undefined; state.progressCarry = '';

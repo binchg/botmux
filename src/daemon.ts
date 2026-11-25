@@ -2983,7 +2983,7 @@ async function handleThreadReply(data: any, ctx: RoutingContext): Promise<void> 
   const { chatId: ctxChatId, chatType: ctxChatType, scope, anchor, larkAppId, replyRootId } = ctx;
   await resolveNonsupportMessage(data, larkAppId);
   const { parsed, resources } = parseEventMessage(data);
-  if (await externalCodexBridge?.receive(anchor, larkAppId, parsed.senderId, parsed.messageId, parsed.content)) return;
+  if (await externalCodexBridge?.receive(anchor, larkAppId, parsed.senderId, parsed.messageId, parsed.content, ctxChatId)) return;
 
   // Expand merge_forward: fetch sub-messages and collect their resources
   if (parsed.msgType === 'merge_forward') {

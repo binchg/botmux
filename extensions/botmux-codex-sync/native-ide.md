@@ -6,3 +6,4 @@ MacBook Pro 的 VS Code Remote SSH 使用 OpenAI 官方 Codex 扩展。扩展自
 - 配置共享的原会话走本机代理。飞书追问默认使用 Codex 的引导请求进入当前轮次，空闲时直接开始一轮。官方扩展使用自身的引导行为。原生请求中的输入、模型和上下文随原请求发送，官方进程确认后返回真实回执。
 - 没接入共享队列的会话由官方 Codex 进程按原生协议处理。没有确认的共享请求在代理里保留客户端 ID，恢复后按同一个 ID 核对。
 - 测试使用经允许的历史话题，先做只读，随后验证同一轮在原生扩展和飞书显示。回退时恢复 `chatgpt.cliExecutable` 的原值，再在测试或当前工作区恢复所需的扩展状态。
+- 从原话题打开「对话历史」，可进入同一个官方 VS Code Codex 会话。自测通过已有话题对应的本机入口提交，并一并传入 `expectedBinding.threadId` 和 `expectedBinding.rootMessageId`。任一 ID 不匹配时入口拒绝提交。

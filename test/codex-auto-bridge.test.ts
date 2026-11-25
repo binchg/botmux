@@ -44,6 +44,65 @@ it('routes the repaired topic and consumes its superseded root', async () => {
   } finally { rmSync(f.dir, { recursive: true, force: true }); }
 });
 
+it('retains an existing topic input across restart and only releases it to the verified original transcript', async () => {
+  const f = fixture();
+  const original = file(f.homes[0], 'stable-session');
+  const savedPath = join(f.dir, 'offline.jsonl');
+  const topic = vi.fn(async () => 'stable-root');
+  const turn = vi.fn(async (b, _text, checkpoint) => { expect(b.threadId).toBe('stable-session'); checkpoint(); });
+  const deps = { topic, turn, reply: async () => {}, excluded: () => new Set<string>(), error: (e: unknown) => { throw e; } };
+  try {
+    const first = new CodexAutoBridge(f.cfg, f.stateFile, deps);
+    await first.scan();
+    appendFileSync(original, done('seed', 'existing'));
+    await first.scan();
+    await vi.waitFor(() => expect(topic).toHaveBeenCalledOnce());
+    renameSync(original, savedPath);
+    const offline = new CodexAutoBridge(f.cfg, f.stateFile, deps);
+    expect(await offline.receive('stable-root', 'app', 'owner', 'outside-chat', 'wrong chat', 'other-chat')).toBe(true);
+    await Promise.all([
+      offline.receive('stable-root', 'app', 'owner', 'retry-input', 'same input', 'chat'),
+      offline.receive('stable-root', 'app', 'owner', 'retry-input', 'same input', 'chat'),
+    ]);
+    expect(offline.hasReceived('stable-root', 'app', 'retry-input')).toBe(true);
+    expect(offline.followupStatus('stable-root', 'app')).toMatchObject({ phase: 'waiting_owner', queued: 1 });
+    const wrong = file(f.homes[0], 'different-session');
+    renameSync(wrong, original);
+    const restarted = new CodexAutoBridge(f.cfg, f.stateFile, deps);
+    await restarted.scan();
+    expect(topic).toHaveBeenCalledOnce();
+    expect(turn).not.toHaveBeenCalled();
+    renameSync(savedPath, original);
+    await restarted.scan();
+    await vi.waitFor(() => expect(turn).toHaveBeenCalledOnce());
+    expect(turn.mock.calls[0][1]).toBe('same input');
+    expect(topic).toHaveBeenCalledOnce();
+    expect(restarted.hasReceived('stable-root', 'app', 'retry-input')).toBe(true);
+  } finally { rmSync(f.dir, { recursive: true, force: true }); }
+});
+
+it('blocks a topic registered to two different exact Codex identifiers', async () => {
+  const f = fixture();
+  const turn = vi.fn(async () => {});
+  const topic = vi.fn(async () => 'unexpected');
+  const entries = ['first', 'second'].map(id => {
+    const home = f.homes[0];
+    const key = createHash('sha256').update(`${home}:${id}`).digest('hex');
+    return [key, { threadId: id, rolloutPath: file(home, id), codexHome: home,
+      cwd: home, rootMessageId: 'shared-root', larkAppId: 'app', chatId: 'chat', ownerOpenId: 'owner' }];
+  });
+  try {
+    mkdirSync(join(f.dir, 'state'));
+    writeFileSync(f.stateFile, JSON.stringify({ initialized: true, startedAt: Date.now(), baselines: {}, bindings: Object.fromEntries(entries) }));
+    const bridge = new CodexAutoBridge(f.cfg, f.stateFile, { turn, topic, reply: async () => {}, excluded: () => new Set(), error: e => { throw e; } });
+    expect(await bridge.receive('shared-root', 'app', 'owner', 'ambiguous', 'do not route', 'chat')).toBe(true);
+    await bridge.scan();
+    expect(bridge.hasReceived('shared-root', 'app', 'ambiguous')).toBe(false);
+    expect(turn).not.toHaveBeenCalled();
+    expect(topic).not.toHaveBeenCalled();
+  } finally { rmSync(f.dir, { recursive: true, force: true }); }
+});
+
 it('recovers an existing topic for an old session before creating a new one', async () => {
   const f = fixture(); const transcript = file(f.homes[0], 'old-session');
   const topic = vi.fn(async () => 'new-root');
@@ -134,12 +193,17 @@ it('resumes the original topic thread directly across restart without creating a
     const entry = Object.values(saved.bindings)[0] as any;
     entry.readOnly = true; entry.targetKey = 'legacy-test-fork';
     writeFileSync(f.stateFile, JSON.stringify(saved));
+    const cursor = join(f.dir, 'state', createHash('sha256').update(`${f.homes[0]}:original`).digest('hex') + '.json');
+    const expectPersisted = (expected: number) => vi.waitFor(() => {
+      expect(turns).toBe(expected);
+      expect(JSON.parse(readFileSync(cursor, 'utf8')).original.pending).toBeUndefined();
+    });
     const legacy = new CodexAutoBridge(f.cfg, f.stateFile, deps);
     await legacy.receive('root', 'app', 'owner', 'q1', 'first'); await legacy.scan();
-    await vi.waitFor(() => expect(turns).toBe(1));
+    await expectPersisted(1);
     const restored = new CodexAutoBridge(f.cfg, f.stateFile, deps);
     await restored.receive('root', 'app', 'owner', 'q2', 'second'); await restored.scan();
-    await vi.waitFor(() => expect(turns).toBe(2));
+    await expectPersisted(2);
     expect(forks).toBe(0);
     expect(readFileSync(original, 'utf8')).toContain('first');
     expect(readFileSync(original, 'utf8')).toContain('second');

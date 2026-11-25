@@ -28,3 +28,15 @@ it('does not reuse an injected plugin topic or create a duplicate on lookup fail
       .rejects.toThrow('api unavailable');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+it('leaves conflicting or missing persisted roots unresolved instead of picking a different topic', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'codex-topic-conflict-'));
+  try {
+    for (const id of ['om_first', 'om_second']) writeFileSync(join(dir, id + '.json'), JSON.stringify({
+      source: { cliSessionId: 'thread' }, nativeSource: { larkAppId: 'bot', rootMessageId: id },
+    }));
+    const get = async (id: string) => ({ items: [{ message_id: id, chat_id: 'chat', body: { content: '{}' } }] });
+    await expect(recoverCodexTopic(dir, 'thread', 'bot', 'chat', get)).rejects.toThrow('Multiple verified');
+    await expect(recoverCodexTopic(dir, 'thread', 'bot', 'chat', async () => ({ items: [] }))).rejects.toThrow('could not be verified');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

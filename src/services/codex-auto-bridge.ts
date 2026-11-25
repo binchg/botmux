@@ -1,6 +1,6 @@
 import { readCodexTopicSource, isCodexSubagent, isCodexFork } from './codex-topic-source.js';
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, openSync, readSync, closeSync } from 'node:fs';
-import { join, dirname, basename } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, realpathSync, readdirSync, statSync, openSync, readSync, closeSync } from 'node:fs';
+import { join, dirname, basename, relative, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { ExternalCodexBridge, type ExternalCodexBinding, type ExternalCodexOutputKind, type FollowupCard, type FollowupCheckpoint, type FollowupQuota } from './external-codex-bridge.js';
@@ -18,11 +18,13 @@ export interface AutoCodexBinding extends ExternalCodexBinding {
   supersededRootMessageIds?: string[];
 }
 interface Baseline { offset: number; protected: boolean }
+interface RetainedFollowup { root: string; sender: string; messageId: string; text: string }
 interface Registry {
   initialized: boolean;
   startedAt: number;
   baselines: Record<string, Baseline>;
   bindings: Record<string, AutoCodexBinding>;
+  pending?: Record<string, RetainedFollowup[]>;
 }
 export interface AutoCodexConfig {
   codexHomes: string[];
@@ -59,47 +61,65 @@ export class CodexAutoBridge {
     this.protectedThreadIds = new Set(cfg.protectedThreadIds);
     mkdirSync(dirname(stateFile), { recursive: true, mode: 0o700 });
     this.registry = existsSync(stateFile) ? JSON.parse(readFileSync(stateFile, 'utf8')) : { initialized: false, startedAt: Date.now(), baselines: {}, bindings: {} };
-    let relocated = false;
     for (const [key, b] of Object.entries(this.registry.bindings)) {
-      if (!existsSync(b.rolloutPath)) {
-        const archived = join(b.codexHome, 'archived_sessions', basename(b.rolloutPath));
-        if (existsSync(archived)) {
-          this.registry.baselines[archived] ??= this.registry.baselines[b.rolloutPath]
-            ?? { offset: this.completeOffset(archived, statSync(archived).size), protected: true };
-          b.rolloutPath = archived;
-          relocated = true;
-        }
-      }
-      if (existsSync(b.rolloutPath)) {
-        const source = readCodexTopicSource(b.rolloutPath);
-        const meta = source.meta;
-        // Repair titles persisted by older readers that mistook injected
-        // plugin/context records for the first human message.
-        if (source.firstUserMessage && b.firstUserMessage !== source.firstUserMessage) {
-          b.firstUserMessage = source.firstUserMessage;
-          relocated = true;
-        }
-        if (typeof meta?.forked_from_id === 'string') b.sourceThreadId = meta.forked_from_id;
-        if (isCodexSubagent(meta)) { this.subagentThreads.add(b.threadId); b.suppressed = true; }
-        this.rememberOrigin(b.rolloutPath);
-        if (!this.isManaged(b)) this.observe(key, b);
-      }
-      else this.deps.error(new Error(`Codex transcript unavailable for ${b.threadId}; other sessions remain active`));
-    }
-    if (relocated) this.save();
-  }
-  private rememberOrigin(path: string): void {
-    const meta = readCodexTopicSource(path).meta;
-    const originator = meta?.originator;
-    if (typeof originator === 'string' && /^botmux(?:-|$)/.test(originator)) {
-      this.botmuxThreads.add(meta!.id);
+      this.restoreObserver(key, b);
     }
   }
+
+  private verifiedSource(b: AutoCodexBinding, path: string) {
+    try {
+      const library = realpathSync(b.codexHome);
+      const distance = relative(library, realpathSync(path));
+      if (!['sessions', 'archived_sessions'].includes(distance.split(sep)[0])) return;
+      const source = readCodexTopicSource(path);
+      return source.meta?.id === b.threadId ? source : undefined;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') this.deps.error(error);
+    }
+  }
+
+  private restoreObserver(key: string, b: AutoCodexBinding): void {
+    if (this.isManaged(b) || !this.canRoute(b)) return;
+    const archived = join(b.codexHome, 'archived_sessions', basename(b.rolloutPath));
+    const stored = this.verifiedSource(b, b.rolloutPath);
+    const source = stored ?? this.verifiedSource(b, archived);
+    if (!source) return;
+    const meta = source.meta!;
+    let changed = !stored;
+    if (isCodexSubagent(meta)) {
+      this.subagentThreads.add(b.threadId);
+      changed ||= !b.suppressed;
+      b.suppressed = true;
+    }
+    if (typeof meta.originator === 'string' && /^botmux(?:-|$)/.test(meta.originator)) this.botmuxThreads.add(b.threadId);
+    if (!stored) {
+      this.registry.baselines[archived] ??= this.registry.baselines[b.rolloutPath]
+        ?? { offset: this.completeOffset(archived, statSync(archived).size), protected: true };
+      b.rolloutPath = archived;
+    }
+    if (source.firstUserMessage && source.firstUserMessage !== b.firstUserMessage) {
+      b.firstUserMessage = source.firstUserMessage;
+      changed = true;
+    }
+    if (typeof meta.forked_from_id === 'string' && meta.forked_from_id !== b.sourceThreadId) {
+      b.sourceThreadId = meta.forked_from_id;
+      changed = true;
+    }
+    if (changed) this.save();
+    try { if (!this.isManaged(b)) this.observe(key, b); }
+    catch (error) { this.deps.error(error); }
+  }
+
   private isManaged(b: AutoCodexBinding): boolean {
     return b.suppressed === true || this.subagentThreads.has(b.threadId) || this.botmuxThreads.has(b.threadId) || this.deps.excluded().has(b.threadId);
   }
   private save(): void { atomicWriteFileSync(this.stateFile, JSON.stringify(this.registry, null, 2), { mode: 0o600 }); }
   private key(home: string, id: string): string { return createHash('sha256').update(`${home}:${id}`).digest('hex'); }
+  private canRoute(b: AutoCodexBinding): boolean {
+    return b.larkAppId === this.cfg.larkAppId && b.chatId === this.cfg.chatId && this.cfg.codexHomes.includes(b.codexHome)
+      && !Object.values(this.registry.bindings).some(other => other !== b && other.larkAppId === b.larkAppId
+        && (other.rootMessageId === b.rootMessageId || other.threadId === b.threadId) && !this.isManaged(other));
+  }
   private observe(key: string, b: AutoCodexBinding, offset?: number): ExternalCodexBridge {
     const observer = new ExternalCodexBridge([{ ...b, replySenderOpenIds: this.cfg.replySenderOpenIds,
       allowGroupMembers: this.cfg.allowGroupMembers }], join(dirname(this.stateFile), `${key}.json`), {
@@ -124,39 +144,64 @@ export class CodexAutoBridge {
   }
   followupStatus(root: string, app: string) {
     if (!this.owns(root, app)) return undefined;
-    for (const observer of this.observers.values()) if (observer.owns(root, app)) return observer.followupStatus(root, app);
+    for (const [key, b] of Object.entries(this.registry.bindings)) {
+      if (b.rootMessageId !== root || b.larkAppId !== app || !this.canRoute(b)) continue;
+      const queued = this.registry.pending?.[key]?.filter(input => input.root === root).length ?? 0;
+      const status = this.observers.get(key)?.followupStatus(root, app);
+      if (queued) return { phase: 'waiting_owner', running: status?.running ?? false, queued: queued + (status?.queued ?? 0) };
+      return status;
+    }
     return undefined;
   }
   hasReceived(root: string, app: string, messageId: string): boolean {
     if (!this.owns(root, app)) return false;
+    for (const [key, b] of Object.entries(this.registry.bindings)) {
+      if (b.rootMessageId === root && b.larkAppId === app && this.canRoute(b)
+        && this.registry.pending?.[key]?.some(input => input.root === root && input.messageId === messageId)) return true;
+    }
     for (const observer of this.observers.values()) if (observer.owns(root, app)) return observer.hasReceived(root, app, messageId);
     return false;
   }
-  async receive(root: string, app: string, sender: string, messageId: string, text: string): Promise<boolean> {
-    const found = Object.entries(this.registry.bindings).find(([, b]) => (b.rootMessageId === root || b.supersededRootMessageIds?.includes(root)) && b.larkAppId === app);
+  async receive(root: string, app: string, sender: string, messageId: string, text: string, chatId?: string): Promise<boolean> {
+    const matches = Object.entries(this.registry.bindings).filter(([, b]) => (b.rootMessageId === root || b.supersededRootMessageIds?.includes(root)) && b.larkAppId === app);
+    if (matches.length > 1) return true;
+    const found = matches[0];
     if (!found) return false;
     if (found[1].rootMessageId !== root) return true;
     // A recalled erroneous child topic must never fall through to a fresh bot session.
     if (found[1].suppressed || this.subagentThreads.has(found[1].threadId)) return true;
     if (this.isManaged(found[1])) return false;
+    if ((chatId !== undefined && chatId !== found[1].chatId) || !this.canRoute(found[1])) return true;
     if (sender !== this.cfg.ownerOpenId && !this.cfg.replySenderOpenIds?.includes(sender)
         && !(this.cfg.allowGroupMembers && sender.startsWith('ou_'))) return true;
     const [key, source] = found;
-    const previous = this.routes.get(key) ?? Promise.resolve();
-    const operation = previous.catch(() => {}).then(async () => {
-      if (this.isManaged(source)) return;
-      // A normal follow-up always resumes the thread explicitly bound to this
-      // topic. Historical readOnly/targetKey flags must never create or select
-      // a test fork. Explicit test topics bind the fork's own threadId.
-      const targetKey = key;
-      const target = source;
-      if (target && !this.isManaged(target)) {
-        await this.observers.get(targetKey)?.receive(root, app, sender, messageId, text);
+    if (this.hasReceived(root, app, messageId)) return true;
+    ((this.registry.pending ??= {})[key] ??= []).push({ root, sender, messageId, text });
+    this.save();
+    await this.drainRetained(key, source);
+    return true;
+  }
+
+  private async drainRetained(key: string, b: AutoCodexBinding): Promise<void> {
+    const inFlight = this.routes.get(key);
+    if (inFlight) return inFlight;
+    if (!this.registry.pending?.[key]?.length || this.isManaged(b) || !this.canRoute(b)) return;
+    const observer = this.observers.get(key);
+    if (!observer || !this.verifiedSource(b, b.rolloutPath)) return;
+    const operation = (async () => {
+      const queue = this.registry.pending![key];
+      while (this.canRoute(b) && !this.isManaged(b)) {
+        const index = queue.findIndex(input => input.root === b.rootMessageId);
+        if (index === -1) break;
+        const input = queue[index];
+        if (!await observer.receive(input.root, b.larkAppId, input.sender, input.messageId, input.text, b.chatId)) break;
+        queue.splice(index, 1);
+        if (!queue.length) delete this.registry.pending![key];
+        this.save();
       }
-    });
+    })();
     this.routes.set(key, operation);
     try { await operation; } finally { if (this.routes.get(key) === operation) this.routes.delete(key); }
-    return true;
   }
   private files(dir: string): string[] {
     if (!existsSync(dir)) return [];
@@ -180,14 +225,23 @@ export class CodexAutoBridge {
   async scan(): Promise<void> {
     if (this.scanning) return;
     this.scanning = true;
+    const recoveries: Promise<void>[] = [];
     try {
       const excluded = this.deps.excluded();
       for (const [key, b] of Object.entries(this.registry.bindings)) {
-        if (this.isManaged(b)) this.observers.delete(key);
+        if (this.isManaged(b) || !this.canRoute(b)) this.observers.delete(key);
+        else if (!this.observers.has(key) || !existsSync(b.rolloutPath)) {
+          this.observers.delete(key);
+          this.restoreObserver(key, b);
+        }
+        if (this.registry.pending?.[key]?.length) recoveries.push(this.drainRetained(key, b).catch(this.deps.error));
       }
       let changed = !this.registry.initialized;
+      const boundPaths = new Map(Object.values(this.registry.bindings).map(b => [b.rolloutPath, b.threadId]));
       for (const home of this.cfg.codexHomes) for (const path of this.files(join(home, 'sessions'))) {
-        const size = statSync(path).size;
+        let size: number;
+        try { size = statSync(path).size; }
+        catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
         if (!size) continue;
         let baseline = this.registry.baselines[path];
         if (!baseline) {
@@ -195,10 +249,13 @@ export class CodexAutoBridge {
           changed = true;
         }
         if (size <= baseline.offset) continue;
-        const source = readCodexTopicSource(path);
+        let source;
+        try { source = readCodexTopicSource(path); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
         const meta = source.meta;
         if (typeof meta?.id !== 'string') continue;
         const id = meta.id, key = this.key(home, id);
+        if (boundPaths.has(path) && boundPaths.get(path) !== id) continue;
         if (isCodexSubagent(meta)) {
           this.subagentThreads.add(id);
           if (this.registry.bindings[key]) this.registry.bindings[key].suppressed = true;
@@ -230,11 +287,14 @@ export class CodexAutoBridge {
         if (!priorBinding && sameThread) {
           baseline.offset = size; changed = true; continue;
         }
-        if (priorBinding && priorBinding.rolloutPath !== path && !excluded.has(id)) {
+        if (priorBinding && priorBinding.rolloutPath !== path && this.canRoute(priorBinding)
+          && !this.verifiedSource(priorBinding, priorBinding.rolloutPath) && this.verifiedSource(priorBinding, path)) {
           priorBinding.rolloutPath = path;
+          boundPaths.set(path, id);
           this.observe(key, priorBinding);
           changed = true;
         }
+        if (priorBinding && (priorBinding.rolloutPath !== path || !this.canRoute(priorBinding))) continue;
         if (!excluded.has(id) && !this.observers.has(key)) {
           // A Hook/completion alone is never enough to create a topic.
           if (!priorBinding && !source.firstUserMessage) continue;
@@ -255,7 +315,12 @@ export class CodexAutoBridge {
             ?? recoveredRoot
             ?? await this.deps.topic(candidate, key.slice(0, 32));
           const binding = { ...candidate, ...priorBinding, rolloutPath: path, rootMessageId };
+          if (!this.canRoute(priorBinding ?? binding)) {
+            this.deps.error(new Error(`Conflicting topic or Codex ID for ${id}; binding deferred`));
+            continue;
+          }
           this.registry.bindings[key] = binding;
+          boundPaths.set(path, id);
           this.save();
           this.observe(key, binding, Math.max(baseline.offset, source.firstUserOffset ?? 0));
         }
@@ -269,6 +334,7 @@ export class CodexAutoBridge {
       // Keep scanning and forwarding other threads while one model runs.
       void observer.tick().catch(this.deps.error);
     }
+    await Promise.all(recoveries);
   }
   async start(): Promise<void> {
     await this.scan();

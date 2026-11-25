@@ -32,8 +32,12 @@ export function codexSyncThreads(appId: string): Thread[] {
   const file = join(homedir(), '.local/state/botmux/codex-auto/registry.json');
   if (existsSync(file)) {
     const registry = JSON.parse(readFileSync(file, 'utf8'));
-    for (const [key, b] of Object.entries(registry.bindings ?? {}) as Array<[string, any]>) {
-      if (b.larkAppId !== appId || b.suppressed || !externalCodexBridge?.owns(b.rootMessageId, appId)) continue;
+    const bindings = (Object.entries(registry.bindings ?? {}) as Array<[string, any]>)
+      .filter(([, b]) => b.larkAppId === appId && !b.suppressed);
+    const roots = new Map<string, number>();
+    for (const [, b] of bindings) roots.set(b.rootMessageId, (roots.get(b.rootMessageId) ?? 0) + 1);
+    for (const [key, b] of bindings) {
+      if (roots.get(b.rootMessageId) !== 1 || !externalCodexBridge?.owns(b.rootMessageId, appId)) continue;
       threads.push({ key, title: b.firstUserMessage ?? b.threadId, bot, threadId: b.threadId, cwd: b.cwd, kind: 'native', path: b.rolloutPath, rootMessageId: b.rootMessageId, chatId: b.chatId, ownerOpenId: b.ownerOpenId });
     }
   }
@@ -54,6 +58,11 @@ export function registerCodexSyncApi(appId: string, route: Route,
     try {
       const saved = JSON.parse(readFileSync(file, 'utf8'));
       if (saved.appId !== appId || !saved.mirror || saved.mirrored || saved.status !== 'accepted') { mirrors.delete(file); return; }
+      if (saved.binding) {
+        const current = codexSyncThreads(appId).find(t => t.key === saved.binding.key);
+        if (!current || current.threadId !== saved.binding.threadId
+          || current.rootMessageId !== saved.mirror.rootMessageId) return;
+      }
       await replyMessage(appId, saved.mirror.rootMessageId, `【VS Code 追问】\n${saved.mirror.text}`, 'text', true, saved.mirror.uuid);
       const latest = JSON.parse(readFileSync(file, 'utf8'));
       atomicWriteFileSync(file, JSON.stringify({ ...latest, mirrored: true }), { mode: 0o600 }); mirrors.delete(file);
@@ -101,10 +110,18 @@ export function registerCodexSyncApi(appId: string, route: Route,
     let input: any;
     try { input = await body(req); } catch { return json(res, 400, { error: 'invalid_json' }); }
     if (typeof input.text !== 'string' || !input.text.trim() || input.text.length > 100_000 || !/^[\w-]{8,100}$/.test(input.requestId ?? '')) return json(res, 400, { error: 'invalid_input' });
+    const expected = input.expectedBinding;
+    if (expected !== undefined && (typeof expected?.threadId !== 'string' || !expected.threadId
+      || typeof expected?.rootMessageId !== 'string' || !expected.rootMessageId)) {
+      return json(res, 400, { error: 'invalid_expected_binding' });
+    }
     const previous = queues.get(params.key) ?? Promise.resolve();
     const operation = previous.catch(() => {}).then(async () => {
       const thread = codexSyncThreads(appId).find(t => t.key === params.key);
       if (!thread) return json(res, 404, { error: 'thread_not_found' });
+      if (expected && (thread.threadId !== expected.threadId || thread.rootMessageId !== expected.rootMessageId)) {
+        return json(res, 409, { error: 'binding_mismatch' });
+      }
       const dir = receiptDir; mkdirSync(dir, { recursive: true, mode: 0o700 });
       const file = receiptPath(params.key, input.requestId);
       const fingerprint = createHash('sha256').update(input.text).digest('hex');
@@ -120,11 +137,15 @@ export function registerCodexSyncApi(appId: string, route: Route,
         return json(res, saved.status === 'accepted' ? 200 : 409, { ok: saved.status === 'accepted', status: saved.status, duplicate: true });
       }
       const uuid = createHash('sha256').update(`${appId}:${params.key}:${input.requestId}`).digest('hex').slice(0, 32);
-      const save = (status: string) => atomicWriteFileSync(file, JSON.stringify({ status, fingerprint, appId, mirror: { rootMessageId: thread.rootMessageId, text: input.text, uuid }, mirrored: false }), { mode: 0o600 });
+      const save = (status: string) => atomicWriteFileSync(file, JSON.stringify({ status, fingerprint, appId,
+        ...(thread.kind === 'native' ? { binding: { key: thread.key, threadId: thread.threadId } } : {}),
+        mirror: { rootMessageId: thread.rootMessageId, text: input.text, uuid }, mirrored: false }), { mode: 0o600 });
       // An uncertain delivery stays 'started', never automatically replayed.
       save('started');
       if (thread.kind === 'native') {
-        if (!await externalCodexBridge?.receive(thread.rootMessageId, appId, thread.ownerOpenId!, `ide-${input.requestId}`, input.text)) throw new Error('bridge_unavailable');
+        const bridge = externalCodexBridge, messageId = `ide-${input.requestId}`;
+        if (!bridge || !await bridge.receive(thread.rootMessageId, appId, thread.ownerOpenId!, messageId, input.text, thread.chatId)) throw new Error('bridge_unavailable');
+        if (!bridge.hasReceived(thread.rootMessageId, appId, messageId)) throw new Error('binding_unavailable');
       } else {
         let ds = findActiveBySessionId(thread.key);
         if (!ds) {

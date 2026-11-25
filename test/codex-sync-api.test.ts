@@ -32,6 +32,18 @@ it('lists only this bot and rejects cross-bot keys before writes',async()=>{
  const listed=await call('GET /api/codex-sync/threads');expect(listed.value.threads.map((t:any)=>t.key)).toEqual(['same-session']);expect(JSON.stringify(listed.value)).not.toContain('rollout.jsonl');
  const wrong=await call('POST /api/codex-sync/:key/input',{text:'q',requestId:'request-a'},'other');expect(wrong.status).toBe(404);expect(ctx.send).not.toHaveBeenCalled();
 });
+it('requires both expected identifiers to match before recording or submitting a checked request', async () => {
+  ctx.sessions[0].cliSessionId = 'codex-original';
+  const route = 'POST /api/codex-sync/:key/input';
+  const input = { text: 'checked', requestId: 'binding-check' };
+  expect((await call(route, { ...input, expectedBinding: { threadId: 'codex-original' } })).status).toBe(400);
+  expect((await call(route, { ...input, expectedBinding: { threadId: 'wrong-session', rootMessageId: 'root' } })).value)
+    .toEqual({ error: 'binding_mismatch' });
+  expect((await call(route, { ...input, expectedBinding: { threadId: 'codex-original', rootMessageId: 'wrong-topic' } })).status).toBe(409);
+  expect(ctx.send).not.toHaveBeenCalled();
+  expect((await call(route, { ...input, expectedBinding: { threadId: 'codex-original', rootMessageId: 'root' } })).status).toBe(200);
+  expect(ctx.send).toHaveBeenCalledOnce();
+});
 it('submits to the original live session, mirrors the question once and persists idempotency',async()=>{
  const body={text:' 原文\n第二行 ',requestId:'request-a'};
  expect((await call('POST /api/codex-sync/:key/input',body)).value.ok).toBe(true);

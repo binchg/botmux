@@ -44,6 +44,14 @@ it('full chronological page includes each public message once, times, MathML and
   expect(body).not.toContain('<details');expect(body).toContain('最终回复');expect(body).toContain('原始追问');expect(body).toContain('<math');expect(body).toContain('<code>code $x$</code>');
   expect(p.html).toContain('setTimeout(()=>load(retry),delay)');expect(p.html).toContain('北京时间');expect(p.revision).toBe(renderConversationHistory(h,msgs).revision);
 });
+it('links only a persisted native Codex UUID to the same official VS Code conversation', () => {
+  const dir = storage(), threadId = '01a1da6b-a4f4-7a83-b53b-64953c8873e3';
+  const grant = ensureNativeConversationHistory({ ...binding, threadId }, false, dir);
+  expect(renderConversationHistory(grant, []).html).toContain(`href="vscode://openai.chatgpt/local/${threadId}"`);
+  expect(renderConversationHistory({ ...grant, nativeSource: undefined }, []).html).not.toContain('vscode://');
+  const bogus = { ...grant, source: { ...grant.source, cliSessionId: '\"><script>' } };
+  expect(renderConversationHistory(bogus, []).html).not.toContain('vscode://');
+});
 it('unchanged live page returns 204 while expired grants remain denied without renewal',async()=>{
   const dir=storage(),now=Date.now(),h=ensureConversationHistory({sessionId:'live-test',title:'test'} as Session,dir,now);
   const state=cachedHistoryPage(h,dir);await vi.waitFor(()=>expect(state.page).toBeDefined());
