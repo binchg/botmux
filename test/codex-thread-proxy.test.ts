@@ -71,3 +71,29 @@ it('recovers a lost acknowledgement only from the exact durable client ID', asyn
   expect(proxy.receipt('original','unknown-0001')).toMatchObject({phase:'finished',turnId:'accepted-turn'});
   expect(submit).toHaveBeenCalledTimes(1);
 });
+
+it('preserves the official IDE turn fields and returns the real Codex acknowledgement', async () => {
+  const {thread,state} = fixture();
+  const plain = vi.fn(async () => false);
+  const nativeResult = { turn: { id:'native-turn', status:'inProgress', items:[] } };
+  const native = vi.fn(async (_home: string, id: string, _path: string,
+    params: Record<string, unknown>, checkpoint: (submitted?: boolean, turnId?: string, result?: unknown) => void) => {
+    expect(id).toBe('original');
+    expect(params).toEqual({threadId:'original',clientUserMessageId:'native-request-0001',model:'gpt-6.2-sol',
+      input:[{type:'text',text:'**Markdown**',text_elements:[{byteRange:{start:2,end:10}}]},
+             {type:'localImage',path:'/example/image.png'}]});
+    checkpoint();
+    checkpoint(true, 'native-turn', nativeResult);
+    return true;
+  });
+  const proxy = new CodexThreadProxy([thread], state, plain, native);
+  proxy.enqueueNative('original','native-request-0001',{
+    threadId:'original', model:'gpt-6.2-sol',
+    input:[{type:'text',text:'**Markdown**',text_elements:[{byteRange:{start:2,end:10}}]},
+           {type:'localImage',path:'/example/image.png'}],
+  });
+  await proxy.tick();
+  expect(plain).not.toHaveBeenCalled();
+  expect(native).toHaveBeenCalledTimes(1);
+  expect(proxy.receipt('original','native-request-0001')).toMatchObject({phase:'running',nativeResult});
+});

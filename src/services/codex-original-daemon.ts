@@ -54,6 +54,14 @@ class DurableCodexConnection {
 /** Reuse the official per-library daemon for an explicitly authorized original. */
 export async function submitToOriginalCodexDaemon(home: string, threadId: string, rolloutPath: string, text: string,
   checkpoint: FollowupCheckpoint, clientUserMessageId?: string): Promise<boolean> {
+  return submitNativeTurnToOriginalCodexDaemon(home, threadId, rolloutPath,
+    { threadId, input: [{ type: 'text', text, text_elements: [] }], clientUserMessageId: clientUserMessageId ?? randomUUID() },
+    (submitted, turnId) => turnId ? checkpoint(submitted, turnId) : checkpoint());
+}
+
+export async function submitNativeTurnToOriginalCodexDaemon(home: string, threadId: string, rolloutPath: string,
+  params: Record<string, unknown>, checkpoint: (submitted?: boolean, turnId?: string, result?: unknown) => void): Promise<boolean> {
+  if (params.threadId !== threadId || !Array.isArray(params.input) || typeof params.clientUserMessageId !== 'string') return false;
   let path: string;
   try {
     path = realpathSync(join(home, 'app-server-control', 'app-server-control.sock'));
@@ -86,13 +94,9 @@ export async function submitToOriginalCodexDaemon(home: string, threadId: string
     }
     if (status !== 'idle') throw new Error('Codex original thread is not idle; follow-up retained');
     checkpoint();
-    const started = await client.request('turn/start', {
-      threadId,
-      input: [{ type: 'text', text, text_elements: [] }],
-      clientUserMessageId: clientUserMessageId ?? randomUUID(),
-    }, 90_000);
+    const started = await client.request('turn/start', params, 90_000);
     if (typeof started?.turn?.id !== 'string') throw new Error('Codex did not confirm the original turn; follow-up retained');
-    checkpoint(true, started.turn.id);
+    checkpoint(true, started.turn.id, started);
     return true;
   } finally { socket.close(); }
 }

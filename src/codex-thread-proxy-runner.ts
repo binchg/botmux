@@ -20,12 +20,12 @@ function json(res: ServerResponse, code: number, value: unknown) {
   res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' });
   res.end(JSON.stringify(value));
 }
-async function body(req: IncomingMessage): Promise<any> {
+async function body(req: IncomingMessage, maxBytes = 750_000): Promise<any> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > 750_000) throw new Error('Proxy input exceeds size limit');
+    if (size > maxBytes) throw new Error('Proxy input exceeds size limit');
     chunks.push(chunk);
   }
   return JSON.parse(Buffer.concat(chunks).toString('utf8'));
@@ -39,7 +39,7 @@ const server = createServer(async (req, res) => {
         key: thread.threadId, title: thread.title, bot: thread.bot, threadId: thread.threadId, cwd: thread.cwd, kind: 'native',
       })) });
     }
-    const match = /^\/api\/codex-sync\/([\w-]+)\/(events|receipt|input)$/.exec(url.pathname);
+    const match = /^\/api\/codex-sync\/([\w-]+)\/(events|receipt|input|native-start)$/.exec(url.pathname);
     const thread = match && proxy.thread(match[1]);
     if (!thread) return json(res, 404, { error: 'thread_not_found' });
     const id = thread.threadId;
@@ -54,6 +54,17 @@ const server = createServer(async (req, res) => {
       const reqId = url.searchParams.get('requestId');
       if (!validProxyRequestId(reqId)) return json(res, 400, { error: 'invalid_request_id' });
       return json(res, 200, proxy.receipt(id, reqId));
+    }
+    if (req.method === 'POST' && match![2] === 'native-start') {
+      const input = await body(req, 32 * 1024 * 1024);
+      if (!validProxyRequestId(input?.requestId) || input.params?.threadId !== id || !Array.isArray(input.params?.input)) {
+        return json(res, 400, { error: 'invalid_native_turn' });
+      }
+      const result = proxy.enqueueNative(id, input.requestId, input.params);
+      if (result.conflict) return json(res, 409, { error: 'request_fingerprint_conflict' });
+      json(res, 200, result);
+      void proxy.tick();
+      return;
     }
     if (req.method === 'POST' && match![2] === 'input') {
       const input = await body(req);

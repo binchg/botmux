@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+for argument do
+    if [ "$argument" = app-server ]; then
+        exec /opt/node/bin/node "$HOME/my/botmux/dist/codex-vscode-native-relay.js"
+    fi
+done
+exec "$HOME/.codex/packages/app-server-daemon/current/bin/codex" "$@"

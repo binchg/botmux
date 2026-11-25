@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { readCodexSyncEvents } from './codex-sync-reader.js';
-import { submitToOriginalCodexDaemon } from './codex-original-daemon.js';
+import { submitNativeTurnToOriginalCodexDaemon, submitToOriginalCodexDaemon } from './codex-original-daemon.js';
 
 export interface ProxyThread {
   threadId: string;
@@ -20,6 +20,8 @@ interface Receipt {
   threadId: string;
   requestId: string;
   text?: string;
+  native?: Record<string, unknown>;
+  nativeResult?: unknown;
   fingerprint: string;
   phase: Phase;
   checkedAt: number;
@@ -35,7 +37,8 @@ export class CodexThreadProxy {
   private readonly retryAt = new Map<string, number>();
 
   constructor(readonly threads: ProxyThread[], private readonly statePath: string,
-    private readonly submit = submitToOriginalCodexDaemon) {
+    private readonly submit = submitToOriginalCodexDaemon,
+    private readonly submitNative = submitNativeTurnToOriginalCodexDaemon) {
     this.records = existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')) : [];
     // A crash after crossing the submit boundary leaves an uncertain receipt.
     // The original is never given another copy of that request automatically.
@@ -55,25 +58,38 @@ export class CodexThreadProxy {
     entry.phase = phase;
     if (turnId) entry.turnId = turnId;
     entry.checkedAt = Date.now();
-    if (phase === 'finished' || phase === 'aborted') delete entry.text;
+    if (phase === 'finished' || phase === 'aborted') {
+      delete entry.text;
+      delete entry.native;
+    }
     this.save();
   }
 
   receipt(threadId: string, requestId: string) {
     const entry = this.records.find(record => record.threadId === threadId && record.requestId === requestId);
-    return entry ? { status: 'accepted', phase: entry.phase, turnId: entry.turnId, checkedAt: entry.checkedAt } : { status: 'missing' };
+    return entry ? { status: 'accepted', phase: entry.phase, turnId: entry.turnId,
+      checkedAt: entry.checkedAt, nativeResult: entry.nativeResult } : { status: 'missing' };
+  }
+
+  private enqueueRecord(data: Omit<Receipt, 'phase' | 'checkedAt'>) {
+    const existing = this.records.find(entry => entry.threadId === data.threadId && entry.requestId === data.requestId);
+    if (existing) {
+      if (existing.fingerprint !== data.fingerprint) return { conflict: true };
+    } else {
+      this.records.push({ ...data, phase: 'queued', checkedAt: Date.now() });
+      this.save();
+    }
+    return { ok: true, ...this.receipt(data.threadId, data.requestId) };
   }
 
   enqueue(threadId: string, requestId: string, text: string) {
-    const fingerprint = createHash('sha256').update(text).digest('hex');
-    const existing = this.records.find(entry => entry.threadId === threadId && entry.requestId === requestId);
-    if (existing) {
-      if (existing.fingerprint !== fingerprint) return { conflict: true };
-    } else {
-      this.records.push({ threadId, requestId, text, fingerprint, phase: 'queued', checkedAt: Date.now() });
-      this.save();
-    }
-    return { ok: true, ...this.receipt(threadId, requestId) };
+    return this.enqueueRecord({ threadId, requestId, text, fingerprint: createHash('sha256').update(text).digest('hex') });
+  }
+
+  enqueueNative(threadId: string, requestId: string, params: Record<string, unknown>) {
+    const native = { ...params, threadId, clientUserMessageId: requestId };
+    return this.enqueueRecord({ threadId, requestId, native,
+      fingerprint: createHash('sha256').update('native:').update(JSON.stringify(native)).digest('hex') });
   }
 
   status(threadId: string) {
@@ -121,12 +137,16 @@ export class CodexThreadProxy {
     }
     if ((this.retryAt.get(id) ?? 0) > Date.now()) return;
     const queued = entries.find(entry => entry.phase === 'queued' || entry.phase === 'waiting_owner');
-    if (!queued?.text) return;
+    if (!queued || (!queued.text && !queued.native)) return;
     this.dispatching.add(id);
     try {
-      const accepted = await this.submit(thread.codexHome, id, thread.rolloutPath, queued.text, (_, turnId) => {
+      const checkpoint = (_?: boolean, turnId?: string, nativeResult?: unknown) => {
+        if (turnId && nativeResult !== undefined) queued.nativeResult = nativeResult;
         this.update(queued, turnId ? 'running' : 'sending', turnId);
-      }, queued.requestId);
+      };
+      const accepted = queued.native
+        ? await this.submitNative(thread.codexHome, id, thread.rolloutPath, queued.native, checkpoint)
+        : await this.submit(thread.codexHome, id, thread.rolloutPath, queued.text!, checkpoint, queued.requestId);
       if (!accepted) {
         this.retryAt.set(id, Date.now() + 5000);
         this.update(queued, 'waiting_owner');
