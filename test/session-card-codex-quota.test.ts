@@ -5,13 +5,14 @@ const f = vi.hoisted(() => ({
   session: {} as any,
   bot: {} as any,
   enabled: true,
+  grants: {} as Record<string, string>,
   read: vi.fn(),
 }));
 vi.mock('../src/config.js', () => ({ config: { daemon: { workingDir: '/bot/cwd' }, session: { dataDir: '/data' } } }));
 vi.mock('../src/bot-registry.js', () => ({ getBot: () => f.bot }));
 vi.mock('../src/services/session-store.js', () => ({ getSession: () => f.session }));
 vi.mock('../src/services/session-card-customization.js', () => ({
-  readSessionCardCustomization: () => ({ codexQuota: f.enabled }),
+  readSessionCardCustomization: () => ({ codexQuota: f.enabled, codexQuotaSessionOwners: f.grants }),
 }));
 vi.mock('../src/services/codex-quota.js', async importOriginal => ({
   ...await importOriginal<typeof import('../src/services/codex-quota.js')>(), readCodexQuota: f.read,
@@ -25,6 +26,7 @@ beforeEach(() => {
   f.session = { sessionId: 's', larkAppId: `selected-${++scenario}`, cliId: 'codex-app', status: 'active', ownerOpenId: 'ou_owner' };
   f.bot = { config: { cliId: 'codex-app', cliPathOverride: '/bin/codex' }, resolvedAllowedUsers: ['ou_owner'] };
   f.enabled = true;
+  f.grants = {};
   f.read.mockReset();
 });
 
@@ -75,4 +77,20 @@ it('未开启、由其他成员发起或接管的会话不查询机器人额度'
   expect(label()).toBeUndefined();
   await settleRead();
   expect(f.read).not.toHaveBeenCalled();
+});
+
+it('精确的会话所有者授权仅允许本会话显示额度', async () => {
+  f.session.ownerOpenId = 'ou_guest';
+  f.grants.s = 'ou_guest';
+  f.read.mockResolvedValue([{ window: 'primary', remainingPercent: 42, durationMinutes: 300 }]);
+  const label = () => sessionCardCodexQuota('/data', 's', 'zh', 'card-a');
+  expect(label()).toBeUndefined();
+  await settleRead();
+  expect(label()).toContain('42%');
+  f.session.sessionId = 'other';
+  expect(label()).toBeUndefined();
+  f.session.sessionId = 's';
+  f.session.ownerOpenId = 'ou_other_guest';
+  expect(label()).toBeUndefined();
+  expect(f.read).toHaveBeenCalledOnce();
 });

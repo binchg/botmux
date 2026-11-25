@@ -9,6 +9,8 @@ export interface SessionCardCustomization {
   modelInCard?: boolean;
   taskContext?: boolean;
   codexQuota?: boolean;
+  /** Exact session ID to owner OpenID grants for the quota row only. */
+  codexQuotaSessionOwners?: Record<string, string>;
 }
 
 /** 未配置、损坏或未命中的机器人沿用原布局。 */
