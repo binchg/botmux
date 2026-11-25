@@ -22,6 +22,8 @@ export interface ExternalCodexBinding {
   firstUserMessage?: string;
   currentUserMessage?: string;
 }
+export type FollowupCheckpoint = (submitted?: boolean, acceptedTurnId?: string) => void;
+
 export type FollowupPhase = 'queued' | 'waiting_turn' | 'protected' | 'waiting_owner' | 'retrying' | 'sending' | 'uncertain' | 'accepted' | 'running' | 'finished' | 'aborted';
 
 export interface FollowupCard {
@@ -66,6 +68,7 @@ export interface ExternalCodexCursor {
   inode?: number;
   deliveryBlockedRoot?: string;
   followupCards?: Record<string, FollowupCard>;
+  lastEndedTurn?: { id: string; phase: 'finished' | 'aborted' };
 }
 export function consumeExternalCodex(state: ExternalCodexCursor, text: string): void {
   const lines = (state.carry + text).split('\n');
@@ -78,6 +81,9 @@ export function consumeExternalCodex(state: ExternalCodexCursor, text: string): 
     const p = row.payload ?? {};
     if (row.type === 'event_msg' && p.type === 'task_started') {
       state.busy = true; state.turnId = p.turn_id ?? p.root_turn_id; state.progressCarry = '';
+      for (const card of Object.values(state.followupCards ?? {})) {
+        if (card.turnId && card.turnId === state.turnId) setPhase(card, 'running');
+      }
     }
     const ended = row.type === 'event_msg' && (p.type === 'task_complete' || p.type === 'turn_aborted');
     if (ended) state.busy = false;
@@ -98,8 +104,10 @@ export function consumeExternalCodex(state: ExternalCodexCursor, text: string): 
     if (ended) {
       const endedTurn = p.turn_id ?? p.root_turn_id;
       if (endedTurn) {
+        const phase = p.type === 'turn_aborted' ? 'aborted' : 'finished';
+        state.lastEndedTurn = { id: endedTurn, phase };
         for (const card of Object.values(state.followupCards ?? {})) {
-          if (card.turnId === endedTurn) setPhase(card, p.type === 'turn_aborted' ? 'aborted' : 'finished');
+          if (card.turnId === endedTurn) setPhase(card, phase);
         }
       }
     }
@@ -150,7 +158,7 @@ export class ExternalCodexBridge {
     received?: (binding: ExternalCodexBinding, messageId: string, text: string) => Promise<unknown>;
     isProtected?: (binding: ExternalCodexBinding) => boolean;
     status?: (binding: ExternalCodexBinding, card: Readonly<FollowupCard>) => Promise<string | undefined>;
-    turn: (binding: ExternalCodexBinding, text: string, checkpoint: (submitted?: boolean) => void, clientUserMessageId?: string) => Promise<void>;
+    turn: (binding: ExternalCodexBinding, text: string, checkpoint: FollowupCheckpoint, clientUserMessageId?: string) => Promise<void>;
     error: (error: unknown) => void;
   }, initialOffsets?: Record<string, number>, notBefore?: number) {
     const saved = existsSync(stateFile) ? JSON.parse(readFileSync(stateFile, 'utf8')) : {};
@@ -360,11 +368,16 @@ export class ExternalCodexBridge {
           this.submitting.add(b.threadId);
           dispatches.push(async () => {
             try {
-              await this.deps.turn(b, pending.text, (submitted = true) => {
+              await this.deps.turn(b, pending.text, (submitted = true, acceptedTurnId) => {
                 pending.status = submitted ? 'started' : 'queued';
                 if (submitted) {
                   delete state.retryAfter;
-                  setPhase(card, 'sending');
+                  if (acceptedTurnId && card) {
+                    card.turnId = acceptedTurnId;
+                    const completed = state.lastEndedTurn;
+                    setPhase(card, completed?.id === acceptedTurnId ? completed.phase :
+                      state.busy && state.turnId === acceptedTurnId ? 'running' : 'accepted');
+                  } else setPhase(card, 'sending');
                 }
                 this.save();
               }, pending.clientUserMessageId);

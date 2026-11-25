@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, openSync, r
 import { join, dirname, basename } from 'node:path';
 import { createHash } from 'node:crypto';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
-import { ExternalCodexBridge, type ExternalCodexBinding, type ExternalCodexOutputKind, type FollowupCard } from './external-codex-bridge.js';
+import { ExternalCodexBridge, type ExternalCodexBinding, type ExternalCodexOutputKind, type FollowupCard, type FollowupCheckpoint } from './external-codex-bridge.js';
 
 export interface AutoCodexBinding extends ExternalCodexBinding {
   codexHome: string;
@@ -48,7 +48,7 @@ export class CodexAutoBridge {
     reply: (b: AutoCodexBinding, text: string, uuid: string, kind?: ExternalCodexOutputKind) => Promise<unknown>;
     status?: (b: AutoCodexBinding, card: Readonly<FollowupCard>) => Promise<string | undefined>;
     received?: (b: AutoCodexBinding, messageId: string, text: string) => Promise<unknown>;
-    turn: (b: AutoCodexBinding, text: string, checkpoint: (submitted?: boolean) => void, clientUserMessageId?: string) => Promise<void>;
+    turn: (b: AutoCodexBinding, text: string, checkpoint: FollowupCheckpoint, clientUserMessageId?: string) => Promise<void>;
     fork?: (b: AutoCodexBinding) => Promise<{ threadId: string; rolloutPath: string }>;
     excluded: () => Set<string>;
     error: (error: unknown) => void;

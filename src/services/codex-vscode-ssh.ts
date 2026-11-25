@@ -4,6 +4,7 @@ import { realpathSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { setTimeout as delay } from 'node:timers/promises';
 import WebSocket from 'ws';
+import type { FollowupCheckpoint } from './external-codex-bridge.js';
 
 export interface CodexVscodeSshTarget {
   host: string;
@@ -106,7 +107,7 @@ function request(socket: WebSocket, method: string, params: object, timeoutMs = 
 }
 
 export async function submitToVscodeSsh(target: CodexVscodeSshTarget, threadId: string, rolloutPath: string, text: string,
-  checkpoint: (submitted?: boolean) => void, clientUserMessageId?: string): Promise<boolean> {
+  checkpoint: FollowupCheckpoint, clientUserMessageId?: string): Promise<boolean> {
   if (!/^[a-zA-Z0-9_.][a-zA-Z0-9_.-]{0,100}$/.test(target.host) || !target.authority.startsWith('ssh-remote+') ||
       !Number.isInteger(target.debugPort) || target.debugPort < 1 || target.debugPort > 65535) return false;
   const port = await reserveLocalPort();
@@ -142,6 +143,7 @@ export async function submitToVscodeSsh(target: CodexVscodeSshTarget, threadId: 
       threadId, input: [{ type: 'text', text, text_elements: [] }], clientUserMessageId: clientUserMessageId ?? randomUUID(),
     }, 90_000);
     if (typeof result?.result?.turnId !== 'string') throw new Error('VS Code SSH did not confirm the original turn; follow-up retained');
+    checkpoint(true, result.result.turnId);
     return true;
   } finally {
     socket?.close();

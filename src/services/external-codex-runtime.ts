@@ -8,11 +8,12 @@ import { nativeConversationHistoryButtons } from '../im/lark/conversation-histor
 import { formatMathForLark } from './outbound-math.js';
 import { replyMessage, sendMessage, updateMessage } from '../im/lark/client.js';
 import { logger } from '../utils/logger.js';
-import { ExternalCodexBridge, NativeOwnerUnavailable, type ExternalCodexBinding, type ExternalCodexOutputKind, type FollowupCard } from './external-codex-bridge.js';
+import { ExternalCodexBridge, NativeOwnerUnavailable, type ExternalCodexBinding, type ExternalCodexOutputKind, type FollowupCard, type FollowupCheckpoint } from './external-codex-bridge.js';
 import { CodexAutoBridge, type AutoCodexBinding } from './codex-auto-bridge.js';
 import { CodexAppServerProbe } from './codex-app-threads.js';
 import { collectBotmuxSessionIdentities } from './session-store.js';
 import { submitToCodexOwner } from './codex-owner-ipc.js';
+import { submitToOriginalCodexDaemon } from './codex-original-daemon.js';
 import { submitToVscodeSsh, type CodexVscodeSshTarget } from './codex-vscode-ssh.js';
 import { readCodexSessionStatistics, codexStatisticsText } from './codex-session-statistics.js';
 import { recoverCodexTopic } from './codex-topic-recovery.js';
@@ -33,6 +34,7 @@ export function startExternalCodexBridge(selfAppId: string): void {
   if (ownerApps.some((app: string) => app !== selfAppId)) throw new Error('External Codex bindings must belong to one bot');
   if (cfg.mode === 'auto') {
     if (!Array.isArray(cfg.codexHomes) || !cfg.codexHomes.length || !cfg.larkAppId || !cfg.chatId || !cfg.ownerOpenId || !cfg.codexBin) throw new Error('Invalid automatic Codex bridge config');
+    const durableThreadIds = new Set<string>(cfg.durableThreadIds ?? []);
     const vscodeTargets: Record<string, CodexVscodeSshTarget> = cfg.vscodeSshThreads ?? {};
     const auto = new CodexAutoBridge(cfg, join(homedir(), '.local/state/botmux/codex-auto/registry.json'), {
       topic: (b, uuid) => {
@@ -54,10 +56,11 @@ export function startExternalCodexBridge(selfAppId: string): void {
       },
       turn: async (b, text, checkpoint, clientUserMessageId) => {
         const target = Object.hasOwn(vscodeTargets, b.threadId) ? vscodeTargets[b.threadId] : undefined;
-        const submitted = target
-          ? await submitToVscodeSsh(target, b.threadId, b.rolloutPath, text, checkpoint, clientUserMessageId)
-          : await submitToCodexOwner(b.codexHome, b.threadId, text, checkpoint, clientUserMessageId);
-        if (!submitted) throw new NativeOwnerUnavailable(`Codex IDE owner unavailable for ${b.threadId}; follow-up retained`);
+        if (target && await submitToVscodeSsh(target, b.threadId, b.rolloutPath, text, checkpoint, clientUserMessageId)) return;
+        if (durableThreadIds.has(b.threadId)) {
+          if (await submitToOriginalCodexDaemon(b.codexHome, b.threadId, b.rolloutPath, text, checkpoint, clientUserMessageId)) return;
+        } else if (!target && await submitToCodexOwner(b.codexHome, b.threadId, text, checkpoint, clientUserMessageId)) return;
+        throw new NativeOwnerUnavailable(`Codex IDE owner unavailable for ${b.threadId}; follow-up retained`);
       },
       excluded: () => collectBotmuxSessionIdentities() ?? new Set(),
       error: e => logger.error(`[codex-auto] ${String(e)}`),

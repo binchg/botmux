@@ -86,6 +86,32 @@ it('updates one follow-up card from offline through recovery and the exact turn 
   } finally { vi.useRealTimers(); f.cleanup(); }
 });
 
+it('marks a turn completed when the exact acknowledgement arrives after the ending event', async () => {
+  const f = fixture();
+  const cards: Array<Readonly<FollowupCard>> = [];
+  let acknowledge: (() => void) | undefined;
+  try {
+    const bridge = new ExternalCodexBridge([f.binding], f.stateFile, {
+      reply: async () => {},
+      status: async (_, card) => { cards.push(card); return 'card'; },
+      turn: async (_, __, checkpoint) => {
+        checkpoint();
+        await new Promise<void>(resolve => { acknowledge = () => { checkpoint(true, 'receipt-turn'); resolve(); }; });
+      },
+      error: () => {},
+    });
+    await bridge.receive('root', 'app', 'owner', 'message', '追问');
+    const dispatch = bridge.tick();
+    appendFileSync(f.rolloutPath, event({ type: 'task_started', turn_id: 'receipt-turn' }) +
+      event({ type: 'task_complete', turn_id: 'receipt-turn', last_agent_message: '回复' }));
+    await bridge.tick();
+    acknowledge!();
+    await dispatch;
+    await bridge.tick();
+    expect(cards.at(-1)).toMatchObject({ phase: 'finished', turnId: 'receipt-turn', cardId: 'card' });
+  } finally { f.cleanup(); }
+});
+
 it('keeps a protected original read only and shows the block on the queued follow-up', async () => {
   const f = fixture();
   const original = readFileSync(f.rolloutPath);
