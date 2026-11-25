@@ -1,6 +1,6 @@
 # Botmux Codex 会话同步
 
-在 VS Code Remote SSH 的远端安装此扩展，资源管理器里会自动出现 **Botmux 会话**。按机器人分组发现其托管会话及已绑定的原生 Codex 会话；点击打开过程面板，可直接追问原会话。
+在 VS Code 1.146 或更新版本通过 Remote SSH 安装。右侧 **Botmux Codex** 可以打开会话列表、查看当前回合和追问。输入框用 Enter 发送，Shift+Enter 换行；资源管理器的「Botmux 会话」入口也会打开右侧栏。
 
 5090 的持久 Codex 服务和 Botmux 负责运行与同步，VS Code 面板负责显示和发送追问。管理员可对指定的原生会话启用持久服务，并在对应 VS Code 工作区停用 OpenAI 扩展，释放旧写入者。两个入口沿用原会话 ID 和原历史。
 
@@ -12,4 +12,4 @@
 - 统计使用项目已有的分块 UTF-8 JSONL 扫描器和字节游标；无新增运行依赖。日志是持久来源，重启后可重建，同一进程仅折叠新增记录，未变化的文件只做 stat。
 - 累计运行是执行轮次的实际墙钟时长（含模型、工具及轮内等待，不含轮间空闲），不是 CPU 时间；缓存 Token 已包含在输入 Token 中，不再加到总量。未报告的用量显示 `—`，缺失历史显示“可用记录”。卡片运行中每 15 秒更新，空闲每 60 秒更新，正常输出也会触发更新。
 
-扩展仅连接远端机器本地的 Botmux IPC。默认 data 目录 `/home/ubuntu/my/botmux/data`，可配置 `botmuxSync.dataDir`。机器人身份和执行权限沿用该机器已有 Botmux 会话。
+已接入代理的原生会话直接使用 5090 的私有 Unix socket。即使 Botmux 没运行，定制面板也能向代理提交；飞书同步恢复后从原会话日志补齐。Botmux 托管会话仍走所属机器人的本地接口。默认 data 目录 `/home/ubuntu/my/botmux/data`，可配置 `botmuxSync.dataDir`。机器人身份和执行权限沿用该机器已有 Botmux 会话。

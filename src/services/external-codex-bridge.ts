@@ -45,6 +45,9 @@ function setPhase(card: FollowupCard | undefined, phase: FollowupPhase): void {
 }
 
 export class NativeOwnerUnavailable extends Error {}
+export class NativeProxyPending extends Error {
+  constructor(readonly phase: 'queued' | 'waiting_owner' | 'sending' | 'uncertain') { super('Stored in the 5090 process queue'); }
+}
 
 export interface ExternalCodexCursor {
   offset: number;
@@ -406,6 +409,7 @@ export class ExternalCodexBridge {
               if (pending.status === 'queued') state.retryAfter = Date.now() + 15_000;
               if (card) {
                 const phase = pending.status === 'started' ? 'uncertain' :
+                  error instanceof NativeProxyPending ? error.phase :
                   error instanceof NativeOwnerUnavailable ? 'waiting_owner' : 'retrying';
                 if (card.phase !== 'running' && (card.phase !== phase || Date.now() - card.checkedAt >= 60_000)) setPhase(card, phase);
                 this.save();
@@ -416,7 +420,7 @@ export class ExternalCodexBridge {
                   text: pending.status === 'started' ? '原生窗口尚未确认接收，追问已保留；确认结果前不会重复提交。' : '原生窗口暂未就绪，追问已保留，正在等待原会话。' });
                 this.save();
               }
-              throw error;
+              if (!(error instanceof NativeProxyPending)) throw error;
             } finally { this.submitting.delete(b.threadId); }
           });
         }

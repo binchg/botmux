@@ -1,0 +1,10 @@
+[Unit]
+Description=Private 5090 Codex process proxy socket
+
+[Socket]
+ListenStream=%t/botmux-codex-thread-proxy.sock
+SocketMode=0600
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

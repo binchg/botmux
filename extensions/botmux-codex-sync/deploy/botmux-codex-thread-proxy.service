@@ -1,0 +1,13 @@
+[Unit]
+Description=5090 Codex process proxy
+Requires=botmux-codex-thread-proxy.socket
+After=botmux-codex-thread-proxy.socket
+
+[Service]
+Type=simple
+ExecStart=/opt/node/bin/node %h/my/botmux/dist/codex-thread-proxy-runner.js
+WorkingDirectory=%h/my/botmux
+UMask=0077
+NoNewPrivileges=yes
+Restart=on-failure
+RestartSec=3

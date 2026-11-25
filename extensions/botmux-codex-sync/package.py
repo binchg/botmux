@@ -7,6 +7,6 @@ output = Path(sys.argv[1]) if len(sys.argv) > 1 else root / f"botmux-codex-sync-
 with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as z:
     for name in ["[Content_Types].xml", "extension.vsixmanifest"]:
         z.write(root / name, name)
-    for name in ["package.json", "extension.cjs", "README.md"]:
+    for name in ["package.json", "extension.cjs", "sidebar.cjs", "sidebar.svg", "README.md"]:
         z.write(root / name, "extension/" + name)
 print(output)

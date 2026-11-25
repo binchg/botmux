@@ -8,12 +8,13 @@ import { nativeConversationHistoryButtons } from '../im/lark/conversation-histor
 import { formatMathForLark } from './outbound-math.js';
 import { replyMessage, sendMessage, updateMessage } from '../im/lark/client.js';
 import { logger } from '../utils/logger.js';
-import { ExternalCodexBridge, NativeOwnerUnavailable, type ExternalCodexBinding, type ExternalCodexOutputKind, type FollowupCard, type FollowupCheckpoint } from './external-codex-bridge.js';
+import { ExternalCodexBridge, NativeOwnerUnavailable, NativeProxyPending, type ExternalCodexBinding, type ExternalCodexOutputKind, type FollowupCard, type FollowupCheckpoint } from './external-codex-bridge.js';
 import { CodexAutoBridge, type AutoCodexBinding } from './codex-auto-bridge.js';
 import { CodexAppServerProbe } from './codex-app-threads.js';
 import { collectBotmuxSessionIdentities } from './session-store.js';
 import { submitToCodexOwner } from './codex-owner-ipc.js';
 import { submitToOriginalCodexDaemon } from './codex-original-daemon.js';
+import { codexThreadProxySocket, requestCodexThreadProxy } from './codex-thread-proxy-client.js';
 import { submitToVscodeSsh, type CodexVscodeSshTarget } from './codex-vscode-ssh.js';
 import { readCodexSessionStatistics, codexStatisticsText } from './codex-session-statistics.js';
 import { recoverCodexTopic } from './codex-topic-recovery.js';
@@ -34,6 +35,7 @@ export function startExternalCodexBridge(selfAppId: string): void {
   if (ownerApps.some((app: string) => app !== selfAppId)) throw new Error('External Codex bindings must belong to one bot');
   if (cfg.mode === 'auto') {
     if (!Array.isArray(cfg.codexHomes) || !cfg.codexHomes.length || !cfg.larkAppId || !cfg.chatId || !cfg.ownerOpenId || !cfg.codexBin) throw new Error('Invalid automatic Codex bridge config');
+    const proxiedThreadIds = new Set<string>(cfg.proxiedThreadIds ?? []);
     const durableThreadIds = new Set<string>(cfg.durableThreadIds ?? []);
     const vscodeTargets: Record<string, CodexVscodeSshTarget> = cfg.vscodeSshThreads ?? {};
     const auto = new CodexAutoBridge(cfg, join(homedir(), '.local/state/botmux/codex-auto/registry.json'), {
@@ -55,6 +57,17 @@ export function startExternalCodexBridge(selfAppId: string): void {
         return replyMessage(b.larkAppId, b.outputRootMessageId ?? b.rootMessageId, card, 'interactive', true, uuid);
       },
       turn: async (b, text, checkpoint, clientUserMessageId) => {
+        if (proxiedThreadIds.has(b.threadId)) {
+          if (!clientUserMessageId) throw new Error('Missing stable request ID for Codex process proxy');
+          const reply = await requestCodexThreadProxy(codexThreadProxySocket(),
+            `/api/codex-sync/${b.threadId}/input`, { requestId: clientUserMessageId, text });
+          if (reply.turnId) {
+            checkpoint(true, reply.turnId);
+            return;
+          }
+          const phase = ['waiting_owner', 'sending', 'uncertain'].includes(reply.phase) ? reply.phase : 'queued';
+          throw new NativeProxyPending(phase);
+        }
         const target = Object.hasOwn(vscodeTargets, b.threadId) ? vscodeTargets[b.threadId] : undefined;
         if (target && await submitToVscodeSsh(target, b.threadId, b.rolloutPath, text, checkpoint, clientUserMessageId)) return;
         if (durableThreadIds.has(b.threadId)) {
