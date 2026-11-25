@@ -112,6 +112,28 @@ it('marks a turn completed when the exact acknowledgement arrives after the endi
   } finally { f.cleanup(); }
 });
 
+it('gives concurrent Feishu inputs stable IDs in the shared proxy while the original is already running', async () => {
+  const f = fixture();
+  const proxyEnqueue = vi.fn(async () => {});
+  try {
+    const bridge = new ExternalCodexBridge([f.binding], f.stateFile, {
+      reply: async () => {}, canProxy: () => true, proxyEnqueue, turn: async () => {}, error: () => {},
+    });
+    appendFileSync(f.rolloutPath, event({ type: 'task_started', turn_id: 'long-running' }));
+    await bridge.tick();
+    expect(bridge.isBusy('root', 'app')).toBe(true);
+    await bridge.receive('root', 'app', 'owner', 'message-1', 'first');
+    await bridge.receive('root', 'app', 'owner', 'message-2', 'second');
+    await bridge.receive('root', 'app', 'owner', 'message-1', 'first');
+    const state = JSON.parse(readFileSync(f.stateFile, 'utf8')).fork;
+    expect(proxyEnqueue.mock.calls).toEqual([
+      [f.binding, 'first', state.pending.clientUserMessageId],
+      [f.binding, 'second', state.queued[0].clientUserMessageId],
+    ]);
+    expect(state.pending.clientUserMessageId).not.toEqual(state.queued[0].clientUserMessageId);
+  } finally { f.cleanup(); }
+});
+
 it('keeps a protected original read only and shows the block on the queued follow-up', async () => {
   const f = fixture();
   const original = readFileSync(f.rolloutPath);

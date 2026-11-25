@@ -38,6 +38,8 @@ export function startExternalCodexBridge(selfAppId: string): void {
     const proxiedThreadIds = new Set<string>(cfg.proxiedThreadIds ?? []);
     const durableThreadIds = new Set<string>(cfg.durableThreadIds ?? []);
     const vscodeTargets: Record<string, CodexVscodeSshTarget> = cfg.vscodeSshThreads ?? {};
+    const enqueue = (b: ExternalCodexBinding, text: string, requestId: string) =>
+      requestCodexThreadProxy(codexThreadProxySocket(), `/api/codex-sync/${b.threadId}/input`, { requestId, text });
     const auto = new CodexAutoBridge(cfg, join(homedir(), '.local/state/botmux/codex-auto/registry.json'), {
       topic: (b, uuid) => {
         if (!b.firstUserMessage) throw new Error('Automatic topic requires the original user message');
@@ -56,11 +58,12 @@ export function startExternalCodexBridge(selfAppId: string): void {
         const uuid = createHash('sha256').update(`native-followup-v2:${status.messageId}`).digest('hex').slice(0, 32);
         return replyMessage(b.larkAppId, b.outputRootMessageId ?? b.rootMessageId, card, 'interactive', true, uuid);
       },
+      canProxy: b => proxiedThreadIds.has(b.threadId),
+      proxyEnqueue: async (b, text, clientId) => { await enqueue(b, text, clientId); },
       turn: async (b, text, checkpoint, clientUserMessageId) => {
         if (proxiedThreadIds.has(b.threadId)) {
           if (!clientUserMessageId) throw new Error('Missing stable request ID for Codex process proxy');
-          const reply = await requestCodexThreadProxy(codexThreadProxySocket(),
-            `/api/codex-sync/${b.threadId}/input`, { requestId: clientUserMessageId, text });
+          const reply = await enqueue(b, text, clientUserMessageId);
           if (reply.turnId) {
             checkpoint(true, reply.turnId);
             return;

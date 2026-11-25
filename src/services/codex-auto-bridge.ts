@@ -47,6 +47,8 @@ export class CodexAutoBridge {
     findTopic?: (b: Omit<AutoCodexBinding, 'rootMessageId'>) => Promise<string | undefined>;
     reply: (b: AutoCodexBinding, text: string, uuid: string, kind?: ExternalCodexOutputKind) => Promise<unknown>;
     status?: (b: AutoCodexBinding, card: Readonly<FollowupCard>) => Promise<string | undefined>;
+    canProxy?: (b: AutoCodexBinding) => boolean;
+    proxyEnqueue?: (b: AutoCodexBinding, text: string, clientId: string) => Promise<void>;
     received?: (b: AutoCodexBinding, messageId: string, text: string) => Promise<unknown>;
     turn: (b: AutoCodexBinding, text: string, checkpoint: FollowupCheckpoint, clientUserMessageId?: string) => Promise<void>;
     fork?: (b: AutoCodexBinding) => Promise<{ threadId: string; rolloutPath: string }>;
@@ -101,6 +103,8 @@ export class CodexAutoBridge {
     const observer = new ExternalCodexBridge([{ ...b, replySenderOpenIds: this.cfg.replySenderOpenIds,
       allowGroupMembers: this.cfg.allowGroupMembers }], join(dirname(this.stateFile), `${key}.json`), {
       reply: async (source, text, uuid, kind) => { if (!this.isManaged(b)) await this.deps.reply({ ...b, currentUserMessage: source.currentUserMessage }, text, uuid, kind); },
+      canProxy: () => !this.isManaged(b) && this.deps.canProxy?.(b) === true,
+      proxyEnqueue: async (_, text, clientId) => { if (!this.isManaged(b)) await this.deps.proxyEnqueue?.(b, text, clientId); },
       isProtected: () => this.protectedThreadIds.has(b.threadId),
       status: this.deps.status && (async (_, card) => !this.isManaged(b) ? this.deps.status!(b, card) : undefined),
       received: async (_, messageId, text) => { if (!this.isManaged(b)) await this.deps.received?.(b, messageId, text); },

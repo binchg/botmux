@@ -58,7 +58,7 @@ export interface ExternalCodexCursor {
   completed?: string[];
   notBefore?: number;
   retryAfter?: number;
-  queued?: Array<{ messageId: string; text: string }>;
+  queued?: Array<{ messageId: string; text: string; clientUserMessageId?: string }>;
   pending?: { messageId: string; text: string; status: 'queued' | 'started'; clientUserMessageId?: string; receiptTurnId?: string; errorNotified?: boolean };
   turnId?: string;
   eventSequence?: number;
@@ -159,6 +159,8 @@ export class ExternalCodexBridge {
   constructor(private bindings: ExternalCodexBinding[], private stateFile: string, private deps: {
     reply: (binding: ExternalCodexBinding, text: string, uuid: string, kind?: ExternalCodexOutputKind) => Promise<unknown>;
     received?: (binding: ExternalCodexBinding, messageId: string, text: string) => Promise<unknown>;
+    canProxy?: (binding: ExternalCodexBinding) => boolean;
+    proxyEnqueue?: (binding: ExternalCodexBinding, text: string, clientId: string) => Promise<void>;
     isProtected?: (binding: ExternalCodexBinding) => boolean;
     status?: (binding: ExternalCodexBinding, card: Readonly<FollowupCard>) => Promise<string | undefined>;
     turn: (binding: ExternalCodexBinding, text: string, checkpoint: FollowupCheckpoint, clientUserMessageId?: string) => Promise<void>;
@@ -266,12 +268,18 @@ export class ExternalCodexBridge {
     if (state.received.includes(messageId)) return true;
     state.received.push(messageId);
     (state.echoInputs ??= []).push(text.trim());
-    if (state.pending) (state.queued ??= []).push({ messageId, text });
-    else state.pending = { messageId, text, status: 'queued' };
+    const clientUserMessageId = this.deps.canProxy?.(b) && !this.deps.isProtected?.(b) ? randomUUID() : undefined;
+    const input = { messageId, text, clientUserMessageId };
+    if (state.pending) (state.queued ??= []).push(input);
+    else state.pending = { ...input, status: 'queued' };
     if (this.deps.status) (state.followupCards ??= {})[messageId] = {
-      messageId, text, phase: 'queued', checkedAt: Date.now(),
+      messageId, text, phase: 'queued', checkedAt: Date.now(), clientId: clientUserMessageId,
     };
     this.save();
+    if (clientUserMessageId && this.deps.proxyEnqueue) {
+      try { await this.deps.proxyEnqueue(b, text, clientUserMessageId); }
+      catch (error) { this.deps.error(error); }
+    }
     if (this.deps.received) {
       try { await this.deps.received(b, messageId, text); }
       catch (error) { this.deps.error(error); }
@@ -377,7 +385,7 @@ export class ExternalCodexBridge {
           state.pending = { ...state.queued.shift()!, status: 'queued' };
           this.save();
         }
-        if (!protectedSource && state.pending?.status === 'queued' && !state.busy && !this.submitting.has(b.threadId)
+        if (!protectedSource && state.pending?.status === 'queued' && (!state.busy || this.deps.canProxy?.(b)) && !this.submitting.has(b.threadId)
             && (!state.retryAfter || Date.now() >= state.retryAfter)) {
           const pending = state.pending;
           pending.clientUserMessageId ??= randomUUID();
