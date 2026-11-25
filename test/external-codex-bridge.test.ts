@@ -115,9 +115,10 @@ it('marks a turn completed when the exact acknowledgement arrives after the endi
 it('gives concurrent Feishu inputs stable IDs in the shared proxy while the original is already running', async () => {
   const f = fixture();
   const proxyEnqueue = vi.fn(async () => {});
+  const status = vi.fn(async () => 'card');
   try {
     const bridge = new ExternalCodexBridge([f.binding], f.stateFile, {
-      reply: async () => {}, canProxy: () => true, proxyEnqueue, turn: async () => {}, error: () => {},
+      reply: async () => {}, canProxy: () => true, proxyEnqueue, status, turn: async () => {}, error: () => {},
     });
     appendFileSync(f.rolloutPath, event({ type: 'task_started', turn_id: 'long-running' }));
     await bridge.tick();
@@ -131,6 +132,9 @@ it('gives concurrent Feishu inputs stable IDs in the shared proxy while the orig
       [f.binding, 'second', state.queued[0].clientUserMessageId],
     ]);
     expect(state.pending.clientUserMessageId).not.toEqual(state.queued[0].clientUserMessageId);
+    await bridge.tick();
+    expect(status).toHaveBeenCalledTimes(2);
+    expect(status).not.toHaveBeenCalledWith(expect.anything(), expect.objectContaining({phase:'waiting_turn'}));
   } finally { f.cleanup(); }
 });
 

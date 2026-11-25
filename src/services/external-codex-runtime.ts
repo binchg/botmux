@@ -118,7 +118,7 @@ export function buildExternalCodexForwardCard(binding: ExternalCodexBinding, tex
 
 export function buildFollowupStatusCard(binding: ExternalCodexBinding, status: Readonly<FollowupCard>): string {
   const labels = {
-    queued: '排队中 · 追问已保存，等待投递。',
+    queued: '已接收 · 追问已保存，等待 Codex 确认投递。',
     waiting_turn: '排队中 · 原生会话上轮尚未报告结束，这条追问未投递。',
     protected: '原档受保护 · 追问已保存，等待绑定可续聊的分支。',
     waiting_owner: '原生会话不可达 · 追问尚未投递，恢复连接后将自动重试。',
@@ -126,7 +126,7 @@ export function buildFollowupStatusCard(binding: ExternalCodexBinding, status: R
     sending: '投递中 · 等待原生会话确认。',
     uncertain: '待确认 · 尚未确认原生会话是否收到，将核对回执以避免重复提交。',
     accepted: '已投递 · 等待原生会话记录本轮开始。',
-    running: '执行中 · 原生会话已记录本轮开始。',
+    running: '执行中 · Codex 已在当前轮次接收这条追问。',
     finished: '本轮已结束。',
     aborted: '本轮已中断。',
   } satisfies Record<FollowupCard['phase'], string>;

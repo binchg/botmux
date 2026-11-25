@@ -71,7 +71,7 @@ const server = createServer(async (req, res) => {
       if (!validProxyRequestId(input?.requestId) || typeof input.text !== 'string' || !input.text.trim() || input.text.length > 100_000) {
         return json(res, 400, { error: 'invalid_input' });
       }
-      const result = proxy.enqueue(id, input.requestId, input.text);
+      const result = proxy.enqueue(id, input.requestId, input.text, true);
       if (result.conflict) return json(res, 409, { error: 'request_fingerprint_conflict' });
       json(res, 200, result);
       void proxy.tick();

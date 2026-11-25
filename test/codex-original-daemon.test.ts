@@ -20,12 +20,20 @@ it('submits only the verified original and leaves it queued while the daemon rep
   const requests: Array<{method:string;params:any}> = [];
   let actualPath = alternate;
   let status = 'notLoaded';
+  let endBeforeSteering = false;
   transport.on('connection', socket => socket.on('message', bytes => {
     const req = JSON.parse(bytes.toString());
     if (req.id === undefined) return;
     requests.push(req);
     if (req.method === 'thread/resume') status = 'idle';
+    if (req.method === 'turn/steer' && endBeforeSteering) {
+      status = 'idle';
+      socket.send(JSON.stringify({ id: req.id, error: { code: -32602, message: 'no active turn to steer' } }));
+      return;
+    }
     const result = req.method === 'turn/start' ? { turn: { id: 'new-turn' } } :
+      req.method === 'thread/turns/list' ? { data: [{ id: 'active-turn', status: 'inProgress' }] } :
+      req.method === 'turn/steer' ? { turnId: 'active-turn' } :
       { thread: { id: 'original', path: actualPath, status: { type: status } } };
     socket.send(JSON.stringify({ id: req.id, result }));
   }));
@@ -43,6 +51,18 @@ it('submits only the verified original and leaves it queued while the daemon rep
     expect(await submitToOriginalCodexDaemon(home, 'original', original, 'question', checkpoint, 'exact-receipt')).toBe(true);
     expect(checkpoint.mock.calls).toEqual([[], [true, 'new-turn']]);
     expect(requests.filter(row => row.method === 'turn/start').map(row => row.params.clientUserMessageId)).toEqual(['exact-receipt']);
+    status = 'active';
+    checkpoint.mockClear();
+    expect(await submitToOriginalCodexDaemon(home, 'original', original, 'follow up', checkpoint, 'steer-receipt', true)).toBe(true);
+    expect(requests.at(-1)).toMatchObject({ method: 'turn/steer', params: {
+      threadId: 'original', expectedTurnId: 'active-turn', clientUserMessageId: 'steer-receipt' } });
+    expect(checkpoint.mock.calls).toEqual([[], [true, 'active-turn']]);
+    endBeforeSteering = true;
+    checkpoint.mockClear();
+    expect(await submitToOriginalCodexDaemon(home, 'original', original, 'ended', checkpoint, 'raced-receipt', true)).toBe(false);
+    expect(checkpoint.mock.calls).toEqual([[], [false, undefined]]);
+    expect(await submitToOriginalCodexDaemon(home, 'original', original, 'ended', checkpoint, 'raced-receipt', true)).toBe(true);
+    expect(requests.at(-1)).toMatchObject({ method: 'turn/start', params: { clientUserMessageId: 'raced-receipt' } });
     expect(requests.some(row => row.method === 'thread/fork')).toBe(false);
   } finally {
     for (const socket of transport.clients) socket.terminate();

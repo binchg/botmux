@@ -72,6 +72,37 @@ it('recovers a lost acknowledgement only from the exact durable client ID', asyn
   expect(submit).toHaveBeenCalledTimes(1);
 });
 
+it('steers multiple inputs onto one live turn and completes every exact receipt once', async () => {
+  const {thread,state,event} = fixture();
+  const submit = vi.fn(async (_home: string, _id: string, _path: string, _text: string,
+    checkpoint: FollowupCheckpoint, _requestId?: string, steer?: boolean) => {
+    checkpoint();
+    if (!steer) appendFileSync(thread.rolloutPath, event('task_started', 'active-turn'));
+    checkpoint(true, 'active-turn');
+    return true;
+  });
+  const proxy = new CodexThreadProxy([thread], state, submit);
+  proxy.enqueue('original','initial-0001','start');
+  await proxy.tick();
+  proxy.enqueue('original','queued-0002','plain queue');
+  proxy.enqueue('original','feishu-0003','steer while active',true);
+  proxy.enqueue('original','feishu-0004','another steer',true);
+  await Promise.all([proxy.tick(), proxy.tick()]);
+  await proxy.tick();
+  expect(submit.mock.calls.map(call => [call[5], call[6]])).toEqual([
+    ['initial-0001', false], ['feishu-0003', true], ['feishu-0004', true],
+  ]);
+  expect(proxy.receipt('original','feishu-0004')).toMatchObject({phase:'running',turnId:'active-turn'});
+  expect(proxy.receipt('original','queued-0002')).toMatchObject({phase:'queued'});
+  expect(proxy.enqueue('original','feishu-0004','another steer',true)).toMatchObject({phase:'running'});
+  appendFileSync(thread.rolloutPath, event('task_complete','active-turn','done'));
+  await proxy.tick();
+  for (const id of ['initial-0001', 'feishu-0003', 'feishu-0004']) {
+    expect(proxy.receipt('original',id)).toMatchObject({phase:'finished',turnId:'active-turn'});
+  }
+  expect(submit).toHaveBeenCalledTimes(4);
+});
+
 it('preserves the official IDE turn fields and returns the real Codex acknowledgement', async () => {
   const {thread,state} = fixture();
   const plain = vi.fn(async () => false);

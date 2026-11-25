@@ -319,10 +319,11 @@ export class ExternalCodexBridge {
           }
         }
         const protectedSource = this.deps.isProtected?.(b) === true;
+        const canProxy = this.deps.canProxy?.(b) === true;
         for (const input of [...(state.pending?.status === 'queued' ? [state.pending] : []), ...(state.queued ?? [])]) {
           const card = state.followupCards?.[input.messageId];
           if (!card) continue;
-          const phase = protectedSource ? 'protected' : state.busy ? 'waiting_turn' :
+          const phase = protectedSource ? 'protected' : state.busy && !canProxy ? 'waiting_turn' :
             card.phase === 'waiting_turn' || card.phase === 'protected' ? 'queued' : card.phase;
           if (phase !== card.phase) setPhase(card, phase);
         }
@@ -385,7 +386,7 @@ export class ExternalCodexBridge {
           state.pending = { ...state.queued.shift()!, status: 'queued' };
           this.save();
         }
-        if (!protectedSource && state.pending?.status === 'queued' && (!state.busy || this.deps.canProxy?.(b)) && !this.submitting.has(b.threadId)
+        if (!protectedSource && state.pending?.status === 'queued' && (!state.busy || canProxy) && !this.submitting.has(b.threadId)
             && (!state.retryAfter || Date.now() >= state.retryAfter)) {
           const pending = state.pending;
           pending.clientUserMessageId ??= randomUUID();
