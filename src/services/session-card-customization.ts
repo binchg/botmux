@@ -9,6 +9,8 @@ export interface SessionCardCustomization {
   modelInCard?: boolean;
   taskContext?: boolean;
   codexQuota?: boolean;
+  /** Display the shared bot quota on every compatible session card. */
+  codexQuotaAllSessions?: boolean;
   /** Exact session ID to owner OpenID grants for the quota row only. */
   codexQuotaSessionOwners?: Record<string, string>;
 }

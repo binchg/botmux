@@ -5,6 +5,7 @@ const f = vi.hoisted(() => ({
   session: {} as any,
   bot: {} as any,
   enabled: true,
+  allSessions: false,
   grants: {} as Record<string, string>,
   read: vi.fn(),
 }));
@@ -12,7 +13,7 @@ vi.mock('../src/config.js', () => ({ config: { daemon: { workingDir: '/bot/cwd' 
 vi.mock('../src/bot-registry.js', () => ({ getBot: () => f.bot }));
 vi.mock('../src/services/session-store.js', () => ({ getSession: () => f.session }));
 vi.mock('../src/services/session-card-customization.js', () => ({
-  readSessionCardCustomization: () => ({ codexQuota: f.enabled, codexQuotaSessionOwners: f.grants }),
+  readSessionCardCustomization: () => ({ codexQuota: f.enabled, codexQuotaAllSessions: f.allSessions, codexQuotaSessionOwners: f.grants }),
 }));
 vi.mock('../src/services/codex-quota.js', async importOriginal => ({
   ...await importOriginal<typeof import('../src/services/codex-quota.js')>(), readCodexQuota: f.read,
@@ -27,6 +28,7 @@ beforeEach(() => {
   f.bot = { config: { cliId: 'codex-app', cliPathOverride: '/bin/codex' }, resolvedAllowedUsers: ['ou_owner'] };
   f.enabled = true;
   f.grants = {};
+  f.allSessions = false;
   f.read.mockReset();
 });
 
@@ -91,6 +93,21 @@ it('精确的会话所有者授权仅允许本会话显示额度', async () => {
   expect(label()).toBeUndefined();
   f.session.sessionId = 's';
   f.session.ownerOpenId = 'ou_other_guest';
+  expect(label()).toBeUndefined();
+  expect(f.read).toHaveBeenCalledOnce();
+});
+
+it('机器人开启全会话展示后覆盖普通成员和无所有者会话', async () => {
+  f.allSessions = true;
+  f.session.ownerOpenId = 'ou_guest';
+  f.read.mockResolvedValue([{ window: 'primary', remainingPercent: 42, durationMinutes: 300 }]);
+  const label = () => sessionCardCodexQuota('/data', 's', 'zh', 'card-a');
+  expect(label()).toBeUndefined();
+  await settleRead();
+  expect(label()).toContain('42%');
+  delete f.session.ownerOpenId;
+  expect(label()).toContain('42%');
+  f.session.adoptedFrom = { source: 'tmux' };
   expect(label()).toBeUndefined();
   expect(f.read).toHaveBeenCalledOnce();
 });

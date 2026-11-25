@@ -26,13 +26,16 @@ const cardLabels = new Map<string, string>();
 function quotaLabel(dir: string, id: string, locale: Locale, now: number): string | undefined {
   const session = getSession(id);
   const appId = session?.larkAppId;
-  if (!appId || session.status !== 'active' || session.adoptedFrom || !session.ownerOpenId) return;
+  if (!appId || session.status !== 'active' || session.adoptedFrom) return;
   const prefs = readSessionCardCustomization(dir, appId);
   if (!prefs.codexQuota) return;
+  const owner = session.ownerOpenId;
   const explicitOwner = prefs.codexQuotaSessionOwners?.[session.sessionId];
   const bot = getBot(appId);
+  const canDisplay = prefs.codexQuotaAllSessions === true
+    || (!!owner && (bot.resolvedAllowedUsers.includes(owner) || explicitOwner === owner));
   if (bot.config.cliId !== 'codex-app' || (session.cliId ?? bot.config.cliId) !== 'codex-app'
-    || bot.config.wrapperCli || session.wrapperCli || (!bot.resolvedAllowedUsers.includes(session.ownerOpenId) && explicitOwner !== session.ownerOpenId)
+    || bot.config.wrapperCli || session.wrapperCli || !canDisplay
     || (session.agentFrozen && session.cliPathOverride !== bot.config.cliPathOverride)) return;
 
   const codexBin = bot.config.cliPathOverride;
