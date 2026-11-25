@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, openSync, r
 import { join, dirname, basename } from 'node:path';
 import { createHash } from 'node:crypto';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
-import { ExternalCodexBridge, type ExternalCodexBinding, type ExternalCodexOutputKind } from './external-codex-bridge.js';
+import { ExternalCodexBridge, type ExternalCodexBinding, type ExternalCodexOutputKind, type FollowupCard } from './external-codex-bridge.js';
 
 export interface AutoCodexBinding extends ExternalCodexBinding {
   codexHome: string;
@@ -31,11 +31,13 @@ export interface AutoCodexConfig {
   ownerOpenId: string;
   replySenderOpenIds?: string[];
   allowGroupMembers?: boolean;
+  protectedThreadIds?: string[];
 }
 export class CodexAutoBridge {
   private registry: Registry;
   private observers = new Map<string, ExternalCodexBridge>();
   private scanning = false;
+  private protectedThreadIds: ReadonlySet<string>;
   private botmuxThreads = new Set<string>();
   private subagentThreads = new Set<string>();
   private routes = new Map<string, Promise<void>>();
@@ -44,12 +46,14 @@ export class CodexAutoBridge {
     topic: (b: Omit<AutoCodexBinding, 'rootMessageId'>, uuid: string) => Promise<string>;
     findTopic?: (b: Omit<AutoCodexBinding, 'rootMessageId'>) => Promise<string | undefined>;
     reply: (b: AutoCodexBinding, text: string, uuid: string, kind?: ExternalCodexOutputKind) => Promise<unknown>;
+    status?: (b: AutoCodexBinding, card: Readonly<FollowupCard>) => Promise<string | undefined>;
     received?: (b: AutoCodexBinding, messageId: string, text: string) => Promise<unknown>;
     turn: (b: AutoCodexBinding, text: string, checkpoint: (submitted?: boolean) => void, clientUserMessageId?: string) => Promise<void>;
     fork?: (b: AutoCodexBinding) => Promise<{ threadId: string; rolloutPath: string }>;
     excluded: () => Set<string>;
     error: (error: unknown) => void;
   }) {
+    this.protectedThreadIds = new Set(cfg.protectedThreadIds);
     mkdirSync(dirname(stateFile), { recursive: true, mode: 0o700 });
     this.registry = existsSync(stateFile) ? JSON.parse(readFileSync(stateFile, 'utf8')) : { initialized: false, startedAt: Date.now(), baselines: {}, bindings: {} };
     let relocated = false;
@@ -97,6 +101,8 @@ export class CodexAutoBridge {
     const observer = new ExternalCodexBridge([{ ...b, replySenderOpenIds: this.cfg.replySenderOpenIds,
       allowGroupMembers: this.cfg.allowGroupMembers }], join(dirname(this.stateFile), `${key}.json`), {
       reply: async (source, text, uuid, kind) => { if (!this.isManaged(b)) await this.deps.reply({ ...b, currentUserMessage: source.currentUserMessage }, text, uuid, kind); },
+      isProtected: () => this.protectedThreadIds.has(b.threadId),
+      status: this.deps.status && (async (_, card) => !this.isManaged(b) ? this.deps.status!(b, card) : undefined),
       received: async (_, messageId, text) => { if (!this.isManaged(b)) await this.deps.received?.(b, messageId, text); },
       turn: async (_, text, checkpoint, clientUserMessageId) => { if (!this.isManaged(b)) await this.deps.turn(b, text, checkpoint, clientUserMessageId); }, error: this.deps.error,
     }, offset === undefined ? undefined : { [b.threadId]: offset }, this.registry.startedAt);

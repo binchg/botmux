@@ -22,6 +22,28 @@ export interface ExternalCodexBinding {
   firstUserMessage?: string;
   currentUserMessage?: string;
 }
+export type FollowupPhase = 'queued' | 'waiting_turn' | 'protected' | 'waiting_owner' | 'retrying' | 'sending' | 'uncertain' | 'accepted' | 'running' | 'finished' | 'aborted';
+
+export interface FollowupCard {
+  messageId: string;
+  text: string;
+  phase: FollowupPhase;
+  checkedAt: number;
+  publishedAt?: number;
+  cardId?: string;
+  clientId?: string;
+  turnId?: string;
+  retryAt?: number;
+}
+
+function setPhase(card: FollowupCard | undefined, phase: FollowupPhase): void {
+  if (!card || card.phase === 'finished' || card.phase === 'aborted') return;
+  card.phase = phase;
+  card.checkedAt = Math.max(Date.now(), card.checkedAt + 1);
+}
+
+export class NativeOwnerUnavailable extends Error {}
+
 export interface ExternalCodexCursor {
   offset: number;
   carry: string;
@@ -43,6 +65,7 @@ export interface ExternalCodexCursor {
   frontierAnchor?: string;
   inode?: number;
   deliveryBlockedRoot?: string;
+  followupCards?: Record<string, FollowupCard>;
 }
 export function consumeExternalCodex(state: ExternalCodexCursor, text: string): void {
   const lines = (state.carry + text).split('\n');
@@ -65,6 +88,21 @@ export function consumeExternalCodex(state: ExternalCodexCursor, text: string): 
       state.pending.receiptTurnId = state.turnId;
     }
     if (ended && state.pending?.receiptTurnId && state.pending.receiptTurnId === (p.turn_id ?? p.root_turn_id)) state.pending = undefined;
+    if (row.type === 'event_msg' && p.type === 'user_message' && typeof p.client_id === 'string') {
+      const card = Object.values(state.followupCards ?? {}).find(item => item.clientId === p.client_id);
+      if (card) {
+        card.turnId = p.turn_id ?? p.root_turn_id ?? state.turnId;
+        setPhase(card, state.busy && card.turnId ? 'running' : 'accepted');
+      }
+    }
+    if (ended) {
+      const endedTurn = p.turn_id ?? p.root_turn_id;
+      if (endedTurn) {
+        for (const card of Object.values(state.followupCards ?? {})) {
+          if (card.turnId === endedTurn) setPhase(card, p.type === 'turn_aborted' ? 'aborted' : 'finished');
+        }
+      }
+    }
     const event = publicCodexEvent(row, '');
     if (!event) continue;
     const key = codexSyncEventKey(row, event, state.turnId);
@@ -104,11 +142,14 @@ export function consumeExternalCodex(state: ExternalCodexCursor, text: string): 
 export class ExternalCodexBridge {
   private running = false;
   private submitting = new Set<string>();
+  private publishing = new Set<string>();
   private timer?: NodeJS.Timeout;
   private states = new Map<string, ExternalCodexCursor>();
   constructor(private bindings: ExternalCodexBinding[], private stateFile: string, private deps: {
     reply: (binding: ExternalCodexBinding, text: string, uuid: string, kind?: ExternalCodexOutputKind) => Promise<unknown>;
     received?: (binding: ExternalCodexBinding, messageId: string, text: string) => Promise<unknown>;
+    isProtected?: (binding: ExternalCodexBinding) => boolean;
+    status?: (binding: ExternalCodexBinding, card: Readonly<FollowupCard>) => Promise<string | undefined>;
     turn: (binding: ExternalCodexBinding, text: string, checkpoint: (submitted?: boolean) => void, clientUserMessageId?: string) => Promise<void>;
     error: (error: unknown) => void;
   }, initialOffsets?: Record<string, number>, notBefore?: number) {
@@ -158,6 +199,18 @@ export class ExternalCodexBridge {
         consumeExternalCodex(seed, Buffer.from(existing).subarray(0, state.offset).toString('utf8'));
         state.pending = seed.pending;
       }
+      if (this.deps.status) {
+        const current = state.pending;
+        for (const input of [...(current ? [current] : []), ...(state.queued ?? [])]) {
+          const phase = current?.messageId === input.messageId && current.status === 'started' ? 'uncertain' : 'queued';
+          (state.followupCards ??= {})[input.messageId] ??= { messageId: input.messageId, text: input.text,
+            phase, checkedAt: Date.now(), clientId: current?.messageId === input.messageId ? current.clientUserMessageId : undefined };
+        }
+        for (const card of Object.values(state.followupCards ?? {})) {
+          if (card.phase === 'sending') setPhase(card, 'uncertain');
+          if (card.phase === 'uncertain' && card.turnId && state.busy && state.turnId === card.turnId) setPhase(card, 'running');
+        }
+      }
       const st = statSync(b.rolloutPath);
       state.frontierAnchor ??= jsonlFrontierAnchor(b.rolloutPath, state.offset);
       state.inode ??= st.ino;
@@ -186,6 +239,9 @@ export class ExternalCodexBridge {
     (state.echoInputs ??= []).push(text.trim());
     if (state.pending) (state.queued ??= []).push({ messageId, text });
     else state.pending = { messageId, text, status: 'queued' };
+    if (this.deps.status) (state.followupCards ??= {})[messageId] = {
+      messageId, text, phase: 'queued', checkedAt: Date.now(),
+    };
     this.save();
     if (this.deps.received) {
       try { await this.deps.received(b, messageId, text); }
@@ -225,6 +281,40 @@ export class ExternalCodexBridge {
             this.save();
           }
         }
+        const protectedSource = this.deps.isProtected?.(b) === true;
+        for (const input of [...(state.pending?.status === 'queued' ? [state.pending] : []), ...(state.queued ?? [])]) {
+          const card = state.followupCards?.[input.messageId];
+          if (!card) continue;
+          const phase = protectedSource ? 'protected' : state.busy ? 'waiting_turn' :
+            card.phase === 'waiting_turn' || card.phase === 'protected' ? 'queued' : card.phase;
+          if (phase !== card.phase) setPhase(card, phase);
+        }
+        for (const card of Object.values(state.followupCards ?? {})) {
+          if (this.deps.status && !this.publishing.has(card.messageId) && (card.retryAt ?? 0) <= Date.now()
+              && (!card.cardId || card.checkedAt > (card.publishedAt ?? 0))) {
+            const snapshot = { ...card };
+            this.publishing.add(card.messageId);
+            dispatches.push(async () => {
+              try {
+                const cardId = await this.deps.status!(b, snapshot);
+                if (!cardId) return;
+                card.cardId = cardId;
+                card.publishedAt = snapshot.checkedAt;
+                if (card.phase === snapshot.phase && ['finished', 'aborted'].includes(card.phase)) delete state.followupCards![card.messageId];
+              } catch (error) {
+                if ((error as Error)?.name === 'MessageWithdrawnError') {
+                  delete state.followupCards![card.messageId];
+                } else {
+                  card.retryAt = Date.now() + 60_000;
+                  this.deps.error(error);
+                }
+              } finally {
+                this.publishing.delete(card.messageId);
+                this.save();
+              }
+            });
+          }
+        }
         const outputRoot = b.outputRootMessageId ?? b.rootMessageId;
         if (state.deliveryBlockedRoot && state.deliveryBlockedRoot !== outputRoot) delete state.deliveryBlockedRoot;
         while (state.outbox.length && state.deliveryBlockedRoot !== outputRoot) {
@@ -258,10 +348,12 @@ export class ExternalCodexBridge {
           state.pending = { ...state.queued.shift()!, status: 'queued' };
           this.save();
         }
-        if (state.pending?.status === 'queued' && !state.busy && !this.submitting.has(b.threadId)
+        if (!protectedSource && state.pending?.status === 'queued' && !state.busy && !this.submitting.has(b.threadId)
             && (!state.retryAfter || Date.now() >= state.retryAfter)) {
           const pending = state.pending;
           pending.clientUserMessageId ??= randomUUID();
+          const card = state.followupCards?.[pending.messageId];
+          if (card) card.clientId = pending.clientUserMessageId;
           this.save();
           // Persist at the turn/start boundary; an uncertain started input is
           // retained for inspection after a crash, never blindly resubmitted.
@@ -270,14 +362,24 @@ export class ExternalCodexBridge {
             try {
               await this.deps.turn(b, pending.text, (submitted = true) => {
                 pending.status = submitted ? 'started' : 'queued';
-                if (submitted) delete state.retryAfter;
+                if (submitted) {
+                  delete state.retryAfter;
+                  setPhase(card, 'sending');
+                }
                 this.save();
               }, pending.clientUserMessageId);
+              if (card?.phase === 'sending') setPhase(card, 'accepted');
               if (state.pending === pending) state.pending = undefined;
               this.save();
             } catch (error) {
               if (pending.status === 'queued') state.retryAfter = Date.now() + 15_000;
-              if (state.pending === pending && !pending.errorNotified) {
+              if (card) {
+                const phase = pending.status === 'started' ? 'uncertain' :
+                  error instanceof NativeOwnerUnavailable ? 'waiting_owner' : 'retrying';
+                if (card.phase !== 'running' && (card.phase !== phase || Date.now() - card.checkedAt >= 60_000)) setPhase(card, phase);
+                this.save();
+              }
+              if (!this.deps.status && state.pending === pending && !pending.errorNotified) {
                 pending.errorNotified = true;
                 state.outbox.push({ id: `delivery-status:${pending.messageId}`, kind: 'progress', question: pending.text,
                   text: pending.status === 'started' ? '原生窗口尚未确认接收，追问已保留；确认结果前不会重复提交。' : '原生窗口暂未就绪，追问已保留，正在等待原会话。' });

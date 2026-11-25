@@ -1,8 +1,8 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { mkdtempSync, writeFileSync, appendFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ExternalCodexBridge, consumeExternalCodex, type ExternalCodexCursor } from '../src/services/external-codex-bridge.js';
+import { ExternalCodexBridge, NativeOwnerUnavailable, consumeExternalCodex, type ExternalCodexCursor, type FollowupCard } from '../src/services/external-codex-bridge.js';
 
 const event = (payload: unknown) => JSON.stringify({ type: 'event_msg', payload }) + '\n';
 
@@ -35,6 +35,74 @@ it('retains an unanswered follow-up while the IDE owner is offline without rapid
     expect(state.pending.messageId).toBe('offline-question');
     expect(state.pending.status).toBe('queued');
     expect(state.retryAfter).toBeGreaterThan(Date.now());
+  } finally { f.cleanup(); }
+});
+
+it('updates one follow-up card from offline through recovery and the exact turn receipt', async () => {
+  const f = fixture();
+  const cards: Array<Readonly<FollowupCard>> = [];
+  let online = false, submissions = 0, clientId: string | undefined;
+  vi.useFakeTimers({ toFake: ['Date'] });
+  const deps = {
+    reply: async () => {},
+    status: async (_: unknown, card: Readonly<FollowupCard>) => { cards.push(card); return 'same-card'; },
+    turn: async (_binding: unknown, _text: string, checkpoint: () => void, id?: string) => {
+      if (!online) throw new NativeOwnerUnavailable('offline');
+      submissions++;
+      clientId = id;
+      checkpoint();
+    },
+    error: () => {},
+  };
+  try {
+    const bridge = new ExternalCodexBridge([f.binding], f.stateFile, deps);
+    await bridge.receive('root', 'app', 'owner', 'question-id', '训练情况');
+    await expect(bridge.tick()).rejects.toThrow('offline');
+    await bridge.tick();
+    expect(cards.map(card => card.phase)).toEqual(['queued', 'waiting_owner']);
+
+    online = true;
+    vi.setSystemTime(Date.now() + 16_000);
+    const restored = new ExternalCodexBridge([f.binding], f.stateFile, deps);
+    await restored.tick();
+    await restored.tick();
+    expect(cards.at(-1)?.phase).toBe('accepted');
+    expect(submissions).toBe(1);
+    expect(clientId).toBeTruthy();
+
+    appendFileSync(f.rolloutPath, event({ type: 'task_started', turn_id: 'other' }) +
+      event({ type: 'user_message', client_id: 'different-id', message: '训练情况' }) +
+      event({ type: 'task_complete', turn_id: 'other' }));
+    await restored.tick();
+    expect(cards.at(-1)?.phase).toBe('accepted');
+    appendFileSync(f.rolloutPath, event({ type: 'task_started', turn_id: 'actual' }) +
+      event({ type: 'user_message', client_id: clientId, message: '训练情况' }));
+    await restored.tick();
+    expect(cards.at(-1)?.phase).toBe('running');
+    appendFileSync(f.rolloutPath, event({ type: 'task_complete', turn_id: 'actual', last_agent_message: '完成' }));
+    await restored.tick();
+    expect(cards.at(-1)?.phase).toBe('finished');
+    expect(cards.slice(1).every(card => card.cardId === 'same-card')).toBe(true);
+  } finally { vi.useRealTimers(); f.cleanup(); }
+});
+
+it('keeps a protected original read only and shows the block on the queued follow-up', async () => {
+  const f = fixture();
+  const original = readFileSync(f.rolloutPath);
+  const status = vi.fn(async () => 'card');
+  const turn = vi.fn(async () => {});
+  try {
+    const bridge = new ExternalCodexBridge([f.binding], f.stateFile, {
+      reply: async () => {}, status, turn, isProtected: () => true, error: () => {},
+    });
+    await bridge.receive('root', 'app', 'owner', 'message', '进展');
+    await bridge.tick();
+    await bridge.tick();
+    expect(turn).not.toHaveBeenCalled();
+    expect(status).toHaveBeenCalledTimes(1);
+    expect(status).toHaveBeenCalledWith(f.binding, expect.objectContaining({ phase: 'protected' }));
+    expect(readFileSync(f.rolloutPath)).toEqual(original);
+    expect(JSON.parse(readFileSync(f.stateFile, 'utf8')).fork.pending.status).toBe('queued');
   } finally { f.cleanup(); }
 });
 

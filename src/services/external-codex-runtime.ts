@@ -1,13 +1,14 @@
 import { existsSync, readFileSync, mkdirSync, openSync, readSync, closeSync, fstatSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname, basename } from 'node:path';
+import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { buildMarkdownCard, buildTitledMarkdownCard } from '../im/lark/md-card.js';
 import { nativeConversationHistoryButtons } from '../im/lark/conversation-history-button.js';
 import { formatMathForLark } from './outbound-math.js';
-import { replyMessage, sendMessage } from '../im/lark/client.js';
+import { replyMessage, sendMessage, updateMessage } from '../im/lark/client.js';
 import { logger } from '../utils/logger.js';
-import { ExternalCodexBridge, type ExternalCodexBinding, type ExternalCodexOutputKind } from './external-codex-bridge.js';
+import { ExternalCodexBridge, NativeOwnerUnavailable, type ExternalCodexBinding, type ExternalCodexOutputKind, type FollowupCard } from './external-codex-bridge.js';
 import { CodexAutoBridge, type AutoCodexBinding } from './codex-auto-bridge.js';
 import { CodexAppServerProbe } from './codex-app-threads.js';
 import { collectBotmuxSessionIdentities } from './session-store.js';
@@ -40,11 +41,18 @@ export function startExternalCodexBridge(selfAppId: string): void {
         b.threadId, b.larkAppId, b.chatId, root => getMessageDetail(b.larkAppId, root)),
       reply: async (b, text, uuid, kind) => replyMessage(b.larkAppId, b.outputRootMessageId ?? b.rootMessageId,
         buildExternalCodexForwardCard(b, text, kind, nativeConversationHistoryButtons({ ...b, rootMessageId: b.outputRootMessageId ?? b.rootMessageId }, kind === 'user' ? uuid : false)), 'interactive', true, uuid),
-      received: (b, messageId, text) => replyMessage(b.larkAppId, b.outputRootMessageId ?? b.rootMessageId,
-        buildExternalCodexStatusCard(b, text), 'interactive', true, `codex-status:${messageId}`),
+      status: async (b, status) => {
+        const card = buildFollowupStatusCard(b, status);
+        if (status.cardId) {
+          await updateMessage(b.larkAppId, status.cardId, card);
+          return status.cardId;
+        }
+        const uuid = createHash('sha256').update(`native-followup-v2:${status.messageId}`).digest('hex').slice(0, 32);
+        return replyMessage(b.larkAppId, b.outputRootMessageId ?? b.rootMessageId, card, 'interactive', true, uuid);
+      },
       turn: async (b, text, checkpoint, clientUserMessageId) => {
         if (!await submitToCodexOwner(b.codexHome, b.threadId, text, checkpoint, clientUserMessageId)) {
-          throw new Error(`Codex IDE owner unavailable for ${b.threadId}; follow-up retained`);
+          throw new NativeOwnerUnavailable(`Codex IDE owner unavailable for ${b.threadId}; follow-up retained`);
         }
       },
       excluded: () => collectBotmuxSessionIdentities() ?? new Set(),
@@ -83,6 +91,38 @@ export function buildExternalCodexForwardCard(binding: ExternalCodexBinding, tex
     : buildTitledMarkdownCard({ title: question, md, brand: '', template: kind === 'progress' ? 'turquoise' : 'green' }));
   if (historyButtons.length) card.body.elements.push(...historyButtons);
   return JSON.stringify(card);
+}
+
+export function buildFollowupStatusCard(binding: ExternalCodexBinding, status: Readonly<FollowupCard>): string {
+  const labels = {
+    queued: '排队中 · 追问已保存，等待投递。',
+    waiting_turn: '排队中 · 原生会话上轮尚未报告结束，这条追问未投递。',
+    protected: '原档受保护 · 追问已保存，等待绑定可续聊的分支。',
+    waiting_owner: '原生会话不可达 · 追问尚未投递，恢复连接后将自动重试。',
+    retrying: '排队中 · 投递暂未成功，将自动重试。',
+    sending: '投递中 · 等待原生会话确认。',
+    uncertain: '待确认 · 尚未确认原生会话是否收到，将核对回执以避免重复提交。',
+    accepted: '已投递 · 等待原生会话记录本轮开始。',
+    running: '执行中 · 原生会话已记录本轮开始。',
+    finished: '本轮已结束。',
+    aborted: '本轮已中断。',
+  } satisfies Record<FollowupCard['phase'], string>;
+  const checked = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+  }).format(status.checkedAt);
+  const buttons = nativeConversationHistoryButtons({ ...binding, rootMessageId: binding.outputRootMessageId ?? binding.rootMessageId });
+  return JSON.stringify({
+    config: { wide_screen_mode: true, update_multi: true },
+    header: {
+      template: status.phase === 'running' || status.phase === 'finished' ? 'green' : 'orange',
+      title: { tag: 'plain_text', content: Array.from(status.text.replace(/\s+/g, ' ').trim()).slice(0, 40).join('') || 'Codex 追问' },
+    },
+    elements: [
+      { tag: 'div', text: { tag: 'plain_text', content: labels[status.phase] } },
+      { tag: 'note', elements: [{ tag: 'plain_text', content: `最近确认 ${checked}（北京时间）` }] },
+      ...(buttons.length ? [{ tag: 'action', actions: buttons }] : []),
+    ],
+  });
 }
 
 /** Immediate, small acknowledgement for a follow-up to a native Codex thread. */
