@@ -24,7 +24,7 @@ export function readSessionCardCustomization(dir: string, appId?: string): Sessi
   catch { return {}; }
 }
 
-/** 出站时统一定制会话卡与旧卡的补发，保留每个操作的链接和回调参数。 */
+/** 出站时统一定制会话卡与旧卡的补发，先精简按钮，再折叠保留的操作。 */
 export function customizeSessionCard(content: string, prefs: SessionCardCustomization, dataDir?: string, locale?: Locale): string {
   if (!prefs.compactButtons && !prefs.collapseActions && !prefs.modelInCard && !prefs.taskContext) return content;
   let card: any;
@@ -60,8 +60,17 @@ export function customizeSessionCard(content: string, prefs: SessionCardCustomiz
       if (tag) card.header.title.content = `#${tag}${status ? ` · ${status}` : ''}`;
     } catch { /* 展示登记故障不得阻止原卡发送。 */ }
   }
+  if (prefs.compactButtons && sessionCard) {
+    for (const row of elements) {
+      if (row.tag !== 'action') continue;
+      row.actions = row.actions.filter((action: any) => action.tag === 'button'
+        && !action.value && /^https?:\/\//.test(action.multi_url?.url ?? action.url ?? ''));
+    }
+    card.elements = elements.filter((row: any) => row.tag !== 'action' || row.actions.length);
+  }
   if (prefs.collapseActions && sessionCard) {
     const actions = elements.flatMap((row: any) => row.tag === 'action' ? row.actions ?? [] : []);
+    if (!actions.length) return JSON.stringify(card);
     const rows = [];
     for (let i = 0; i < actions.length; i += 2) {
       rows.push({
@@ -80,13 +89,6 @@ export function customizeSessionCard(content: string, prefs: SessionCardCustomiz
       },
       elements: rows,
     }];
-  } else if (prefs.compactButtons && sessionCard) {
-    for (const row of elements) {
-      if (row.tag !== 'action') continue;
-      row.actions = row.actions.filter((action: any) => action.tag === 'button'
-        && !action.value && /^https?:\/\//.test(action.multi_url?.url ?? action.url ?? ''));
-    }
-    card.elements = elements.filter((row: any) => row.tag !== 'action' || row.actions.length);
   }
   return JSON.stringify(card);
 }

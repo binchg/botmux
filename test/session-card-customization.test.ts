@@ -19,8 +19,11 @@ it('只留下 HTTP 终端和历史入口，过滤管理按钮和本地 CLI 入�
   expect(customizeSessionCard(JSON.stringify(card), {})).toBe(JSON.stringify(card));
 });
 
-it('折叠全部记录卡片按钮，保留按钮顺序、链接和回调，补发不重复包装', () => {
-  const actions = [link('https://terminal/s/id'), button('close'), link('https://history/h/id'), button('get_write_link')];
+it('同时开启精简和折叠时，仅收起终端和历史入口并保留原链接', () => {
+  const terminal = link('https://terminal/s/id');
+  const history = link('https://history/conversation/id');
+  const actions = [button('toggle_display'), terminal, button('session_model_open'), history, button('close'),
+    button('get_write_link'), link('botmux://terminal')];
   const summary = { tag: 'div', text: { content: '📁 WT1 · 6.2-sol XH F√' } };
   const card = JSON.stringify({ header: {}, elements: [summary,
     { tag: 'action', actions: actions.slice(0, 3) }, { tag: 'action', actions: actions.slice(3) }] });
@@ -30,7 +33,7 @@ it('折叠全部记录卡片按钮，保留按钮顺序、链接和回调，补�
   expect(result.elements).toHaveLength(2);
   expect(result.elements[0]).toEqual(summary);
   expect(result.elements[1]).toMatchObject({ tag: 'collapsible_panel', expanded: false, header: { title: { content: '更多操作' } } });
-  expect(result.elements[1].elements.flatMap((row: any) => row.columns.flatMap((column: any) => column.elements))).toEqual(actions);
+  expect(result.elements[1].elements.flatMap((row: any) => row.columns.flatMap((column: any) => column.elements))).toEqual([terminal, history]);
   expect(customizeSessionCard(content, collapse)).toBe(content);
 });
 
