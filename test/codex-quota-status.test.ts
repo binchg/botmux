@@ -56,8 +56,8 @@ describe('Codex 订阅剩余额度', () => {
       primary: { usedPercent: 100, windowDurationMins: 300, resetsAt: now / 1000 + 1800 },
       secondary: { usedPercent: 1, windowDurationMins: 10080, resetsAt: now / 1000 + (5 * 24 + 3) * 3600 },
     } });
-    expect(formatCodexCardQuota(windows, 'zh', now)).toBe('额度 0%·<1时刷新 / 99%·5天3时刷新');
-    expect(formatCodexCardQuota(windows, 'zh', now + 3_600_000)).toBe('额度 99%·5天2时刷新');
+    expect(formatCodexCardQuota(windows, 'zh', now)).toBe('额度0% <1时刷新 / 99% 5天3时刷新');
+    expect(formatCodexCardQuota(windows, 'zh', now + 3_600_000)).toBe('额度99% 5天2时刷新');
     expect(formatCodexCardQuota(windows, 'zh', now + 7 * 86_400_000)).toBeUndefined();
   });
 

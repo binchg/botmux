@@ -1,5 +1,5 @@
 // 验证即时卡异步补齐额度、读取限频与机器人的授权边界。
-import { beforeEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 const f = vi.hoisted(() => ({
   session: {} as any,
@@ -13,6 +13,7 @@ const f = vi.hoisted(() => ({
 vi.mock('../src/config.js', () => ({ config: { daemon: { workingDir: '/bot/cwd' }, session: { dataDir: '/data' } } }));
 vi.mock('../src/bot-registry.js', () => ({ getBot: () => f.bot }));
 vi.mock('../src/services/session-store.js', () => ({ getSession: () => f.session }));
+vi.mock('../src/services/transcript-resolver.js', () => ({ resolveSessionTranscriptPath: () => null }));
 vi.mock('../src/services/session-card-customization.js', () => ({
   readSessionCardCustomization: () => ({ codexQuota: f.enabled, codexQuotaAllSessions: f.allSessions, codexQuotaSessionOwners: f.grants }),
 }));
@@ -26,6 +27,7 @@ import { nativeSessionCardQuota, sessionCardCodexQuota, sessionCardCodexQuotaNee
 
 let scenario = 0;
 beforeEach(() => {
+  vi.stubEnv('BOTMUX_BOT_INDEX', '2');
   f.session = { sessionId: 's', larkAppId: `selected-${++scenario}`, cliId: 'codex-app', status: 'active', ownerOpenId: 'ou_owner' };
   f.bot = { config: { cliId: 'codex-app', cliPathOverride: '/bin/codex' }, resolvedAllowedUsers: ['ou_owner'] };
   f.enabled = true;
@@ -34,6 +36,7 @@ beforeEach(() => {
   f.read.mockReset();
   f.readOriginal.mockReset();
 });
+afterEach(() => vi.unstubAllEnvs());
 
 /** 等待已排队的额度查询与其微任务更新快照。 */
 const settleRead = () => new Promise<void>(resolve => setImmediate(resolve));
@@ -49,8 +52,10 @@ it('首张即时卡不等网络，后台读到真实窗口后只补刷一次', a
   expect(sessionCardCodexQuotaNeedsRefresh('/data', 's', 'zh', 'card-a')).toBe(true);
   const rows = sessionModelCardElements('s', 'codex-app', 'zh', 'card-a');
   expect(rows).toHaveLength(4);
-  expect(rows.every(row => row.text.lines === 1 && !row.text.content.includes('\n'))).toBe(true);
-  expect(rows[1].text.content).toBe('额度 34%·6天3时刷新');
+  expect(rows.map(row => row.text.content)).toEqual([
+    expect.stringMatching(/^📁 /), '额度34% 6天3时刷新', expect.stringMatching(/^创建/), expect.any(String),
+  ]);
+  expect(rows.every(row => row.text.lines === undefined && !row.text.content.includes('\n'))).toBe(true);
   expect(sessionCardCodexQuotaNeedsRefresh('/data', 's', 'zh', 'card-a')).toBe(false);
   expect(JSON.stringify(sessionModelCardElements('s', 'codex-app', 'zh'))).not.toContain('额度');
 });
@@ -63,7 +68,7 @@ it('同一机器人多卡共享查询，限频内复用结果，查询失败后�
   expect(a(0)).toBeUndefined();
   expect(sessionCardCodexQuota('/data', 's', 'zh', 'card-b', 0)).toBeUndefined();
   await settleRead();
-  expect(a(1)).toBe('额度 0%');
+  expect(a(1)).toBe('额度0%');
   expect(needs(59_999)).toBe(false);
   expect(f.read).toHaveBeenCalledOnce();
   expect(needs(60_000)).toBe(false);

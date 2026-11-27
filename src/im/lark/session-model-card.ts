@@ -20,13 +20,12 @@ export function compactCodexModel(value: { model?: string; effort?: string; serv
   return `${model}${effort} F${fast}`;
 }
 
-/** Shared ordering for the compact Botmux and native Codex cards. */
+/** 按目录、额度、时长和统计排布摘要，窄屏保留完整文字。 */
 export function codexSessionCardRows(workingDir: string, model: string, statistics: string[], quota?: string, locale?: Locale) {
   const rows = [`📁 ${workingDir} · ${model}`, ...(quota ? [quota] : []), ...statistics];
-  return rows.map(content => ({ tag: 'div', text: {
+  return rows.map((content, index) => ({ tag: 'div', text: {
     tag: 'plain_text', content,
-    ...(locale !== 'en' ? { lines: 1 } : {}),
-    ...(content.startsWith('📊 ') ? { text_size: 'notation' } : {}),
+    ...(locale !== 'en' && statistics.length && index === rows.length - 1 ? { text_size: 'notation' } : {}),
   } }));
 }
 

@@ -65,9 +65,9 @@ export function formatCodexCardQuota(windows: CodexQuotaWindow[], locale: Locale
     const countdown = en
       ? (days ? `${days}d ${hours % 24}h` : hours ? `${hours}h` : '<1h')
       : (days ? `${days}天${hours % 24}时` : hours ? `${hours}时` : '<1时');
-    return en ? `${countdown} to reset · ${remaining} remaining` : `${remaining}·${countdown}刷新`;
+    return en ? `${countdown} to reset · ${remaining} remaining` : `${remaining} ${countdown}刷新`;
   });
-  return `${en ? 'Quota' : '额度'} ${labels.join(' / ')}`;
+  return `${en ? 'Quota ' : '额度'}${labels.join(' / ')}`;
 }
 
 /** 同时兼容新旧协议，只接受 Codex 订阅的额度桶。 */

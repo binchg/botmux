@@ -31,7 +31,7 @@ it('首次无日志不阻塞卡片；十五秒后显示真实运行、消耗、�
   expect(sessionCardStatisticsNeedsRefresh(dir, 's', 'zh', 'card', 15000)).toBe(true);
   const lines = sessionCardStatistics(dir, 's', state, 'zh', 'card', 15000).join(' ');
   expect(lines).toContain('运行1分');
-  expect(lines).toContain('📊 —·0.08亿·90.0%·95次');
+  expect(lines).toContain('— 0.08亿 90.0% 95次');
   expect(resolver.resolveSessionTranscriptPath).toHaveBeenCalledWith(expect.objectContaining({ cliId: 'traex', cliSessionId: 'native-traex', fresh: true }));
 });
 
@@ -44,5 +44,5 @@ it('真实统计最多每分钟更新，无新测量时不因创建时长变化�
   read.mockReturnValue({ ...sample, contextTokens: 189_900, contextWindowTokens: 760_000 });
   expect(sessionCardStatisticsNeedsRefresh(dir, 's', 'zh', 'card', 119999)).toBe(false);
   expect(sessionCardStatisticsNeedsRefresh(dir, 's', 'zh', 'card', 120000)).toBe(true);
-  expect(sessionCardStatistics(dir, 's', state, 'zh', 'card', 120000).join(' ')).toContain('📊 189.9K/25%·0.08亿·90.0%·95次');
+  expect(sessionCardStatistics(dir, 's', state, 'zh', 'card', 120000)[1]).toBe('189.9K/25% 0.08亿 90.0% 95次');
 });

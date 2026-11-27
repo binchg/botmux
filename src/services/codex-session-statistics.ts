@@ -132,5 +132,5 @@ export function codexStatisticsText(stats: CodexSessionStatistics | undefined, c
   // 摘要按占用、消耗、缓存和工具数排列，省出移动端的单行空间。
   const compactContext = share === undefined ? size : `${size}/${share}%`;
   const tools = stats ? `${stats.tools}次` : '—';
-  return `⏱ 创建${age} · 运行${stats ? formatStatisticsDuration(stats.runningMs) : '—'}\n📊 ${compactContext}·${total === undefined ? '—' : `${total}亿`}·${rate}·${tools}`;
+  return `创建${age} 运行${stats ? formatStatisticsDuration(stats.runningMs) : '—'}\n${compactContext} ${total === undefined ? '—' : `${total}亿`} ${rate} ${tools}`;
 }
