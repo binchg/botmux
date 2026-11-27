@@ -1,11 +1,13 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { AppServerClient } from './app-runner-client.js';
 import { codexAuthFilePath, readCodexAccessTokenExpiryMs } from './codex-auth-file.js';
-import { anyDaemonBusy } from '../core/daemon-heartbeat.js';
 import { withFileLock } from '../utils/file-lock.js';
 import { logger } from '../utils/logger.js';
+import { runLockedAuthProcess } from './codex-auth-process-lock.js';
 
 export const CODEX_AUTH_WINDOW_START_HOUR = 4;
 export const CODEX_AUTH_WINDOW_END_HOUR = 7;
@@ -23,7 +25,6 @@ export interface CodexAuthMaintenanceState {
 export type CodexAuthMaintenanceDecision =
   | 'outside_window'
   | 'already_refreshed'
-  | 'not_due'
   | 'not_logged_in'
   | 'busy'
   | 'retry_later'
@@ -33,7 +34,6 @@ export type CodexAuthMaintenanceDecision =
 export interface CodexAuthMaintenanceDeps {
   now: () => number;
   readExpiryMs: () => number | undefined;
-  anyBusy: () => boolean;
   readState: () => CodexAuthMaintenanceState;
   writeState: (state: CodexAuthMaintenanceState) => void;
   refresh: () => Promise<void>;
@@ -78,8 +78,8 @@ export async function runCodexAuthMaintenanceTick(
 
     const expiryMs = deps.readExpiryMs();
     if (expiryMs === undefined) return 'not_logged_in';
-    if (expiryMs > window.nextWindowEndMs) return 'not_due';
-    if (deps.anyBusy()) return 'busy';
+    // A daily refresh is independent of the number of running sessions. Existing
+    // turns keep their process; idle sessions reload only at their next turn.
 
     const lastAttemptMs = state.lastAttemptAt ? Date.parse(state.lastAttemptAt) : NaN;
     if (state.lastResult === 'failed' && Number.isFinite(lastAttemptMs) && now - lastAttemptMs < CODEX_AUTH_RETRY_MS) {
@@ -103,9 +103,9 @@ export async function runCodexAuthMaintenanceTick(
       return 'refreshed';
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const errorCode = /already used/i.test(message)
+      const errorCode = /already used|refresh_token_reused/i.test(message)
         ? 'refresh_token_already_used'
-        : /sign-?in|login/i.test(message)
+        : /sign[ -]?in|log[ -]?in/i.test(message)
           ? 'sign_in_required'
           : /timed out/i.test(message)
             ? 'refresh_timeout'
@@ -121,26 +121,25 @@ export async function runCodexAuthMaintenanceTick(
   });
 }
 
-function maintenanceDir(): string {
-  return join(homedir(), '.botmux', 'codex-auth-maintenance');
+export function codexAuthMaintenancePaths(authPath = codexAuthFilePath(), home = homedir()) {
+  let canonical = resolve(authPath);
+  try { canonical = realpathSync(authPath); } catch { /* not logged in yet */ }
+  const scope = createHash('sha256').update(canonical).digest('hex').slice(0, 32);
+  const dir = join(home, '.botmux', 'codex-auth-maintenance', 'domains', scope);
+  return { authPath: canonical, dir, state: join(dir, 'state.json'), lock: join(dir, 'refresh.lock') };
 }
 
-function statePath(): string {
-  return join(maintenanceDir(), 'state.json');
-}
-
-function readState(): CodexAuthMaintenanceState {
+function readState(path: string): CodexAuthMaintenanceState {
   try {
-    const value = JSON.parse(readFileSync(statePath(), 'utf8'));
+    const value = JSON.parse(readFileSync(path, 'utf8'));
     return value && typeof value === 'object' ? value as CodexAuthMaintenanceState : {};
   } catch {
     return {};
   }
 }
 
-function writeState(state: CodexAuthMaintenanceState): void {
-  const path = statePath();
-  mkdirSync(dirname(path), { recursive: true });
+function writeState(path: string, state: CodexAuthMaintenanceState): void {
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const tmp = `${path}.${process.pid}.tmp`;
   writeFileSync(tmp, JSON.stringify(state, null, 2) + '\n', { mode: 0o600 });
   renameSync(tmp, path);
@@ -164,39 +163,72 @@ async function bounded<T>(promise: Promise<T>, timeoutMs: number, label: string)
 /** Uses Codex's official proactive refresh request. No thread or model turn is created. */
 export async function refreshCodexAccount(codexBin: string, cwd: string, authPath = codexAuthFilePath()): Promise<void> {
   const before = readCodexAccessTokenExpiryMs(authPath);
-  const client = new AppServerClient(codexBin, cwd);
+  const canonical = codexAuthMaintenancePaths(authPath).authPath;
+  // Writing through an alias must never replace auth.json's symlink and split
+  // the refresh-token family again. Codex also uses this home's auth.lock.
+  const client = new AppServerClient(codexBin, cwd, { ...process.env, CODEX_HOME: dirname(canonical) });
   try {
     await bounded(client.initialize(), 15_000, 'Codex app-server initialize');
     const result = await bounded(client.request('account/read', { refreshToken: true }), 30_000, 'Codex account refresh');
-    if (result?.requiresOpenaiAuth || !result?.account) throw new Error('Codex account requires sign-in');
+    // requiresOpenaiAuth describes the provider, not whether login succeeded.
+    // ChatGPT returns true even with a valid, freshly refreshed account.
+    if (!result?.account) throw new Error('Codex account requires sign-in');
     const after = readCodexAccessTokenExpiryMs(authPath);
     if (after === undefined || before !== undefined && after <= before) {
       throw new Error('Codex proactive refresh did not persist a newer access token');
     }
   } finally {
-    client.close();
+    if (!await client.closeAndWait()) throw new Error('Codex auth refresh process did not exit');
   }
+}
+
+/** Caller owns the refresh lock. Persisted state is scoped to the real auth file. */
+export function runCodexAuthMaintenanceOnce(codexBin: string, cwd: string, authPath = codexAuthFilePath()) {
+  const paths = codexAuthMaintenancePaths(authPath);
+  return runCodexAuthMaintenanceTick({
+    now: Date.now,
+    readExpiryMs: () => readCodexAccessTokenExpiryMs(paths.authPath),
+    readState: () => readState(paths.state),
+    writeState: state => writeState(paths.state, state),
+    refresh: () => refreshCodexAccount(codexBin, cwd, paths.authPath),
+    withLock: fn => fn(),
+  });
+}
+
+export async function coordinateCodexAuthMaintenance(codexBin: string, cwd: string): Promise<CodexAuthMaintenanceDecision> {
+  const now = Date.now(), window = codexAuthPrcWindow(now);
+  if (!window.inWindow) return 'outside_window';
+  const paths = codexAuthMaintenancePaths();
+  if (readCodexAccessTokenExpiryMs(paths.authPath) === undefined) return 'not_logged_in';
+  // Read-only fast path avoids spawning a losing helper on every daemon tick.
+  // The winning process still repeats all checks while holding the kernel lock.
+  const state = readState(paths.state);
+  if (state.lastSuccessDate === window.date) return 'already_refreshed';
+  if (state.lastResult === 'failed' && state.lastAttemptAt
+      && now - Date.parse(state.lastAttemptAt) < CODEX_AUTH_RETRY_MS) return 'retry_later';
+  if (process.platform === 'linux') {
+    const worker = fileURLToPath(new URL('./codex-auth-maintenance-worker.js', import.meta.url));
+    const result = await runLockedAuthProcess(paths.lock, [process.execPath, worker, codexBin, cwd, paths.authPath]);
+    if (result.busy) return 'busy';
+    return JSON.parse(result.output.trim()).decision as CodexAuthMaintenanceDecision;
+  }
+  // Keep other supported platforms functional; no credential or session state is
+  // shared between distinct auth files. Linux uses the kernel lock above.
+  mkdirSync(paths.dir, { recursive: true, mode: 0o700 });
+  return withFileLock(paths.lock, () => runCodexAuthMaintenanceOnce(codexBin, cwd, paths.authPath));
 }
 
 let interval: ReturnType<typeof setInterval> | undefined;
 let initial: ReturnType<typeof setTimeout> | undefined;
+let inFlight: Promise<CodexAuthMaintenanceDecision> | undefined;
 
 export function startCodexAuthMaintenance(codexBin: string, cwd: string): void {
   if (interval || process.env.BOTMUX_CODEX_AUTH_MAINTENANCE === '0') return;
-  mkdirSync(maintenanceDir(), { recursive: true });
   const tick = async () => {
-    const decision = await runCodexAuthMaintenanceTick({
-      now: Date.now,
-      readExpiryMs: () => readCodexAccessTokenExpiryMs(),
-      anyBusy: anyDaemonBusy,
-      readState,
-      writeState,
-      refresh: () => refreshCodexAccount(codexBin, cwd),
-      withLock: fn => withFileLock(join(maintenanceDir(), 'refresh'), fn, { maxWaitMs: 45_000 }),
-    }).catch(error => {
-      logger.warn(`[codex-auth-maintenance] tick failed: ${error instanceof Error ? error.message : String(error)}`);
-      return 'failed' as const;
-    });
+    if (inFlight) return;
+    inFlight = coordinateCodexAuthMaintenance(codexBin, cwd).catch(() => 'failed' as const);
+    const decision = await inFlight;
+    inFlight = undefined;
     if (decision === 'refreshed') logger.info('[codex-auth-maintenance] proactive refresh completed in 04:00-07:00 window');
     else if (decision === 'failed') logger.warn('[codex-auth-maintenance] proactive refresh failed; will retry within the maintenance window');
   };

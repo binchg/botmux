@@ -1,9 +1,10 @@
-import { mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   codexAuthPrcWindow,
+  codexAuthMaintenancePaths,
   refreshCodexAccount,
   runCodexAuthMaintenanceTick,
   type CodexAuthMaintenanceDeps,
@@ -31,7 +32,6 @@ function fakeJwt(expMs: number): string {
 function makeDeps(options: {
   now?: number;
   expiry?: number;
-  busy?: boolean;
   state?: CodexAuthMaintenanceState;
   fail?: boolean;
 } = {}) {
@@ -40,7 +40,6 @@ function makeDeps(options: {
   const deps: CodexAuthMaintenanceDeps = {
     now: () => options.now ?? IN_WINDOW,
     readExpiryMs: () => options.expiry,
-    anyBusy: () => options.busy ?? false,
     readState: () => ({ ...state }),
     writeState: next => { state = { ...next }; calls.writes++; },
     refresh: async () => { calls.refresh++; if (options.fail) throw new Error('refresh failed'); },
@@ -60,17 +59,18 @@ describe('Codex 04:00-07:00 proactive auth maintenance', () => {
     expect(codexAuthPrcWindow(Date.parse('2026-11-20T00:00:00.000Z')).inWindow).toBe(false);
   });
 
-  it('does not rotate a token that survives the next maintenance window', async () => {
+  it('refreshes daily around 04:00 even before expiry', async () => {
     const { deps, calls } = makeDeps({ expiry: Date.parse('2026-11-22T00:00:00.000Z') });
-    expect(await runCodexAuthMaintenanceTick(deps)).toBe('not_due');
-    expect(calls.refresh).toBe(0);
+    expect(await runCodexAuthMaintenanceTick(deps)).toBe('refreshed');
+    expect(calls.refresh).toBe(1);
   });
 
-  it('defers while any bot is busy, without consuming the daily attempt', async () => {
-    const { deps, calls, state } = makeDeps({ expiry: Date.parse('2026-11-20T07:33:33.000Z'), busy: true });
-    expect(await runCodexAuthMaintenanceTick(deps)).toBe('busy');
+  it('does not launch outside the window or without ChatGPT credentials', async () => {
+    const { deps, calls, state } = makeDeps({ now: Date.parse('2026-11-20T00:00:00Z') });
+    expect(await runCodexAuthMaintenanceTick(deps)).toBe('outside_window');
     expect(calls.refresh).toBe(0);
     expect(state()).toEqual({});
+    expect(await runCodexAuthMaintenanceTick(makeDeps().deps)).toBe('not_logged_in');
   });
 
   it('refreshes once under the cross-process lock and marks the local date', async () => {
@@ -92,6 +92,18 @@ describe('Codex 04:00-07:00 proactive auth maintenance', () => {
 });
 
 describe('Codex auth file metadata', () => {
+  it('aliases share one lock and state while separate login files stay isolated', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'codex-auth-domains-'));
+    dirs.push(dir);
+    const canonical = join(dir, 'auth.json');
+    const alias = join(dir, 'bot-auth.json');
+    const separate = join(dir, 'other-auth.json');
+    writeFileSync(canonical, '{}'); writeFileSync(separate, '{}');
+    symlinkSync(canonical, alias);
+    const shared = codexAuthMaintenancePaths(canonical, dir);
+    expect(codexAuthMaintenancePaths(alias, dir)).toEqual(shared);
+    expect(codexAuthMaintenancePaths(separate, dir).lock).not.toBe(shared.lock);
+  });
   it('reads only JWT expiry and detects atomic auth.json replacement', () => {
     const dir = mkdtempSync(join(tmpdir(), 'codex-auth-file-'));
     dirs.push(dir);
@@ -111,9 +123,13 @@ describe('Codex auth file metadata', () => {
     dirs.push(dir);
     const authPath = join(dir, 'auth.json');
     const callsPath = join(dir, 'calls');
+    const aliasHome = join(dir, 'bot-home');
+    mkdirSync(aliasHome);
+    const alias = join(aliasHome, 'auth.json');
     const before = Date.parse('2026-11-20T07:33:33.000Z');
     const after = Date.parse('2026-11-29T20:30:00.000Z');
     writeFileSync(authPath, JSON.stringify({ tokens: { access_token: fakeJwt(before), refresh_token: 'old' } }));
+    symlinkSync(authPath, alias);
     const bin = join(dir, 'codex');
     writeFileSync(bin, `#!/usr/bin/env node
 const fs=require('node:fs'),rl=require('node:readline');
@@ -121,14 +137,18 @@ rl.createInterface({input:process.stdin}).on('line',line=>{
  const m=JSON.parse(line); if(!m.id)return;
  fs.appendFileSync(${JSON.stringify(callsPath)},m.method+'\\n');
  if(m.method==='account/read'){
-  fs.writeFileSync(${JSON.stringify(authPath)},JSON.stringify({tokens:{access_token:${JSON.stringify(fakeJwt(after))},refresh_token:'new'}}));
-  console.log(JSON.stringify({id:m.id,result:{account:{type:'chatgpt'},requiresOpenaiAuth:false}})); return;
+  const path=require('node:path').join(process.env.CODEX_HOME,'auth.json');
+  fs.writeFileSync(path+'.new',JSON.stringify({tokens:{access_token:${JSON.stringify(fakeJwt(after))},refresh_token:'new'}}));
+  fs.renameSync(path+'.new',path);
+  console.log(JSON.stringify({id:m.id,result:{account:{type:'chatgpt'},requiresOpenaiAuth:true}})); return;
  }
  console.log(JSON.stringify({id:m.id,result:{}}));
 });
 `, { mode: 0o700 });
-    await refreshCodexAccount(bin, dir, authPath);
+    await refreshCodexAccount(bin, dir, alias);
     expect(readCodexAccessTokenExpiryMs(authPath)).toBe(after);
+    expect(readCodexAccessTokenExpiryMs(alias)).toBe(after);
+    expect(codexAuthMaintenancePaths(alias, dir).authPath).toBe(authPath);
     expect(readFileSync(callsPath, 'utf8').trim().split('\n')).toEqual(['initialize', 'account/read']);
   });
 });

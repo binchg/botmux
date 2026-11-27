@@ -10,6 +10,9 @@ it('auth.json overnight replacement reloads the app-server before the next turn 
   const generationFile = join(dir, 'generation');
   const authFile = join(dir, 'auth.json');
   const bin = join(dir, 'server');
+  const timerShim = join(dir, 'timer-shim.mjs');
+  writeFileSync(timerShim, `const interval=globalThis.setInterval;
+globalThis.setInterval=(fn,ms,...args)=>interval(fn,ms===60000?20:ms,...args);`);
   writeFileSync(authFile, '{"generation":1}');
   writeFileSync(bin, `#!/usr/bin/env node
 const fs=require('node:fs'),rl=require('node:readline');
@@ -33,7 +36,7 @@ rl.createInterface({input:process.stdin}).on('line',line=>{
 });
 `, { mode: 0o700 });
 
-  const child = spawn(process.execPath, ['--import', 'tsx', resolve('src/codex-app-runner.ts'),
+  const child = spawn(process.execPath, ['--import', timerShim, '--import', 'tsx', resolve('src/codex-app-runner.ts'),
     '--session-id', 'auth-proactive', '--codex-bin', bin, '--cwd', dir, '--locale', 'zh'], {
     env: {
       ...process.env,
@@ -57,6 +60,11 @@ rl.createInterface({input:process.stdin}).on('line',line=>{
     await vi.waitFor(() => expect(output).toContain('Codex App connected.'), { timeout: 10_000 });
     writeFileSync(join(dir, 'auth.next'), '{"generation":2,"changed":true}');
     renameSync(join(dir, 'auth.next'), authFile);
+    // Idle sessions retain their process; only a new user turn may replace it.
+    // The former 60-second watcher is accelerated above, so this also detects
+    // a regression without waiting a minute or launching hundreds of sessions.
+    await new Promise(resolve => setTimeout(resolve, 150));
+    expect(readFileSync(generationFile, 'utf8')).toBe('1');
     send('正常执行一次');
     await vi.waitFor(() => expect(output).toContain('\u001b]777;botmux:final:'), { timeout: 10_000 });
     const rows = readFileSync(calls, 'utf8').trim().split('\n').map(line => JSON.parse(line));

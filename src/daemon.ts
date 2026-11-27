@@ -4200,8 +4200,8 @@ export async function startDaemon(botIndex?: number): Promise<void> {
   maintenanceHeartbeat.unref?.();
 
   // Host-wide Codex OAuth maintenance is safe to start from every Codex App
-  // daemon: a shared cross-process lock elects exactly one refresher. Busy
-  // sessions defer the refresh within the 04:00-07:00 PRC window.
+  // daemon: one kernel-locked refresh process per shared auth file. Running
+  // sessions do not starve the 04:00-07:00 PRC maintenance window.
   if (cfg.cliId === 'codex-app') {
     const codexBin = createCliAdapterSync(cfg.cliId, cfg.cliPathOverride).resolvedBin;
     startCodexAuthMaintenance(codexBin, process.cwd());

@@ -80,7 +80,6 @@ let activeHookTrust = readGlobalConfig().hookTrust ?? savedExecutor?.hookTrust ?
 let client = new AppServerClient(activeExecutor === 'traex' ? args.traexBin : args.codexBin, args.cwd, modelExecutorEnv(activeExecutor));
 let clientAuthStamp = activeExecutor === 'codex-app' ? readCodexAuthFileStamp() : undefined;
 let authReloadInFlight: Promise<void> | undefined;
-let authReloadTimer: ReturnType<typeof setInterval> | undefined;
 let threadId = savedExecutor?.threadId ?? args.threadId;
 let pendingHandoff = savedExecutor?.handoff ?? '';
 let threadReady = false;
@@ -327,7 +326,7 @@ async function recoverAuthClient(): Promise<void> {
 async function replaceCodexAuthClient(initialized?: AppServerClient): Promise<void> {
   if (activeExecutor !== 'codex-app') throw new Error('当前执行器不是 Codex');
   const stale = client;
-  if (!initialized) stale.close();
+  if (!initialized && !await stale.closeAndWait()) throw new Error('Previous Codex auth process did not exit');
   client = initialized ?? new AppServerClient(args.codexBin, args.cwd, modelExecutorEnv(activeExecutor));
   client.onRequest(handleServerRequest);
   client.onNotification(handleNotification);
@@ -338,9 +337,8 @@ async function replaceCodexAuthClient(initialized?: AppServerClient): Promise<vo
 }
 
 /**
- * A proactive overnight refresh atomically replaces auth.json. Idle runners
- * reload immediately; a turn racing the watcher awaits the same reload before
- * it starts. Existing threads are resumed, never recreated.
+ * Load shared auth at the next turn boundary. Rotating one token must not
+ * restart every idle session's app-server at once. Resume the existing thread.
  */
 async function reloadCodexAuthIfChanged(turnBoundary = false): Promise<void> {
   if (activeExecutor !== 'codex-app' || activeTurn || !turnBoundary && processing) return;
@@ -357,18 +355,6 @@ async function reloadCodexAuthIfChanged(turnBoundary = false): Promise<void> {
   } finally {
     authReloadInFlight = undefined;
   }
-}
-
-function startCodexAuthReloadWatcher(): void {
-  if (authReloadTimer) return;
-  authReloadTimer = setInterval(() => {
-    void reloadCodexAuthIfChanged().catch(error => {
-      if (process.env.BOTMUX_CODEX_APP_DEBUG === '1') {
-        writeLine(`[codex-app] background auth reload unavailable: ${asError(error).message}`);
-      }
-    });
-  }, 60_000);
-  authReloadTimer.unref?.();
 }
 
 async function drainQueue(): Promise<void> {
@@ -470,7 +456,6 @@ async function main(): Promise<void> {
   } else {
     writeLine('Codex App connected.');
   }
-  startCodexAuthReloadWatcher();
   if (process.stdin.isTTY) process.stdin.setRawMode(true);
   process.stdin.resume();
   const input = new AppRunnerInput(content => modelInput.receive(content), interruptActiveTurn);
@@ -479,13 +464,11 @@ async function main(): Promise<void> {
 }
 
 process.on('SIGTERM', () => {
-  if (authReloadTimer) clearInterval(authReloadTimer);
   client.close();
   process.exit(0);
 });
 
 process.on('SIGINT', () => {
-  if (authReloadTimer) clearInterval(authReloadTimer);
   client.close();
   process.exit(130);
 });
