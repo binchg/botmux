@@ -47,7 +47,10 @@ it('首张即时卡不等网络，后台读到真实窗口后只补刷一次', a
   await settleRead();
   expect(f.read).toHaveBeenCalledOnce();
   expect(sessionCardCodexQuotaNeedsRefresh('/data', 's', 'zh', 'card-a')).toBe(true);
-  expect(JSON.stringify(sessionModelCardElements('s', 'codex-app', 'zh', 'card-a'))).toContain('额度 6 天 3 小时刷新剩余 34%');
+  const rows = sessionModelCardElements('s', 'codex-app', 'zh', 'card-a');
+  expect(rows).toHaveLength(4);
+  expect(rows.every(row => row.text.lines === 1 && !row.text.content.includes('\n'))).toBe(true);
+  expect(rows[1].text.content).toBe('额度 34%·6天3时刷新');
   expect(sessionCardCodexQuotaNeedsRefresh('/data', 's', 'zh', 'card-a')).toBe(false);
   expect(JSON.stringify(sessionModelCardElements('s', 'codex-app', 'zh'))).not.toContain('额度');
 });
@@ -60,7 +63,7 @@ it('同一机器人多卡共享查询，限频内复用结果，查询失败后�
   expect(a(0)).toBeUndefined();
   expect(sessionCardCodexQuota('/data', 's', 'zh', 'card-b', 0)).toBeUndefined();
   await settleRead();
-  expect(a(1)).toBe('额度 剩余 0%');
+  expect(a(1)).toBe('额度 0%');
   expect(needs(59_999)).toBe(false);
   expect(f.read).toHaveBeenCalledOnce();
   expect(needs(60_000)).toBe(false);

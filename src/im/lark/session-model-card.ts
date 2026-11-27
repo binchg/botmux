@@ -21,9 +21,13 @@ export function compactCodexModel(value: { model?: string; effort?: string; serv
 }
 
 /** Shared ordering for the compact Botmux and native Codex cards. */
-export function codexSessionCardRows(workingDir: string, model: string, statistics: string[], quota?: string) {
+export function codexSessionCardRows(workingDir: string, model: string, statistics: string[], quota?: string, locale?: Locale) {
   const rows = [`📁 ${workingDir} · ${model}`, ...(quota ? [quota] : []), ...statistics];
-  return rows.map(content => ({ tag: 'div', text: { tag: 'plain_text', content } }));
+  return rows.map(content => ({ tag: 'div', text: {
+    tag: 'plain_text', content,
+    ...(locale !== 'en' ? { lines: 1 } : {}),
+    ...(content.startsWith('📊 ') ? { text_size: 'notation' } : {}),
+  } }));
 }
 
 /** 实际回执与待生效配置分别展示；即时卡中的模型信息按窗口限频。 */
@@ -42,7 +46,7 @@ export function sessionModelCardElements(sessionId: string, cliId?: string, loca
       ? ` → ${compactCodexModel(state.desired)}${en ? ' next' : ' 待生效'}` : '';
     const quota = snapshotKey ? sessionCardCodexQuota(config.session.dataDir, sessionId, locale ?? 'zh', snapshotKey) : undefined;
     const lines = sessionCardStatistics(config.session.dataDir, sessionId, state, locale, snapshotKey);
-    return codexSessionCardRows(workingDir, status + pending, lines, quota);
+    return codexSessionCardRows(workingDir, status + pending, lines, quota, locale);
   } catch { return [text(en ? 'Model status unavailable' : '模型状态暂不可用')]; }
 }
 

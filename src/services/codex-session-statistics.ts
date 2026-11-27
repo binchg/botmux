@@ -121,11 +121,16 @@ export function codexStatisticsText(stats: CodexSessionStatistics | undefined, c
     ? `${(Math.min(1, stats.cachedTokens / stats.inputTokens) * 100).toFixed(1)}%` : stats?.inputTokens === 0 && stats.cachedTokens === 0 ? '0.0%' : '—';
   const usage = stats?.contextTokens;
   const window = stats?.contextWindowTokens;
-  const context = usage === undefined ? '—' : `${Number((usage / 1000).toFixed(1))}K${window ? ` (${Math.round(100 * usage / window)}%)` : ''}`;
+  const size = usage === undefined ? '—' : `${Number((usage / 1000).toFixed(1))}K`;
+  const share = usage !== undefined && window ? Math.round(100 * usage / window) : undefined;
+  const context = share === undefined ? size : `${size} (${share}%)`;
   if (en) return `Created ${age} ago · Running ${stats ? formatStatisticsDuration(stats.runningMs) : '—'}\nContext ${context} · Usage ${total === undefined ? '—' : `${total} × 100M tokens`} · Cache ${rate} · Tools ${number(stats?.tools)}`;
   if (['0', '1'].includes(process.env.BOTMUX_BOT_INDEX ?? '0')) {
     const compactRate = rate === '—' ? rate : `${Math.round(Number.parseFloat(rate))}%`;
     return `至今 ${age} · 累计 ${stats ? formatStatisticsDuration(stats.runningMs) : '—'}\n上下文 ${context} · 耗 ${total === undefined ? '—' : `${total}亿`} · 缓存 ${compactRate}`;
   }
-  return `⏱ 创建 ${age} · 累计运行 ${stats ? formatStatisticsDuration(stats.runningMs) : '—'}\n📊 上下文 ${context} · 消耗 ${total === undefined ? '—' : `${total}亿`} · 缓存率 ${rate} · 工具 ${number(stats?.tools)}次`;
+  // 摘要按占用、消耗、缓存和工具数排列，省出移动端的单行空间。
+  const compactContext = share === undefined ? size : `${size}/${share}%`;
+  const tools = stats ? `${stats.tools}次` : '—';
+  return `⏱ 创建${age} · 运行${stats ? formatStatisticsDuration(stats.runningMs) : '—'}\n📊 ${compactContext}·${total === undefined ? '—' : `${total}亿`}·${rate}·${tools}`;
 }

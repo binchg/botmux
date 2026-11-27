@@ -58,14 +58,14 @@ export function formatCodexCardQuota(windows: CodexQuotaWindow[], locale: Locale
     const remaining = `${percent.format(quota.remainingPercent)}%`;
     if (quota.resetsAtMs === undefined) {
       const name = current.length > 1 ? `${windowLabel(quota, locale)} ` : '';
-      return en ? `${name}${remaining} remaining` : `${name}剩余 ${remaining}`;
+      return en ? `${name}${remaining} remaining` : `${name}${remaining}`;
     }
     const hours = Math.floor((quota.resetsAtMs - now) / 3_600_000);
     const days = Math.floor(hours / 24);
     const countdown = en
       ? (days ? `${days}d ${hours % 24}h` : hours ? `${hours}h` : '<1h')
-      : (days ? `${days} 天 ${hours % 24} 小时` : hours ? `${hours} 小时` : '不足 1 小时');
-    return en ? `${countdown} to reset · ${remaining} remaining` : `${countdown}刷新剩余 ${remaining}`;
+      : (days ? `${days}天${hours % 24}时` : hours ? `${hours}时` : '<1时');
+    return en ? `${countdown} to reset · ${remaining} remaining` : `${remaining}·${countdown}刷新`;
   });
   return `${en ? 'Quota' : '额度'} ${labels.join(' / ')}`;
 }

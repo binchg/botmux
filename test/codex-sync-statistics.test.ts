@@ -55,14 +55,14 @@ it('counts unique tools and keeps absent usage unknown in the compact footer', (
   writeFileSync(path,event('session_meta',{id:'a'},start)+tool+tool);
   const stats=readCodexSessionStatistics(path);
   expect(stats).toMatchObject({tools:1,inputTokens:undefined});
-  expect(codexStatisticsText(stats,new Date(start-86400000).toISOString(),start+2000)).toContain('消耗 — · 缓存率 — · 工具 1次');
-  expect(codexStatisticsText(undefined)).toContain('消耗 —');
+  expect(codexStatisticsText(stats,new Date(start-86400000).toISOString(),start+2000)).toContain('📊 —·—·—·1次');
+  expect(codexStatisticsText(undefined)).toContain('📊 —·—·—·—');
 });
 
 it('formats total tokens in hundred-millions and computes cache rate without counting cache twice',()=>{
   const text=codexStatisticsText({runningMs:791000,turns:1,tools:65,inputTokens:4690959,outputTokens:18298,cachedTokens:4581248,incomplete:false},undefined,0);
   expect(text.split('\n')).toHaveLength(2);
-  expect(text).toContain('消耗 0.05亿 · 缓存率 97.7% · 工具 65次');
+  expect(text).toContain('📊 —·0.05亿·97.7%·65次');
   expect(text).not.toMatch(/Token 输入|输出|含于输入|可用记录/);
 });
 
@@ -74,11 +74,11 @@ it('显示最新上下文占用，并在压缩后的读数下降时保留累计�
       total_token_usage: { input_tokens: cumulative, output_tokens: 166_200, cached_input_tokens: 106_355_000 } },
   });
   writeFileSync(path, usage(189_900, 119_500_000));
-  expect(codexStatisticsText(readCodexSessionStatistics(path))).toContain('📊 上下文 189.9K (25%) · 消耗 1.20亿');
+  expect(codexStatisticsText(readCodexSessionStatistics(path))).toContain('📊 189.9K/25%·1.20亿·89.0%');
   appendFileSync(path, usage(28_500, 120_000_000) + event('event_msg', { type: 'token_count', info: null }));
   const stats = readCodexSessionStatistics(path);
   expect(stats).toMatchObject({ inputTokens: 120_000_000, contextTokens: 28_500, contextWindowTokens: 760_000 });
-  expect(codexStatisticsText(stats)).toContain('上下文 28.5K (4%)');
+  expect(codexStatisticsText(stats)).toContain('📊 28.5K/4%');
 });
 
 it('serves shared incremental public events without reasoning, developer prompts, arguments or duplicate final copies', () => {
