@@ -7,12 +7,14 @@ interface Aggregate {
   offset: number; size: number; mtime: number; inode: number; created?: number;
   turns: Map<string, Turn>; active?: string; tools: Set<string>;
   input?: number; output?: number; cached?: number;
+  contextTokens?: number; contextWindowTokens?: number;
   totalRuntime: number; completed: number; unfinished: number;
   anchor?: string;
 }
 export interface CodexSessionStatistics {
   createdAtMs?: number; runningMs: number; turns: number; tools: number;
   inputTokens?: number; outputTokens?: number; cachedTokens?: number;
+  contextTokens?: number; contextWindowTokens?: number;
   incomplete: boolean;
 }
 const files = new Map<string, Aggregate>();
@@ -40,9 +42,17 @@ function fold(a: Aggregate, row: any): void {
   }
   if (row.type !== 'event_msg') return;
   if (at !== undefined) a.created = Math.min(a.created ?? at, at);
-  if (p.type === 'token_count' && p.info?.total_token_usage) {
+  if (p.type === 'token_count' && p.info) {
     const u = p.info.total_token_usage;
-    a.input = numeric(u.input_tokens); a.output = numeric(u.output_tokens); a.cached = numeric(u.cached_input_tokens);
+    if (u) {
+      a.input = numeric(u.input_tokens); a.output = numeric(u.output_tokens); a.cached = numeric(u.cached_input_tokens);
+    }
+    // 最新上下文单独记录，压缩后可能缩小，累计消耗仍来自独立字段。
+    const context = numeric(p.info.last_token_usage?.total_tokens);
+    if (context !== undefined) {
+      a.contextTokens = context;
+      a.contextWindowTokens = numeric(p.info.model_context_window);
+    }
   }
   if (p.type === 'task_started') {
     const id = p.turn_id ?? p.root_turn_id;
@@ -89,7 +99,8 @@ export function readCodexSessionStatistics(path: string, now = Date.now(), runni
     const live = running && active?.duration === undefined && active?.start !== undefined;
     const runningMs = a.totalRuntime + (live ? Math.max(0, now - active!.start!) : 0);
     return { createdAtMs: a.created, runningMs, turns: a.completed, tools: a.tools.size,
-      inputTokens: a.input, outputTokens: a.output, cachedTokens: a.cached, incomplete: a.unfinished > (live ? 1 : 0) };
+      inputTokens: a.input, outputTokens: a.output, cachedTokens: a.cached,
+      contextTokens: a.contextTokens, contextWindowTokens: a.contextWindowTokens, incomplete: a.unfinished > (live ? 1 : 0) };
   } catch { return; }
 }
 
@@ -108,10 +119,13 @@ export function codexStatisticsText(stats: CodexSessionStatistics | undefined, c
     ? ((stats.inputTokens + stats.outputTokens) / 100_000_000).toFixed(2) : undefined;
   const rate = stats?.inputTokens && stats.cachedTokens !== undefined
     ? `${(Math.min(1, stats.cachedTokens / stats.inputTokens) * 100).toFixed(1)}%` : stats?.inputTokens === 0 && stats.cachedTokens === 0 ? '0.0%' : '—';
-  if (en) return `Created ${age} ago · Running ${stats ? formatStatisticsDuration(stats.runningMs) : '—'}\nUsage ${total === undefined ? '—' : `${total} × 100M tokens`} · Cache ${rate} · Tools ${number(stats?.tools)}`;
+  const usage = stats?.contextTokens;
+  const window = stats?.contextWindowTokens;
+  const context = usage === undefined ? '—' : `${Number((usage / 1000).toFixed(1))}K${window ? ` (${Math.round(100 * usage / window)}%)` : ''}`;
+  if (en) return `Created ${age} ago · Running ${stats ? formatStatisticsDuration(stats.runningMs) : '—'}\nContext ${context} · Usage ${total === undefined ? '—' : `${total} × 100M tokens`} · Cache ${rate} · Tools ${number(stats?.tools)}`;
   if (['0', '1'].includes(process.env.BOTMUX_BOT_INDEX ?? '0')) {
     const compactRate = rate === '—' ? rate : `${Math.round(Number.parseFloat(rate))}%`;
-    return `至今 ${age} · 累计 ${stats ? formatStatisticsDuration(stats.runningMs) : '—'}\n耗 ${total === undefined ? '—' : `${total}亿`} · 缓存 ${compactRate}`;
+    return `至今 ${age} · 累计 ${stats ? formatStatisticsDuration(stats.runningMs) : '—'}\n上下文 ${context} · 耗 ${total === undefined ? '—' : `${total}亿`} · 缓存 ${compactRate}`;
   }
-  return `⏱ 创建至今 ${age} · 累计运行 ${stats ? formatStatisticsDuration(stats.runningMs) : '—'}\n📊 消耗 ${total === undefined ? '—' : `${total}亿`} · 缓存率 ${rate} · 工具 ${number(stats?.tools)}次`;
+  return `⏱ 创建 ${age} · 累计运行 ${stats ? formatStatisticsDuration(stats.runningMs) : '—'}\n📊 上下文 ${context} · 消耗 ${total === undefined ? '—' : `${total}亿`} · 缓存率 ${rate} · 工具 ${number(stats?.tools)}次`;
 }

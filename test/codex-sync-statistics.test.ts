@@ -66,6 +66,21 @@ it('formats total tokens in hundred-millions and computes cache rate without cou
   expect(text).not.toMatch(/Token 输入|输出|含于输入|可用记录/);
 });
 
+it('显示最新上下文占用，并在压缩后的读数下降时保留累计消耗', () => {
+  const path = fixture();
+  const usage = (context: number, cumulative: number) => event('event_msg', {
+    type: 'token_count',
+    info: { last_token_usage: { total_tokens: context }, model_context_window: 760_000,
+      total_token_usage: { input_tokens: cumulative, output_tokens: 166_200, cached_input_tokens: 106_355_000 } },
+  });
+  writeFileSync(path, usage(189_900, 119_500_000));
+  expect(codexStatisticsText(readCodexSessionStatistics(path))).toContain('📊 上下文 189.9K (25%) · 消耗 1.20亿');
+  appendFileSync(path, usage(28_500, 120_000_000) + event('event_msg', { type: 'token_count', info: null }));
+  const stats = readCodexSessionStatistics(path);
+  expect(stats).toMatchObject({ inputTokens: 120_000_000, contextTokens: 28_500, contextWindowTokens: 760_000 });
+  expect(codexStatisticsText(stats)).toContain('上下文 28.5K (4%)');
+});
+
 it('serves shared incremental public events without reasoning, developer prompts, arguments or duplicate final copies', () => {
   const path=fixture();
   writeFileSync(path,event('response_item',{type:'reasoning',summary:[{text:'hidden'}]})+

@@ -11,13 +11,15 @@ import { registerSessionHandoffApi } from '../core/session-handoff-api.js';
 import { repairThreadReply } from '../im/lark/thread-sync.js';
 import { customizeSessionCard, readSessionCardCustomization } from './session-card-customization.js';
 import { startSessionModelCardRefresh } from './session-model-card-refresh.js';
+import { localeForBot } from '../i18n/index.js';
 
 /** 在注册机器人前准备队列；首次后台补发晚于同步注册，不阻塞 daemon 启动。 */
 export function startLarkOutboundDelivery(botIndex: number): { outbox: LarkReplyOutbox; protectClient: () => void } | undefined {
   const bot = loadBotConfigs()[botIndex];
   if (!bot) throw new Error('Reply outbox requires the assigned bot configuration');
   registerSessionHandoffApi(bot.larkAppId);
-  const customize = (content: string) => customizeSessionCard(content, readSessionCardCustomization(config.session.dataDir, bot.larkAppId), config.session.dataDir);
+  const customize = (content: string) => customizeSessionCard(content,
+    readSessionCardCustomization(config.session.dataDir, bot.larkAppId), config.session.dataDir, localeForBot(bot.larkAppId));
   startSessionModelCardRefresh(bot.larkAppId);
   const deliveryGuard = (request: import('./lark-reply-outbox.js').OutboundRequest) =>
     assertSessionReplyAllowed(request, bot.larkAppId);

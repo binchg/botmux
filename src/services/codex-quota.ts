@@ -6,6 +6,7 @@ import { AppServerClient } from './app-runner-client.js';
 interface RateLimitWindow {
   usedPercent?: number;
   windowDurationMins?: number | null;
+  resetsAt?: number | null;
 }
 
 interface RateLimitSnapshot {
@@ -24,6 +25,7 @@ export interface CodexQuotaWindow {
   window: 'primary' | 'secondary';
   durationMinutes?: number;
   remainingPercent: number;
+  resetsAtMs?: number;
 }
 
 /** 按实际时长命名窗口；当协议未提供时长时显示主、次窗口。 */
@@ -38,12 +40,34 @@ function windowLabel(quota: CodexQuotaWindow, locale: Locale): string {
   return locale === 'en' ? `${minutes}m` : `${minutes} 分钟`;
 }
 
-/** 生成命令与卡片共用的额度行，没有有效窗口时省略。 */
+/** 生成状态命令的额度窗口摘要。 */
 export function formatCodexQuota(windows: CodexQuotaWindow[], locale: Locale): string | undefined {
   if (!windows.length) return undefined;
   const label = locale === 'en' ? 'Codex remaining quota' : 'Codex 剩余额度';
   const percent = new Intl.NumberFormat(locale, { maximumFractionDigits: 2 });
   return `${label} · ${windows.map(quota => `${windowLabel(quota, locale)} ${percent.format(quota.remainingPercent)}%`).join(' / ')}`;
+}
+
+/** 卡片按服务端重置时间计算剩余整小时，已过期的额度等待读取新窗口。 */
+export function formatCodexCardQuota(windows: CodexQuotaWindow[], locale: Locale, now: number): string | undefined {
+  const current = windows.filter(quota => quota.resetsAtMs === undefined || quota.resetsAtMs > now);
+  if (!current.length) return undefined;
+  const en = locale === 'en';
+  const percent = new Intl.NumberFormat(locale, { maximumFractionDigits: 2 });
+  const labels = current.map(quota => {
+    const remaining = `${percent.format(quota.remainingPercent)}%`;
+    if (quota.resetsAtMs === undefined) {
+      const name = current.length > 1 ? `${windowLabel(quota, locale)} ` : '';
+      return en ? `${name}${remaining} remaining` : `${name}剩余 ${remaining}`;
+    }
+    const hours = Math.floor((quota.resetsAtMs - now) / 3_600_000);
+    const days = Math.floor(hours / 24);
+    const countdown = en
+      ? (days ? `${days}d ${hours % 24}h` : hours ? `${hours}h` : '<1h')
+      : (days ? `${days} 天 ${hours % 24} 小时` : hours ? `${hours} 小时` : '不足 1 小时');
+    return en ? `${countdown} to reset · ${remaining} remaining` : `${countdown}刷新剩余 ${remaining}`;
+  });
+  return `${en ? 'Quota' : '额度'} ${labels.join(' / ')}`;
 }
 
 /** 同时兼容新旧协议，只接受 Codex 订阅的额度桶。 */
@@ -57,10 +81,12 @@ export function parseCodexQuota(response: RateLimitsResponse | undefined): Codex
     const used = window?.usedPercent;
     if (typeof used !== 'number' || !Number.isFinite(used) || used < 0) continue;
     const duration = window?.windowDurationMins;
+    const reset = window?.resetsAt;
     windows.push({
       window: name,
       durationMinutes: typeof duration === 'number' && Number.isSafeInteger(duration) && duration > 0 ? duration : undefined,
       remainingPercent: Math.max(0, 100 - used),
+      ...(typeof reset === 'number' && reset > 0 && Number.isSafeInteger(reset * 1000) ? { resetsAtMs: reset * 1000 } : {}),
     });
   }
   return windows;

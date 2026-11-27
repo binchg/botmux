@@ -17,7 +17,8 @@ function measure(id: string, state: State, locale: string | undefined, now: numb
     sessionId: id, cliSessionId: state.runtime?.threadId ?? session?.cliSessionId, cwd: session?.workingDir, fresh: true });
   const stats = resolved ? readCodexSessionStatistics(resolved.path, now, state.runnerAlive && state.runtime?.phase === 'running') : undefined;
   return { lines: codexStatisticsText(stats, session?.createdAt, now, locale === 'en').split('\n'),
-    signature: stats ? JSON.stringify([resolved?.path, stats.runningMs, stats.tools, stats.inputTokens, stats.outputTokens, stats.cachedTokens]) : '',
+    signature: stats ? JSON.stringify([resolved?.path, stats.runningMs, stats.tools, stats.inputTokens, stats.outputTokens,
+      stats.cachedTokens, stats.contextTokens, stats.contextWindowTokens]) : '',
     nextAt: now + (stats ? 60_000 : 15_000) };
 }
 

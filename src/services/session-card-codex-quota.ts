@@ -3,7 +3,7 @@ import { getBot } from '../bot-registry.js';
 import { config } from '../config.js';
 import type { Locale } from '../i18n/types.js';
 import { expandHomePath } from '../utils/working-dir.js';
-import { formatCodexQuota, readCodexQuota, type CodexQuotaWindow } from './codex-quota.js';
+import { formatCodexCardQuota, readCodexQuota, type CodexQuotaWindow } from './codex-quota.js';
 import { readOriginalCodexQuota } from './codex-original-daemon.js';
 import { readSessionCardCustomization } from './session-card-customization.js';
 import { getSession } from './session-store.js';
@@ -35,8 +35,8 @@ function refreshQuota(snapshot: QuotaSnapshot, now: number, read: () => Promise<
   });
 }
 
-function quotaStatus(snapshot: QuotaSnapshot, locale: Locale) {
-  const label = formatCodexQuota(snapshot.windows, locale);
+function quotaStatus(snapshot: QuotaSnapshot, locale: Locale, now: number) {
+  const label = formatCodexCardQuota(snapshot.windows, locale, now);
   if (label) return { label };
   const pending = snapshot.pending === true;
   return { pending, label: locale === 'en'
@@ -81,7 +81,7 @@ export function nativeSessionCardQuota(dir: string, appId: string, threadId: str
   }
   refreshQuota(snapshot, now, async () => (await readOriginalCodexQuota(codexHome)) ??
     readCodexQuota({ codexBin, cwd, env: { ...process.env, CODEX_HOME: codexHome } }));
-  return quotaStatus(snapshot, locale);
+  return quotaStatus(snapshot, locale, now);
 }
 
 /** 只有启用该能力的 Codex App 机器人和所属操作者会话才能显示机器人订阅额度。 */
@@ -101,7 +101,7 @@ function quotaLabel(dir: string, id: string, locale: Locale, now: number): strin
     || (session.agentFrozen && session.cliPathOverride !== bot.config.cliPathOverride)) return;
 
   const snapshot = botQuota(appId, now);
-  return prefs.codexQuotaAllSessions ? quotaStatus(snapshot, locale).label : formatCodexQuota(snapshot.windows, locale);
+  return prefs.codexQuotaAllSessions ? quotaStatus(snapshot, locale, now).label : formatCodexCardQuota(snapshot.windows, locale, now);
 }
 
 /** 记下本次渲染的额度行，以便后台只在内容变化后补刷。 */

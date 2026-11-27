@@ -1,11 +1,13 @@
 /** 按机器人保存会话卡定制；仅影响展示，不修改权限、模型路由或消息正文来源。 */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import type { Locale } from '../i18n/index.js';
 import { sessionCardTaskTag } from './session-card-task-context.js';
 
 /** 机器人级卡片展示偏好；额度开启后会出现在该机器人符合条件的即时卡中。 */
 export interface SessionCardCustomization {
   compactButtons?: boolean;
+  collapseActions?: boolean;
   modelInCard?: boolean;
   taskContext?: boolean;
   codexQuota?: boolean;
@@ -22,9 +24,9 @@ export function readSessionCardCustomization(dir: string, appId?: string): Sessi
   catch { return {}; }
 }
 
-/** 出站时统一精简新卡与旧卡的补发，正文只移除工具自动添加的模型首行。 */
-export function customizeSessionCard(content: string, prefs: SessionCardCustomization, dataDir?: string): string {
-  if (!prefs.compactButtons && !prefs.modelInCard && !prefs.taskContext) return content;
+/** 出站时统一定制会话卡与旧卡的补发，保留每个操作的链接和回调参数。 */
+export function customizeSessionCard(content: string, prefs: SessionCardCustomization, dataDir?: string, locale?: Locale): string {
+  if (!prefs.compactButtons && !prefs.collapseActions && !prefs.modelInCard && !prefs.taskContext) return content;
   let card: any;
   try { card = JSON.parse(content); } catch { return content; }
   const modelHeader = /^> \*\*(?:模型：)?TraeX · [^\n]+\*\*(?:\n\n|$)/u;
@@ -58,7 +60,27 @@ export function customizeSessionCard(content: string, prefs: SessionCardCustomiz
       if (tag) card.header.title.content = `#${tag}${status ? ` · ${status}` : ''}`;
     } catch { /* 展示登记故障不得阻止原卡发送。 */ }
   }
-  if (prefs.compactButtons && sessionCard) {
+  if (prefs.collapseActions && sessionCard) {
+    const actions = elements.flatMap((row: any) => row.tag === 'action' ? row.actions ?? [] : []);
+    const rows = [];
+    for (let i = 0; i < actions.length; i += 2) {
+      rows.push({
+        tag: 'column_set',
+        columns: actions.slice(i, i + 2).map((action: any) => ({ tag: 'column', width: 'auto', elements: [action] })),
+      });
+    }
+    card.elements = [...elements.filter((row: any) => row.tag !== 'action'), {
+      tag: 'collapsible_panel',
+      expanded: false,
+      header: {
+        title: { tag: 'plain_text', content: locale === 'en' ? 'More actions' : '更多操作' },
+        icon: { tag: 'standard_icon', token: 'down-small-ccm_outlined', size: '16px 16px' },
+        icon_position: 'right',
+        icon_expanded_angle: -180,
+      },
+      elements: rows,
+    }];
+  } else if (prefs.compactButtons && sessionCard) {
     for (const row of elements) {
       if (row.tag !== 'action') continue;
       row.actions = row.actions.filter((action: any) => action.tag === 'button'

@@ -19,6 +19,21 @@ it('只留下 HTTP 终端和历史入口，过滤管理按钮和本地 CLI 入�
   expect(customizeSessionCard(JSON.stringify(card), {})).toBe(JSON.stringify(card));
 });
 
+it('折叠全部记录卡片按钮，保留按钮顺序、链接和回调，补发不重复包装', () => {
+  const actions = [link('https://terminal/s/id'), button('close'), link('https://history/h/id'), button('get_write_link')];
+  const summary = { tag: 'div', text: { content: '📁 WT1 · 6.2-sol XH F√' } };
+  const card = JSON.stringify({ header: {}, elements: [summary,
+    { tag: 'action', actions: actions.slice(0, 3) }, { tag: 'action', actions: actions.slice(3) }] });
+  const collapse = { ...prefs, collapseActions: true };
+  const content = customizeSessionCard(card, collapse);
+  const result = JSON.parse(content);
+  expect(result.elements).toHaveLength(2);
+  expect(result.elements[0]).toEqual(summary);
+  expect(result.elements[1]).toMatchObject({ tag: 'collapsible_panel', expanded: false, header: { title: { content: '更多操作' } } });
+  expect(result.elements[1].elements.flatMap((row: any) => row.columns.flatMap((column: any) => column.elements))).toEqual(actions);
+  expect(customizeSessionCard(content, collapse)).toBe(content);
+});
+
 it('移除实际出站回复的模型引用首行，正文、内部引用与普通机器人保持原样', () => {
   const card = buildTitledMarkdownCard({ title: '任务', brand: '',
     md: '> **TraeX · GPT-6.1-Sol · xhigh · 负载 109%**\n\n已发送请求。' });

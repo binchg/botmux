@@ -2,7 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { registerBot } from '../src/bot-registry.js';
 import { handleCommand, SESSIONLESS_DAEMON_COMMANDS } from '../src/core/command-handler.js';
-import { parseCodexQuota, readCodexQuota } from '../src/services/codex-quota.js';
+import { formatCodexCardQuota, parseCodexQuota, readCodexQuota } from '../src/services/codex-quota.js';
 
 const rpc = vi.hoisted(() => ({ initialize: vi.fn(), request: vi.fn(), close: vi.fn() }));
 vi.mock('../src/services/app-runner-client.js', () => ({
@@ -48,6 +48,17 @@ describe('Codex 订阅剩余额度', () => {
     expect(parseCodexQuota({ rateLimits: {
       primary: { usedPercent: -1 }, secondary: { usedPercent: 65, windowDurationMins: 10080 },
     } })).toEqual([{ window: 'secondary', remainingPercent: 35, durationMinutes: 10080 }]);
+  });
+
+  it('从真实 Unix 重置时间倒计时，过期窗口退出展示', () => {
+    const now = 1_800_000_000_000;
+    const windows = parseCodexQuota({ rateLimits: {
+      primary: { usedPercent: 100, windowDurationMins: 300, resetsAt: now / 1000 + 1800 },
+      secondary: { usedPercent: 1, windowDurationMins: 10080, resetsAt: now / 1000 + (5 * 24 + 3) * 3600 },
+    } });
+    expect(formatCodexCardQuota(windows, 'zh', now)).toBe('额度 不足 1 小时刷新剩余 0% / 5 天 3 小时刷新剩余 99%');
+    expect(formatCodexCardQuota(windows, 'zh', now + 3_600_000)).toBe('额度 5 天 2 小时刷新剩余 99%');
+    expect(formatCodexCardQuota(windows, 'zh', now + 7 * 86_400_000)).toBeUndefined();
   });
 
   it('从无会话的话题读取额度并显示真实窗口', async () => {
